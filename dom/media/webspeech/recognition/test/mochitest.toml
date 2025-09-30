@@ -42,3 +42,5 @@ skip-if = ["os == 'android'"]
 
 ["test_timeout.html"]
 skip-if = ["os == 'linux'"] # Bug 1307991 - low frequency on try pushes
+
+["test_available_download.html"]

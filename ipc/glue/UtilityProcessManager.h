@@ -8,12 +8,14 @@
 #include "mozilla/MozPromise.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/ipc/UtilityProcessHost.h"
+#include "mozilla/ipc/HWInferenceParent.h"
 #include "mozilla/EnumeratedArray.h"
 #include "mozilla/ProcInfo.h"
 #include "nsIObserver.h"
 #include "nsTArray.h"
 
 #include "mozilla/PRemoteMediaManagerChild.h"
+#include "mozilla/ipc/PHWInferenceManagerChild.h"
 
 namespace mozilla {
 
@@ -53,6 +55,10 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   using WinFileDialogPromise = LaunchPromise<widget::filedialog::ProcessProxy>;
 #endif
 
+  using HWInferencePromise = LaunchPromise<RefPtr<HWInferenceParent>>;
+  using ContentHWInferencePromise =
+      LaunchPromise<Endpoint<PHWInferenceManagerChild>>;
+
   static RefPtr<UtilityProcessManager> GetSingleton();
 
   static RefPtr<UtilityProcessManager> GetIfExists();
@@ -82,6 +88,11 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   // reused; this will always return a fresh actor.
   RefPtr<WinFileDialogPromise> CreateWinFileDialogActor();
 #endif
+
+  RefPtr<HWInferencePromise> StartHWInference();
+
+  RefPtr<ContentHWInferencePromise> StartContentHWInferenceManager(
+      EndpointProcInfo aOtherProcess, dom::ContentParentId aChildId);
 
   void OnProcessUnexpectedShutdown(UtilityProcessHost* aHost);
 

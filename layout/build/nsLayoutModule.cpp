@@ -40,11 +40,6 @@
 #include "mozilla/dom/SessionStorageManager.h"
 #include "nsContentCreatorFunctions.h"
 
-#ifdef MOZ_WEBSPEECH
-#  include "mozilla/dom/OnlineSpeechRecognitionService.h"
-#  include "mozilla/dom/nsSynthVoiceRegistry.h"
-#endif
-
 #include "mozilla/dom/PushNotifier.h"
 using mozilla::dom::PushNotifier;
 #define PUSHNOTIFIER_CID \

@@ -10,6 +10,17 @@
  * liability, trademark and document use rules apply.
  */
 
+dictionary SpeechRecognitionOptions {
+  required sequence<DOMString> langs;
+  boolean processLocally = false;
+};
+
+enum SpeechRecognitionAvailabilityStatus {
+  "available",
+  "unavailable",
+  "no-model"
+};
+
 [Pref="media.webspeech.recognition.enable",
  LegacyFactoryFunction=webkitSpeechRecognition,
  Exposed=Window]
@@ -24,14 +35,26 @@ interface SpeechRecognition : EventTarget {
     attribute boolean continuous;
     attribute boolean interimResults;
     attribute unsigned long maxAlternatives;
-    [Throws]
+
+    // New attributes from current spec
+    attribute boolean processLocally;
+    [Cached, Frozen, Pure]
+    attribute sequence<DOMString> phrases;
+
+    // Deprecated but kept for compatibility
+    [Throws, Pref="media.webspeech.recognition.service_uri_enable"]
     attribute DOMString serviceURI;
 
     // methods to drive the speech interaction
     [Throws, NeedsCallerType]
-    undefined start(optional MediaStream stream);
+    undefined start(optional MediaStreamTrack audioTrack);
     undefined stop();
     undefined abort();
+
+    [NewObject, Throws]
+    static Promise<SpeechRecognitionAvailabilityStatus> available(SpeechRecognitionOptions options);
+    [NewObject, Throws]
+    static Promise<undefined> install(SpeechRecognitionOptions options);
 
     // event methods
     attribute EventHandler onaudiostart;

@@ -15,23 +15,50 @@ with Files("**"):
 DIRS += ["actors"]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] != "android":
-    DIRS += ["backends/llama"]
+    DIRS += ["backends/llama", "hwinference"]
 
 BROWSER_CHROME_MANIFESTS += [
     "tests/browser/browser.toml",
     "tests/browser/perftest.toml",
 ]
 
-XPIDL_SOURCES += ["nsIMLUtils.idl"]
+XPIDL_SOURCES += [
+    "nsIMLModelHub.idl",
+    "nsIMLUtils.idl",
+]
 
-UNIFIED_SOURCES += ["MLUtils.cpp"]
-EXPORTS.mozilla.ml += ["MLUtils.h"]
+IPDL_SOURCES += [
+    "PMLModelHub.ipdl",
+]
+
+EXTRA_JS_MODULES += [
+    "MLModelHubService.sys.mjs",
+]
+
+UNIFIED_SOURCES += [
+    "MLModelHubChild.cpp",
+    "MLModelHubParent.cpp",
+    "MLUtils.cpp",
+]
+
+EXPORTS.mozilla.ml += [
+    "MLModelHubChild.h",
+    "MLModelHubParent.h",
+    "MLUtils.h",
+]
 
 with Files("docs/**"):
     SCHEDULES.exclusive = ["docs"]
 
 XPCOM_MANIFESTS += [
     "components.conf",
+]
+
+LOCAL_INCLUDES += [
+    "/dom/base",
+    "/dom/file/ipc",
+    "/dom/ipc",
+    "/ipc/glue",
 ]
 
 XPIDL_MODULE = "ml"

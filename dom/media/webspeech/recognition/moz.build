@@ -10,20 +10,19 @@ XPIDL_MODULE = "dom_webspeechrecognition"
 XPIDL_SOURCES = ["nsISpeechRecognitionService.idl"]
 
 EXPORTS.mozilla.dom += [
-    "OnlineSpeechRecognitionService.h",
     "SpeechGrammar.h",
     "SpeechGrammarList.h",
     "SpeechRecognition.h",
     "SpeechRecognitionAlternative.h",
+    "SpeechRecognitionBackend.h",
     "SpeechRecognitionResult.h",
     "SpeechRecognitionResultList.h",
     "SpeechTrackListener.h",
 ]
 
-EXPORTS += [
-    "endpointer.h",
-    "energy_endpointer.h",
-    "energy_endpointer_params.h",
+EXPORTS.mozilla.ipc += [
+    "SpeechRecognitionChild.h",
+    "SpeechRecognitionParent.h",
 ]
 
 if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
@@ -32,14 +31,13 @@ if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
     ]
 
 UNIFIED_SOURCES += [
-    "endpointer.cc",
-    "energy_endpointer.cc",
-    "energy_endpointer_params.cc",
-    "OnlineSpeechRecognitionService.cpp",
     "SpeechGrammar.cpp",
     "SpeechGrammarList.cpp",
     "SpeechRecognition.cpp",
     "SpeechRecognitionAlternative.cpp",
+    "SpeechRecognitionBackend.cpp",
+    "SpeechRecognitionChild.cpp",
+    "SpeechRecognitionParent.cpp",
     "SpeechRecognitionResult.cpp",
     "SpeechRecognitionResultList.cpp",
     "SpeechTrackListener.cpp",
@@ -50,14 +48,19 @@ if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
         "test/FakeSpeechRecognitionService.cpp",
     ]
 
-USE_LIBS += [
-    "jsoncpp",
+IPDL_SOURCES = [
+    "PSpeechRecognition.ipdl",
 ]
 
 LOCAL_INCLUDES += [
     "/dom/base",
-    "/toolkit/components/jsoncpp/include",
+    "/dom/file/ipc",
+    "/ipc/glue",
+    "/toolkit/components/ml",
+    "/toolkit/components/ml/hwinference",
 ]
+
+DIRS += ["/third_party/whisper.cpp"]
 
 include("/ipc/chromium/chromium-config.mozbuild")
 

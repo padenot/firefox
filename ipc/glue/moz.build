@@ -278,6 +278,7 @@ if CONFIG["MOZ_ENABLE_FORKSERVER"]:
 
 LOCAL_INCLUDES += [
     "/dom/ipc",
+    "/dom/media",
     "/toolkit/crashreporter",
     "/toolkit/xre",
     "/xpcom/base",

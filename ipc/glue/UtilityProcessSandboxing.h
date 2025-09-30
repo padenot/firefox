@@ -32,6 +32,8 @@ enum SandboxingKind : uint64_t {
   WINDOWS_FILE_DIALOG,
 #endif
 
+  HW_INFERENCE,
+
   COUNT,
 
 };

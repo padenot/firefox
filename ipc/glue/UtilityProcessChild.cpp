@@ -295,6 +295,42 @@ mozilla::ipc::IPCResult UtilityProcessChild::RecvStartJSOracleService(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult UtilityProcessChild::RecvStartHWInferenceService(
+    Endpoint<PHWInferenceChild>&& aEndpoint) {
+  static LazyLogModule sHWInferenceLog("HWInference");
+  MOZ_LOG(sHWInferenceLog, LogLevel::Debug,
+          ("[%p] UtilityProcessChild::RecvStartHWInferenceService - Starting "
+           "service",
+           this));
+  PROFILER_MARKER_UNTYPED(
+      "UtilityProcessChild::RecvStartHWInferenceService", OTHER,
+      MarkerOptions(MarkerTiming::IntervalUntilNowFrom(mChildStartTime)));
+
+  MOZ_LOG(sHWInferenceLog, LogLevel::Debug,
+          ("[%p] UtilityProcessChild::RecvStartHWInferenceService - Creating "
+           "HWInferenceChild",
+           this));
+  mHWInferenceInstance = new HWInferenceChild();
+  if (!mHWInferenceInstance) {
+    MOZ_LOG(sHWInferenceLog, LogLevel::Error,
+            ("[%p] UtilityProcessChild::RecvStartHWInferenceService - Failed "
+             "to create HWInferenceChild",
+             this));
+    return IPC_FAIL(this, "Failed to create HWInferenceChild");
+  }
+
+  MOZ_LOG(
+      sHWInferenceLog, LogLevel::Debug,
+      ("[%p] UtilityProcessChild::RecvStartHWInferenceService - Calling Bind",
+       this));
+  mHWInferenceInstance->Bind(std::move(aEndpoint));
+  MOZ_LOG(sHWInferenceLog, LogLevel::Debug,
+          ("[%p] UtilityProcessChild::RecvStartHWInferenceService - Bind "
+           "completed successfully",
+           this));
+  return IPC_OK();
+}
+
 #if defined(XP_WIN)
 mozilla::ipc::IPCResult UtilityProcessChild::RecvStartWindowsUtilsService(
     Endpoint<dom::PWindowsUtilsChild>&& aEndpoint) {

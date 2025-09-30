@@ -911,6 +911,7 @@ enum WebIDLUtilityActorName {
   "jSOracle",
   "windowsUtils",
   "windowsFileDialog",
+  "hwInference",
 };
 
 dictionary UtilityActorsDictionary {

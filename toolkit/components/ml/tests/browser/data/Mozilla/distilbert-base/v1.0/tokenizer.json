@@ -1,0 +1,6 @@
+{
+  "tokenizer_name": "distilbert-tokenizer",
+  "vocab_size": 30522,
+  "model_max_length": 512,
+  "test_data": true
+}

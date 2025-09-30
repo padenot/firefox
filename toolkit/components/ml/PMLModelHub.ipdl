@@ -1,0 +1,72 @@
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+include IPCBlob;
+
+namespace mozilla {
+namespace ml {
+
+// Represents the result of a model availability check
+struct ModelAvailabilityResult {
+  bool available;
+  nsCString error;
+};
+
+// Represents progress information during model download
+struct ModelDownloadProgress {
+  int32_t progress;
+  int64_t currentLoaded;
+  int64_t totalLoaded;
+  int64_t total;
+};
+
+// Represents the result of a model download operation
+struct ModelDownloadResult {
+  bool success;
+  nsCString sessionId;
+  nsCString error;
+  nsCString[] filePaths;
+};
+
+// Represents the result of a model blob request
+struct ModelBlobResult {
+  bool success;
+  nsCString error;
+  IPCBlob? blob;
+};
+
+// Protocol for ModelHub operations between utility process and parent
+// The utility process acts as parent in this protocol, making calls to the main process
+[ChildProc=Parent]
+protocol PMLModelHub
+{
+parent:
+  // Check if a model is available (either cached or downloadable)
+  async IsModelAvailable(nsCString model, nsCString revision, nsCString filename)
+    returns (ModelAvailabilityResult result);
+
+  // Start downloading a model
+  async StartModelDownload(nsCString taskName, nsCString model, nsCString revision,
+                          nsCString[] files)
+    returns (nsCString sessionId);
+
+  // Get the local file path for a downloaded model file
+  async GetModelFilePath(nsCString model, nsCString revision, nsCString file)
+    returns (nsCString filePath);
+
+  // Get a blob for a downloaded model file
+  async GetModelBlob(nsCString model, nsCString revision, nsCString file)
+    returns (ModelBlobResult result);
+
+child:
+  // Progress updates during model download (sent from parent to utility)
+  async OnModelDownloadProgress(nsCString sessionId, ModelDownloadProgress progress);
+
+  // Download completion notification (sent from parent to utility)
+  async OnModelDownloadComplete(nsCString sessionId, ModelDownloadResult result);
+};
+
+} // namespace ml
+} // namespace mozilla

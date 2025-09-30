@@ -1,6 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
 /**
@@ -26,7 +27,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 ChromeUtils.defineLazyGetter(lazy, "console", () => {
   return console.createInstance({
-    maxLogLevelPref: "browser.ml.logLevel",
+    maxLogLevel: "Debug",
     prefix: "GeckoMLModelHub",
   });
 });
@@ -355,8 +356,8 @@ class IndexedDBCache {
   } = {}) {
     const principal = DEFAULT_PRINCIPAL_ORIGIN
       ? Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-          DEFAULT_PRINCIPAL_ORIGIN
-        )
+        DEFAULT_PRINCIPAL_ORIGIN
+      )
       : Services.scriptSecurityManager.getSystemPrincipal();
 
     if (reset) {
@@ -920,8 +921,8 @@ class IndexedDBCache {
     try {
       const principal = origin
         ? Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-            origin
-          )
+          origin
+        )
         : Services.scriptSecurityManager.getSystemPrincipal();
       Services.qms.getUsageForPrincipal(principal, request => {
         if (request.resultCode == Cr.NS_OK) {
@@ -1371,6 +1372,7 @@ export class ModelHub {
   } = {}) {
     this.rootUrl = rootUrl;
     this.cache = null;
+    lazy.console.trace("ICI");
 
     // Ensures the URL template is well-formed and does not contain any invalid characters.
     const pattern = /^(?:\{\w+\}|\w+)(?:\/(?:\{\w+\}|\w+))*$/;
@@ -1688,6 +1690,8 @@ export class ModelHub {
     modelHubRootUrl,
     modelHubUrlTemplate,
     progressCallback,
+    featureId,
+    sessionId,
   }) {
     const [filePath, headers] = await this.getModelDataAsFile({
       engineId,
@@ -1698,6 +1702,8 @@ export class ModelHub {
       modelHubRootUrl,
       modelHubUrlTemplate,
       progressCallback,
+      featureId: featureId || engineId,
+      sessionId: sessionId || `${engineId}-${Date.now()}`,
     });
 
     const fileObject = await (
@@ -2191,5 +2197,54 @@ export class ModelHub {
     await this.#initCache();
     const owner = ModelOwner.fromModel(model);
     return owner.getIcon();
+  }
+
+  /**
+   * Check if a model is available by attempting to verify a config file exists.
+   * This does a lightweight HEAD request to check model availability without downloading.
+   *
+   * @param {string} model - The model name (organization/name)
+   * @param {string} revision - The model revision
+   * @param {object} options - Additional options
+   * @param {string} [options.file="config.json"] - The file to check for availability
+   * @param {string} [options.modelHubRootUrl] - Root URL of the model hub
+   * @param {string} [options.modelHubUrlTemplate] - URL template of the model hub
+   * @param {number} [options.timeout=3000] - Timeout for the availability check
+   * @returns {Promise<boolean>} True if the model appears to be available
+   */
+  async isModelAvailable(
+    model,
+    revision,
+    {
+      file = "config.json",
+      modelHubRootUrl,
+      modelHubUrlTemplate,
+    } = {}
+  ) {
+    lazy.console.debug(`ModelHub: Checking availability for ${model}@${revision}`);
+
+    // First validate the input format
+    const checkError = ModelHub.checkInput(model, revision, file);
+    if (checkError) {
+      lazy.console.debug(`ModelHub: Invalid input for ${model}@${revision}: ${checkError.message}`);
+      return false;
+    }
+
+    // Build the URL for the file to check
+    const url = this.#fileUrl({
+      model,
+      revision,
+      file,
+      modelHubRootUrl: modelHubRootUrl || this.rootUrl,
+      modelHubUrlTemplate: modelHubUrlTemplate || this.urlTemplate,
+    });
+
+    lazy.console.debug(`ModelHub: Checking URL ${url} for availability`);
+
+    const response = await this.#fetch(url, { method: 'HEAD' });
+    lazy.console.log(JSON.stringify(response), null, 2);
+    const available = response.ok;
+    lazy.console.debug(`ModelHub: Chrome URL ${url} available: ${available}`);
+    return available;
   }
 }

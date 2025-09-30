@@ -457,6 +457,56 @@ export class MultiProgressAggregator {
  * @throws {Error} If the response status is not in the 200–299 range.
  */
 export async function fetchUrl(url, options) {
+  // Check if we're in ASR test mode and should mock the response
+  // Only check if we're in a context where Services is available (not in workers)
+  let asrTestModeEnabled = false;
+  try {
+    asrTestModeEnabled = Services.prefs.getBoolPref("browser.ml.asr.testMode.enabled", false);
+  } catch (e) {
+    // Services might not be available in workers
+  }
+
+  if (asrTestModeEnabled) {
+    // Check if this is an ASR test model URL
+    if (url.includes("asr-test/whisper")) {
+      console.info(`MLUtils: ASR test mode - mocking fetch for ${url}`);
+
+      // For HEAD requests (used for availability checks), return success
+      if (options && options.method === 'HEAD') {
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: new Headers({
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': '1000000' // Mock size
+          })
+        };
+      }
+
+      // For GET requests, return mock data
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers({
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': '1000000'
+        }),
+        body: new ReadableStream({
+          start(controller) {
+            // Return some mock binary data
+            controller.enqueue(new Uint8Array([1, 2, 3, 4, 5]));
+            controller.close();
+          }
+        }),
+        arrayBuffer: async () => new ArrayBuffer(5),
+        json: async () => ({ test: true }),
+        text: async () => "test data"
+      };
+    }
+  }
+
   const response = await fetch(url, options);
 
   if (!response.ok) {

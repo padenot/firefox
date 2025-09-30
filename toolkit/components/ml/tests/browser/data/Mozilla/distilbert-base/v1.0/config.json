@@ -1,0 +1,6 @@
+{
+  "model_name": "distilbert-base",
+  "version": "v1.0",
+  "description": "Test model for XPCOM service testing",
+  "files": ["model.onnx", "tokenizer.json", "config.json"]
+}

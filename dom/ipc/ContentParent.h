@@ -1112,6 +1112,9 @@ class ContentParent final : public PContentParent,
   mozilla::ipc::IPCResult RecvCreateAudioIPCConnection(
       CreateAudioIPCConnectionResolver&& aResolver);
 
+  mozilla::ipc::IPCResult RecvRequestHWInferenceConnection(
+      RequestHWInferenceConnectionResolver&& aResolver);
+
   already_AddRefed<extensions::PExtensionsParent> AllocPExtensionsParent();
 
 #ifdef MOZ_WEBRTC

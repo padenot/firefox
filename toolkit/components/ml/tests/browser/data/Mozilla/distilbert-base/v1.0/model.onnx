@@ -1,0 +1,8 @@
+// Mock ONNX model file for testing
+// This is not a real ONNX model, just test data
+const mockModel = {
+  name: "distilbert-base-test",
+  version: "v1.0",
+  format: "onnx",
+  size: "mock-size"
+};

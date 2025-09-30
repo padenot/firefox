@@ -1,0 +1,52 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#ifndef mozilla_ipc_HWInferenceManagerParent_h
+#define mozilla_ipc_HWInferenceManagerParent_h
+
+#include "mozilla/ipc/PHWInferenceManagerParent.h"
+#include "mozilla/dom/ipc/IdType.h"
+#include "mozilla/MozPromise.h"
+#include "nsClassHashtable.h"
+#include "nsTHashMap.h"
+#include "nsTArray.h"
+#include "nsRefPtrHashtable.h"
+
+namespace mozilla {
+namespace ipc {
+
+}
+namespace ipc {
+class SpeechRecognitionParent;
+
+class HWInferenceManagerParent final : public PHWInferenceManagerParent {
+ public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerParent, override);
+
+  static bool CreateForContent(Endpoint<PHWInferenceManagerParent>&& aEndpoint,
+                               dom::ContentParentId aContentId);
+
+  // PSpeechRecognition management
+  PSpeechRecognitionParent* AllocPSpeechRecognitionParent(
+      const uint64_t& aSessionId);
+  bool DeallocPSpeechRecognitionParent(PSpeechRecognitionParent* aActor);
+
+  void ActorDestroy(ActorDestroyReason aReason) override;
+
+ private:
+  explicit HWInferenceManagerParent(dom::ContentParentId aContentId);
+  ~HWInferenceManagerParent() = default;
+
+  const dom::ContentParentId mContentId;
+
+  // Map of session IDs to speech recognition actors
+  nsRefPtrHashtable<nsUint64HashKey, SpeechRecognitionParent> mSpeechSessions;
+
+};
+
+}  // namespace ipc
+}  // namespace mozilla
+
+#endif  // mozilla_ipc_HWInferenceManagerParent_h

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech Recognition Available Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 15px 32px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Speech Recognition Available Test</h1>
+        <p>This page tests the <code>SpeechRecognition.available()</code> method to verify that the HWInference utility process starts correctly.</p>
+        
+        <button id="testBtn" onclick="testAvailable()">Test SpeechRecognition.available()</button>
+        
+        <div id="result"></div>
+        
+        <h3>Expected behavior:</h3>
+        <ul>
+            <li>The utility process should start in the background</li>
+            <li>You should see printf output in the Firefox console/logs showing:
+                <ul>
+                    <li>"HWInferenceTest: Starting utility process test"</li>
+                    <li>"HWInferenceParent: Constructor called - parent actor created"</li>
+                    <li>"HWInferenceParent: Bind called - IPC connection established"</li>
+                    <li>"HWInferenceTest: HWInference utility process started successfully"</li>
+                    <li>"HWInferenceTest: Making test call to RunInference"</li>
+                    <li>"HWInferenceChild: RunInference called with model: test-model, input: test-input"</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+
+    <script>
+        function updateResult(message, type) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = `result ${type}`;
+            resultDiv.innerHTML = message;
+        }
+
+        async function testAvailable() {
+            const btn = document.getElementById('testBtn');
+            btn.disabled = true;
+            btn.textContent = 'Testing...';
+            
+            updateResult('Calling SpeechRecognition.available()...', 'info');
+            
+            try {
+                // Check if SpeechRecognition is available
+                if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
+                    throw new Error('SpeechRecognition not supported in this browser');
+                }
+                
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                
+                // Check if the available method exists
+                if (typeof SpeechRecognition.available !== 'function') {
+                    throw new Error('SpeechRecognition.available() method not found - this is expected if the patch is not applied');
+                }
+                
+                console.log('Calling SpeechRecognition.available()');
+                const result = await SpeechRecognition.available();
+                
+                updateResult(
+                    `✅ SUCCESS: SpeechRecognition.available() returned: ${result}<br><br>` +
+                    `Check the Firefox console/terminal for printf output from the utility process.`, 
+                    'success'
+                );
+                
+            } catch (error) {
+                console.error('Error:', error);
+                updateResult(
+                    `❌ ERROR: ${error.message}<br><br>` +
+                    `This might be expected if:<br>` +
+                    `• The Web Speech API changes haven't been applied<br>` +
+                    `• The utility process failed to start<br>` +
+                    `• Check the browser console for more details`, 
+                    'error'
+                );
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test SpeechRecognition.available()';
+            }
+        }
+
+        // Log some debug info on page load
+        window.addEventListener('load', function() {
+            console.log('Speech Recognition Test Page Loaded');
+            console.log('SpeechRecognition available:', 'SpeechRecognition' in window);
+            console.log('webkitSpeechRecognition available:', 'webkitSpeechRecognition' in window);
+            
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (SpeechRecognition) {
+                console.log('SpeechRecognition.available method exists:', typeof SpeechRecognition.available === 'function');
+            }
+        });
+    </script>
+</body>
+</html>
