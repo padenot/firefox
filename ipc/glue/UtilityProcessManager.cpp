@@ -527,8 +527,8 @@ UtilityProcessManager::StartHWInference() {
   using RetPromise = HWInferencePromise;
   RefPtr<HWInferenceParent> hwip = HWInferenceParent::GetSingleton();
   MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
-  LOGD("[%p] Starting HWInference utility process with GENERIC_UTILITY sandboxing", this);
-  return StartUtility(hwip, SandboxingKind::GENERIC_UTILITY)
+  LOGD("[%p] Starting HWInference utility process with HW_INFERENCE sandboxing", this);
+  return StartUtility(hwip, SandboxingKind::HW_INFERENCE)
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
           [self, hwip]() {
@@ -544,7 +544,7 @@ UtilityProcessManager::StartHWInference() {
             return RetPromise::CreateAndResolve(std::move(hwip), __func__);
           },
           [](LaunchError&& aError) {
-            LOGD("StartHWInference: Failed to start utility process: %s", 
+            LOGD("StartHWInference: Failed to start utility process: %s",
                  aError.FunctionName().get());
             MOZ_ASSERT_UNREACHABLE("PHWInference: failure when starting actor");
             return RetPromise::CreateAndReject(std::move(aError), __func__);
@@ -727,7 +727,7 @@ UtilityProcessManager::StartContentHWInferenceManager(
       GetMainThreadSerialEventTarget(), __func__,
       [aOtherProcess, aChildId](RefPtr<HWInferenceParent> hwip) {
         RefPtr<UtilityProcessParent> parent =
-            GetSingleton()->GetProcessParent(SandboxingKind::GENERIC_UTILITY);
+            GetSingleton()->GetProcessParent(SandboxingKind::HW_INFERENCE);
 
         if (!parent) {
           return ContentHWInferencePromise::CreateAndReject(
