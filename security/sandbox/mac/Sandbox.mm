@@ -759,8 +759,6 @@ bool GetUtilitySandboxParamsFromArgs(int aArgc, char** aArgv,
       return false;
     }
     aInfo.utilityKind = (ipc::SandboxingKind)*sandboxingKind;
-    printf("\n\nSandboxing kind for %d is %d\nlldb -p %d\n\n", getpid(), (int)aInfo.utilityKind, getpid());
-    sleep(10);
   }
 
   if (!foundAppPath) {
