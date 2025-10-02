@@ -14,6 +14,7 @@
 
 namespace mozilla::ipc {
 
+// HWInference utility process side
 class HWInferenceChild final : public PHWInferenceChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceChild, override);
@@ -43,7 +44,7 @@ class HWInferenceChild final : public PHWInferenceChild {
 
  private:
   friend PHWInferenceChild;
-  ~HWInferenceChild();
+  ~HWInferenceChild() = default;
 };
 
 }  // namespace mozilla::ipc

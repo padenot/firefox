@@ -5,74 +5,84 @@
 
 #include "HWInferenceChild.h"
 #include "HWInferenceManagerParent.h"
-#include "mozilla/MozPromise.h"
-#include "mozilla/ipc/UtilityProcessChild.h"
-#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/Logging.h"
 #include "nsDebugImpl.h"
 
 namespace mozilla::ipc {
 
 LazyLogModule gHWInferenceLog("HWInference");
-#define HWINF_LOG(...) MOZ_LOG(gHWInferenceLog, LogLevel::Debug, (__VA_ARGS__))
-
-HWInferenceChild::~HWInferenceChild() = default;
+#define LOGD(fmt, ...) \
+  MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) \
+  MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
 
 HWInferenceChild::HWInferenceChild() {
   nsDebugImpl::SetMultiprocessMode("HWInference");
-  HWINF_LOG(
-      "[%p] HWInferenceChild: Constructor called - utility process starting",
-      this);
 }
 
 void HWInferenceChild::Bind(Endpoint<PHWInferenceChild>&& aEndpoint) {
-  HWINF_LOG("[%p] HWInferenceChild: Bind called - IPC connection established",
-            this);
   DebugOnly<bool> ok = aEndpoint.Bind(this);
-  MOZ_ASSERT(ok);
+  MOZ_ASSERT(ok, "HWInferenceChild::Bind: error");
 }
 
 void HWInferenceChild::Shutdown() { PHWInferenceChild::Close(); }
 
-mozilla::ipc::IPCResult HWInferenceChild::RecvNewContentHWInferenceManager(
+IPCResult HWInferenceChild::RecvNewContentHWInferenceManager(
     Endpoint<PHWInferenceManagerParent>&& aEndpoint,
     const dom::ContentParentId& aContentId) {
-  HWINF_LOG(
-      "[%p] HWInferenceChild::RecvNewContentHWInferenceManager - [UTILITY] STEP 2: Received connection request from content %d",
-      this, static_cast<int>(aContentId));
+  LOGD("[{} - {}] Received connection request from content {}", fmt::ptr(this),
+       __func__, static_cast<uint64_t>(aContentId));
 
   if (!HWInferenceManagerParent::CreateForContent(std::move(aEndpoint),
                                                   aContentId)) {
-    HWINF_LOG("[%p] HWInferenceChild::RecvNewContentHWInferenceManager - [UTILITY] ERROR: Failed to create HWInferenceManagerParent", this);
+    LOGE(
+        "[{} - {}]"
+        "Error: Failed to create HWInferenceManagerParent, content id: {}",
+        fmt::ptr(this), __func__, static_cast<uint64_t>(aContentId));
     return IPC_FAIL_NO_REASON(this);
   }
 
-  HWINF_LOG("[%p] HWInferenceChild::RecvNewContentHWInferenceManager - [UTILITY] STEP 2.1: Successfully created HWInferenceManagerParent for content", this);
+  LOGD("[{} - {}] Successfully created HWInferenceManagerParent for content {}",
+       fmt::ptr(this), __func__, static_cast<uint64_t>(aContentId));
   return IPC_OK();
 }
 
 RefPtr<HWInferenceChild::IsModelAvailablePromise>
-HWInferenceChild::SendIsModelAvailable(const nsCString& aModel, const nsCString& aRevision, const nsCString& aFilename) {
-  HWINF_LOG("[%p] HWInferenceChild::SendIsModelAvailable - [UTILITY] Sending model availability request to parent process: model=%s revision=%s",
-            this, aModel.get(), aRevision.get());
+HWInferenceChild::SendIsModelAvailable(const nsCString& aModel,
+                                       const nsCString& aRevision,
+                                       const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model availability request to parent process: "
+      "model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aModel.get(), aRevision.get(), aFilename.get());
 
   return PHWInferenceChild::SendIsModelAvailable(aModel, aRevision, aFilename);
 }
 
 RefPtr<HWInferenceChild::InstallModelPromise>
-HWInferenceChild::SendInstallModel(const nsCString& aModel, const nsCString& aRevision, const nsCString& aFilename) {
-  HWINF_LOG("[%p] HWInferenceChild::SendInstallModel - [UTILITY] Sending model installation request to parent process: model=%s revision=%s filename=%s",
-            this, aModel.get(), aRevision.get(), aFilename.get());
+HWInferenceChild::SendInstallModel(const nsCString& aModel,
+                                   const nsCString& aRevision,
+                                   const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model installation request to parent process: "
+      "model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aModel.get(), aRevision.get(), aFilename.get());
 
   return PHWInferenceChild::SendInstallModel(aModel, aRevision, aFilename);
 }
 
 RefPtr<HWInferenceChild::GetModelBlobPromise>
-HWInferenceChild::SendGetModelBlob(const nsCString& aModel, const nsCString& aRevision, const nsCString& aFilename) {
-  HWINF_LOG("[%p] HWInferenceChild::SendGetModelBlob - [UTILITY] Sending model blob request to parent process: model=%s revision=%s filename=%s",
-            this, aModel.get(), aRevision.get(), aFilename.get());
+HWInferenceChild::SendGetModelBlob(const nsCString& aModel,
+                                   const nsCString& aRevision,
+                                   const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model blob request to parent process: model={} "
+      "revision={} filename={}",
+      fmt::ptr(this), __func__, aModel.get(), aRevision.get(), aFilename.get());
 
   return PHWInferenceChild::SendGetModelBlob(aModel, aRevision, aFilename);
 }
 
 }  // namespace mozilla::ipc
+
+#undef LOG
