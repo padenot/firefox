@@ -8,17 +8,11 @@
 
 #include "mozilla/ipc/PHWInferenceManagerParent.h"
 #include "mozilla/dom/ipc/IdType.h"
-#include "mozilla/MozPromise.h"
-#include "nsClassHashtable.h"
-#include "nsTHashMap.h"
-#include "nsTArray.h"
 #include "nsRefPtrHashtable.h"
 
-namespace mozilla {
-namespace ipc {
 
-}
-namespace ipc {
+namespace mozilla::ipc {
+
 class SpeechRecognitionParent;
 
 class HWInferenceManagerParent final : public PHWInferenceManagerParent {
@@ -46,7 +40,7 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
 
 };
 
-}  // namespace ipc
-}  // namespace mozilla
+} // namespace mozilla::ipc
+
 
 #endif  // mozilla_ipc_HWInferenceManagerParent_h

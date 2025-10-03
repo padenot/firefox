@@ -5,27 +5,20 @@
 
 #include "HWInferenceManagerParent.h"
 #include "mozilla/ipc/SpeechRecognitionParent.h"
-#include "mozilla/ipc/UtilityProcessChild.h"
-#include "HWInferenceChild.h"
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
-#include "mozilla/MozPromise.h"
-#include "nsThreadUtils.h"
-#include "prtime.h"
 
-namespace mozilla {
-namespace ipc {
+
+namespace mozilla::ipc {
 
 extern LazyLogModule gHWInferenceLog;
 #define LOGD(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
-#define LOGV(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Verbose, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
 
 HWInferenceManagerParent::HWInferenceManagerParent(
     dom::ContentParentId aContentId)
     : mContentId(aContentId) {
-  LOGD("[{}] HWInferenceManagerParent::HWInferenceManagerParent for content {}",
-       (void*)this, static_cast<int>(mContentId));
+  LOGD("{} for content {}", __func__, static_cast<int>(mContentId));
 }
 
 /* static */
@@ -93,5 +86,8 @@ bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
 }
 
 
-}  // namespace ipc
-}  // namespace mozilla
+} // namespace mozilla::ipc
+
+
+#undef LOGD
+#undef LOGE

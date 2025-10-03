@@ -6,32 +6,34 @@
 #ifndef __include_ipc_glue_HWInferenceParent_h_
 #define __include_ipc_glue_HWInferenceParent_h_
 
-#include "mozilla/ProcInfo.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/ipc/PHWInferenceParent.h"
 #include "mozilla/ipc/UtilityMediaService.h"
-#include "mozilla/dom/ipc/IdType.h"
 
 namespace mozilla::ipc {
 
+// HWInference parent process side
 class HWInferenceParent final : public PHWInferenceParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceParent, override);
 
-  explicit HWInferenceParent();
+  explicit HWInferenceParent() = default;
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
-  void Bind(Endpoint<PHWInferenceParent>&& aEndpoint);
-
   // PHWInferenceParent implementation
+  // This implements the `available` method of the SpeechRecognition object.
   mozilla::ipc::IPCResult RecvIsModelAvailable(
       nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
       IsModelAvailableResolver&& aResolver);
+  // This implements the `install` method of the SpeechRecognition object, and
+  // initiates the (large) download of a speech recognition model.
   mozilla::ipc::IPCResult RecvInstallModel(
       nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
       InstallModelResolver&& aResolver);
+  // This allows receiving a model file file descriptor from the parent process,
+  // to use in the HWInference utility process
   mozilla::ipc::IPCResult RecvGetModelBlob(
       nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
       GetModelBlobResolver&& aResolver);
@@ -45,7 +47,7 @@ class HWInferenceParent final : public PHWInferenceParent {
 
  private:
   friend PHWInferenceParent;
-  ~HWInferenceParent();
+  ~HWInferenceParent() = default;
 };
 
 }  // namespace mozilla::ipc

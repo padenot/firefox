@@ -9,22 +9,19 @@
 #include "mozilla/ipc/PHWInferenceManagerChild.h"
 #include "nsRefPtrHashtable.h"
 
-namespace mozilla {
-namespace ipc {
+namespace mozilla::ipc {
 
 class SpeechRecognitionChild;
 
+// Content process side
 class HWInferenceManagerChild final : public PHWInferenceManagerChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerChild, override);
 
-  HWInferenceManagerChild();
+  HWInferenceManagerChild() = default;
 
-  // Static method to open and bind the endpoint properly
   static void OpenForProcess(Endpoint<PHWInferenceManagerChild>&& aEndpoint);
 
-  // Static method to get the singleton instance (may return null if not yet
-  // opened)
   static RefPtr<HWInferenceManagerChild> GetSingleton();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -47,7 +44,7 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
   nsRefPtrHashtable<nsUint64HashKey, SpeechRecognitionChild> mSpeechSessions;
 };
 
-}  // namespace ipc
-}  // namespace mozilla
+} // namespace mozilla::ipc
+
 
 #endif  // mozilla_ipc_HWInferenceManagerChild_h

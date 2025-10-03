@@ -8,49 +8,40 @@
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
 
-namespace mozilla {
-namespace ipc {
+namespace mozilla::ipc {
 
 extern LazyLogModule gHWInferenceLog;
-#define LOGD(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
-#define LOGV(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Verbose, fmt, ##__VA_ARGS__)
-#define LOGE(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
+#define LOGD(fmt, ...) \
+  MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) \
+  MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
 
 MOZ_RUNINIT /* static */ RefPtr<HWInferenceManagerChild>
     HWInferenceManagerChild::sSingleton;
 
-HWInferenceManagerChild::HWInferenceManagerChild() {
-  LOGD("[{}] HWInferenceManagerChild::HWInferenceManagerChild", (void*)this);
-}
-
 /* static */
 void HWInferenceManagerChild::OpenForProcess(
     Endpoint<PHWInferenceManagerChild>&& aEndpoint) {
-  LOGD("HWInferenceManagerChild::OpenForProcess - [CONTENT] Opening connection to utility process");
+  LOGD("{} - Opening connection to utility process", __func__);
 
-  // Check if we already have a singleton that can send
   if (sSingleton && sSingleton->CanSend()) {
-    LOGD(
-        "HWInferenceManagerChild::OpenForProcess - [CONTENT] Already have active singleton, reusing");
+    LOGD("{} - Already have active singleton, reusing", __func__);
     return;
   }
 
-  // Clear any old singleton
   sSingleton = nullptr;
 
-  // Create new manager child and bind endpoint
   if (aEndpoint.IsValid()) {
-    LOGD("HWInferenceManagerChild::OpenForProcess - [CONTENT] Creating new manager and binding endpoint");
+    LOGD("Creating new manager and binding endpoint");
     RefPtr<HWInferenceManagerChild> manager = new HWInferenceManagerChild();
     if (aEndpoint.Bind(manager)) {
       sSingleton = manager;
-      LOGD(
-          "HWInferenceManagerChild::OpenForProcess - [CONTENT] Successfully bound endpoint, connection ready");
+      LOGD("Successfully bound endpoint, connection ready", __func__);
     } else {
-      LOGE("HWInferenceManagerChild::OpenForProcess - [CONTENT] ERROR: Failed to bind endpoint");
+      LOGE("{} - ERROR: Failed to bind endpoint", __func__);
     }
   } else {
-    LOGE("HWInferenceManagerChild::OpenForProcess - [CONTENT] ERROR: Invalid endpoint received");
+    LOGE("{} - ERROR: Invalid endpoint received", __func__);
   }
 }
 
@@ -60,34 +51,23 @@ RefPtr<HWInferenceManagerChild> HWInferenceManagerChild::GetSingleton() {
 }
 
 void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
-  LOGD("[{}] HWInferenceManagerChild::ActorDestroy reason={}", (void*)this,
-       static_cast<int>(aReason));
+  LOGD("{} reason={}, clearing singleton", __func__, static_cast<int>(aReason));
 
-  // Clear singleton when destroyed
-  if (sSingleton == this) {
-    LOGD("Clearing singleton due to ActorDestroy");
-    sSingleton = nullptr;
-  }
-
-  // Clear any active speech sessions
   mSpeechSessions.Clear();
+  sSingleton = nullptr;
 }
 
-PSpeechRecognitionChild*
-HWInferenceManagerChild::AllocPSpeechRecognitionChild(
+PSpeechRecognitionChild* HWInferenceManagerChild::AllocPSpeechRecognitionChild(
     const uint64_t& aSessionId) {
-  LOGD("[{}] HWInferenceManagerChild::AllocPSpeechRecognitionChild session={}",
-       (void*)this, aSessionId);
-
   RefPtr<SpeechRecognitionChild> actor =
       new SpeechRecognitionChild(aSessionId, this);
 
-  // Store the actor in our session map
   mSpeechSessions.InsertOrUpdate(aSessionId, actor);
-  LOGD("[{}] Created and stored SpeechRecognitionChild actor={:p} for session={}, total sessions={}",
-       (void*)this, (void*)actor.get(), aSessionId, mSpeechSessions.Count());
+  LOGD(
+      "Created and stored SpeechRecognitionChild actor={:p} for session={}, "
+      "session count={}",
+      fmt::ptr(actor.get()), aSessionId, mSpeechSessions.Count());
 
-  // Return raw pointer - IPDL will manage the reference
   return actor.get();
 }
 
@@ -97,44 +77,40 @@ bool HWInferenceManagerChild::DeallocPSpeechRecognitionChild(
       static_cast<SpeechRecognitionChild*>(aActor);
   uint64_t sessionId = actor->GetSessionId();
 
-  LOGD("[{}] HWInferenceManagerChild::DeallocPSpeechRecognitionChild actor={:p} session={}",
-       (void*)this, (void*)aActor, sessionId);
-
-  // Remove from our session map
   bool removed = mSpeechSessions.Remove(sessionId);
-  LOGD("[{}] Removed session={} from map: %s, remaining sessions={}",
-       (void*)this, sessionId, removed ? "success" : "not found", mSpeechSessions.Count());
+  LOGD(
+      "Dealloc SpeechRecognitionChild actor={:p} for session={}, session "
+      "count={}: {}",
+      fmt::ptr(actor.get()), sessionId, mSpeechSessions.Count(),
+      removed ? "success" : "not found");
 
   return true;
 }
 
 RefPtr<SpeechRecognitionChild>
-HWInferenceManagerChild::CreateSpeechRecognitionSession(
-    uint64_t aSessionId) {
-  LOGD("[{}] HWInferenceManagerChild::CreateSpeechRecognitionSession session={}",
-       (void*)this, aSessionId);
+HWInferenceManagerChild::CreateSpeechRecognitionSession(uint64_t aSessionId) {
+  LOGD("{} session={}", __func__, aSessionId);
 
   if (!CanSend()) {
-    LOGE("[{}] HWInferenceManagerChild::CreateSpeechRecognitionSession - Cannot send for session={}",
-         (void*)this, aSessionId);
+    LOGE("{} - Cannot send for session={}", __func__, aSessionId);
     return nullptr;
   }
 
-  // Send the creation message and get back the actor
-  LOGD("[{}] Sending PSpeechRecognitionConstructor for session={}", (void*)this, aSessionId);
-  RefPtr<SpeechRecognitionChild> actor =
-      static_cast<SpeechRecognitionChild*>(SendPSpeechRecognitionConstructor(aSessionId));
+  RefPtr<SpeechRecognitionChild> actor = static_cast<SpeechRecognitionChild*>(
+      SendPSpeechRecognitionConstructor(aSessionId));
 
   if (actor) {
-    LOGD("[{}] Successfully created SpeechRecognitionChild actor={:p} for session={}",
-         (void*)this, (void*)actor.get(), aSessionId);
+    LOGD(
+        "Successfully created SpeechRecognitionChild actor={:p} for session={}",
+        fmt::ptr(actor.get()), aSessionId);
   } else {
-    LOGE("[{}] Failed to create SpeechRecognitionChild for session={}", (void*)this, aSessionId);
+    LOGE("Failed to create SpeechRecognitionChild for session={}", aSessionId);
   }
 
   return actor;
 }
 
+}  // namespace mozilla::ipc
 
-}  // namespace ipc
-}  // namespace mozilla
+#undef LOGD
+#undef LOGE

@@ -29,10 +29,6 @@ IPDL_SOURCES = [
 LOCAL_INCLUDES += [
     "/dom/ipc",
     "/ipc/glue",
-    "/toolkit/crashreporter",
-    "/toolkit/xre",
-    "/xpcom/base",
-    "/xpcom/threads",
 ]
 
 include("/ipc/chromium/chromium-config.mozbuild")
