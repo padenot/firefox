@@ -235,7 +235,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     size_t frames = resampledBuffer.Length();
 
     LOGV("Sending {}s of audio via IPC", frames / kTargetRate);
-    SendAudioDataViaIPC(mSessionId, std::move(resampledBuffer), kTargetRate);
+    SendAudioDataViaIPC(mSessionId, std::move(resampledBuffer));
   } else {
     LOGV("Not enough data in ringbuffer ({}s), retrying in a bit",
          secondsAvailable);
@@ -277,22 +277,20 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
         self->HandleRecognitionError(aError);
       });
 
-  // Initialize the session with the language
-  mSpeechRecognitionChild->SendInit(aLanguage);
+  // Initialize the session with the language and biasing phrases
+  mSpeechRecognitionChild->SendInit(aLanguage, mPhrases);
 }
 
 void SpeechRecognitionBackend::SendAudioDataViaIPC(uint64_t aSessionId,
-                                                   nsTArray<float>&& aAudioData,
-                                                   uint32_t aSampleRate) {
+                                                   nsTArray<float>&& aAudioData) {
   AssertOnResamplingThread();
 
   // Dispatch the actual IPC call to the IPC thread
   RefPtr<SpeechRecognitionBackend> self = this;
-  OnIPCThread([self, audioData = std::move(aAudioData), aSampleRate]() mutable {
+  OnIPCThread([self, audioData = std::move(aAudioData)]() mutable {
     if (self->mSpeechRecognitionChild) {
       size_t sampleCount = audioData.Length();
-      self->mSpeechRecognitionChild->SendProcessAudioData(std::move(audioData),
-                                                          aSampleRate);
+      self->mSpeechRecognitionChild->SendProcessAudioData(std::move(audioData));
       LOGV("Sent {} samples to HWInference", sampleCount);
     } else {
       LOGE("SpeechRecognitionChild not available, dropping {} samples",

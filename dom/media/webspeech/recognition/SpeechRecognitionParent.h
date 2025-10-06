@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "WavDumper.h"
+#include "mozilla/FontPropertyTypes.h"
 #include "mozilla/SPSCQueue.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/ipc/PSpeechRecognitionParent.h"
@@ -44,9 +45,9 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   mozilla::ipc::IPCResult RecvInstallModels(
       const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver);
   mozilla::ipc::IPCResult RecvInit(const nsCString& aLanguage,
+                                   const nsTArray<nsString>& aPhrases,
                                    InitResolver&& aResolver);
-  mozilla::ipc::IPCResult RecvProcessAudioData(nsTArray<float>&& aAudioData,
-                                               const uint32_t& aSampleRate);
+  mozilla::ipc::IPCResult RecvProcessAudioData(nsTArray<float>&& aAudioData);
   mozilla::ipc::IPCResult RecvStop();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -76,6 +77,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
   uint64_t mSessionId;
   nsCString mLanguage;
+  // Contextual biasing phrases
+  nsTArray<nsString> mPhrases;
   // Stream allowing access to model data
   nsCOMPtr<nsIInputStream> mModelStream;
   bool mIsActive;

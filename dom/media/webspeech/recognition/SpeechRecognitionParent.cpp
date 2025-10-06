@@ -26,6 +26,7 @@
 #include "nsGkAtoms.h"
 #include "nsIFileStreams.h"
 #include "nsNetUtil.h"
+#include "nsString.h"
 #include "prio.h"
 #include "private/pprio.h"
 
@@ -371,10 +372,12 @@ SpeechRecognitionParent::~SpeechRecognitionParent() {
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
-    const nsCString& aLanguage, InitResolver&& aResolver) {
+    const nsCString& aLanguage, const nsTArray<nsString>& aPhrases,
+    InitResolver&& aResolver) {
   LOGD("{} (id={}) language='{}'", __func__, mSessionId, aLanguage.get());
 
   mLanguage = aLanguage;
+  mPhrases = aPhrases.Clone();
   mIsActive = true;
 
   if (!mThreadRunning.load()) {
@@ -392,10 +395,8 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvProcessAudioData(
-    nsTArray<float>&& aAudioData, const uint32_t& aSampleRate) {
-  LOGD("[SRParent:{}] RecvProcessAudioData called with {} samples at {} Hz",
-       static_cast<unsigned long>(mSessionId), aAudioData.Length(),
-       aSampleRate);
+    nsTArray<float>&& aAudioData) {
+  LOGV("{} (id={}) {} samples", __func__, mSessionId, aAudioData.Length());
 
   if (!mIsActive) {
     LOGD(
@@ -517,18 +518,19 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
       struct whisper_context_params cparams =
           mLib->whisper_context_default_params();
 
-      #ifdef XP_MACOSX
+#ifdef XP_MACOSX
       cparams.use_gpu = true;
-      #else
+#else
       cparams.use_gpu = false;
-      #endif
+#endif
 
-      mWhisperCtx = mLib->whisper_init_from_file_handle_with_params(
-          mModelFile, cparams);
+      mWhisperCtx =
+          mLib->whisper_init_from_file_handle_with_params(mModelFile, cparams);
 
       if (!mWhisperCtx) {
         LOGE(
-            "{} (id={}) ERROR whisper_init_from_file_handle_with_params returned nullptr",
+            "{} (id={}) ERROR whisper_init_from_file_handle_with_params "
+            "returned nullptr",
             __func__, mSessionId);
         fclose(mModelFile);
         mModelFile = nullptr;
@@ -582,10 +584,12 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
         wparams.language = mLanguage.get();
         wparams.n_threads = mNumThreads;
         wparams.audio_ctx = 0;
-
-        LOGD("[SRParent:{}] Running Whisper inference on {} samples",
-             static_cast<unsigned long>(mSessionId),
-             audioForRecognition.size());
+        nsCString prompt;
+        for (auto& phrase : mPhrases) {
+          prompt.Append(NS_ConvertUTF16toUTF8(phrase));
+          prompt.AppendLiteral(". ");
+        }
+        wparams.initial_prompt = prompt.get();
 
         if (mLib->whisper_full(mWhisperCtx, wparams, audioForRecognition.data(),
                                audioForRecognition.size()) == 0) {
@@ -601,9 +605,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
               bool isFinal =
                   (i == n_segments - 1);  // Mark last segment as final
 
-              LOGD("[SRParent:{}] Whisper result: '{}' (final={})",
-                   static_cast<unsigned long>(mSessionId), transcript.get(),
-                   isFinal ? "true" : "false");
+              LOGV("{} recognition result: '{}' (final={})",
+                   __func__, mSessionId, transcript.get(), isFinal ? "true" : "false");
 
               // Send result via IPC (dispatch to main thread)
               NS_DispatchToMainThread(NS_NewRunnableFunction(

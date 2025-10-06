@@ -1372,7 +1372,6 @@ export class ModelHub {
   } = {}) {
     this.rootUrl = rootUrl;
     this.cache = null;
-    lazy.console.trace("ICI");
 
     // Ensures the URL template is well-formed and does not contain any invalid characters.
     const pattern = /^(?:\{\w+\}|\w+)(?:\/(?:\{\w+\}|\w+))*$/;
@@ -2221,16 +2220,13 @@ export class ModelHub {
       modelHubUrlTemplate,
     } = {}
   ) {
-    lazy.console.debug(`ModelHub: Checking availability for ${model}@${revision}`);
-
     // First validate the input format
     const checkError = ModelHub.checkInput(model, revision, file);
     if (checkError) {
-      lazy.console.debug(`ModelHub: Invalid input for ${model}@${revision}: ${checkError.message}`);
+      lazy.console.error(`ModelHub: Invalid input for ${model}@${revision}: ${checkError.message}`);
       return false;
     }
 
-    // Build the URL for the file to check
     const url = this.#fileUrl({
       model,
       revision,
@@ -2239,12 +2235,8 @@ export class ModelHub {
       modelHubUrlTemplate: modelHubUrlTemplate || this.urlTemplate,
     });
 
-    lazy.console.debug(`ModelHub: Checking URL ${url} for availability`);
-
     const response = await this.#fetch(url, { method: 'HEAD' });
-    lazy.console.log(JSON.stringify(response), null, 2);
     const available = response.ok;
-    lazy.console.debug(`ModelHub: Chrome URL ${url} available: ${available}`);
     return available;
   }
 }

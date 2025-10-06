@@ -76,8 +76,7 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
   void ProcessAudioChunk();
 
   // Send audio data to HWInference process
-  void SendAudioDataViaIPC(uint64_t aSessionId, nsTArray<float>&& aAudioData,
-                           uint32_t aSampleRate);
+  void SendAudioDataViaIPC(uint64_t aSessionId, nsTArray<float>&& aAudioData);
 
   void StartSpeechRecognitionSession(uint64_t aSessionId,
                                      const nsCString& aLanguage);
