@@ -118,27 +118,17 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
     (global-name "com.apple.system.opendirectoryd.membership")
     (global-name "com.apple.CoreServices.coreservicesd")
     (global-name "com.apple.lsd.mapdb")
-    ; Graphics
-    (global-name "com.apple.CARenderServer")
-    (global-name "com.apple.windowserver.active")
+    ; Metal compilation service (required for ML inference)
     (global-name "com.apple.MTLCompilerService")
-    (global-name "com.apple.CARenderServer")
-    (global-name "com.apple.CoreDisplay.master")
-    (global-name "com.apple.CoreDisplay.Notification")
     (global-name "com.apple.cvmsServ"))
 
   (define (home-subpath home-relative-subpath)
     (subpath (string-append homePath home-relative-subpath)))
 
   (allow file-read*
-    (subpath "/Library/ColorSync/Profiles")
     (literal "/")
     (literal "/private/tmp")
-    (literal "/private/var/tmp")
-    (home-subpath "/Library/Colors")
-    (home-subpath "/Library/ColorSync/Profiles"))
-
-  (allow file-read* (subpath "/private/var/db/CVMS"))
+    (literal "/private/var/tmp"))
 
   ; Allow creation of the bundle ID cache directory and files within.
   (allow file-read* file-write*
@@ -166,70 +156,23 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
           (subpath (string-append bundleIDCacheDir "/com.apple.metalfe"))
           (subpath (string-append bundleIDCacheDir "/com.apple.gpuarchiver"))))))
 
+  ; Minimal IOKit properties needed for Metal device identification
   (allow iokit-get-properties
-    (iokit-property "board-id")
-    (iokit-property "product-id")
-    (iokit-property "class-code")
     (iokit-property "vendor-id")
     (iokit-property "device-id")
-    (iokit-property "IODVDBundleName")
-    (iokit-property "IOGLBundleName")
-    (iokit-property "IOGVACodec")
-    (iokit-property "IOGVAHEVCDecode")
-    (iokit-property "IOAVDHEVCDecodeCapabilities")
-    (iokit-property "IOGVAHEVCEncode")
-    (iokit-property "IOGVAXDecode")
-    (iokit-property "IOAVDAV1DecodeCapabilities")
-    (iokit-property "IOPCITunnelled")
     (iokit-property "IOVARendererID")
     (iokit-property "MetalPluginName")
     (iokit-property "MetalPluginClassName")
     (iokit-property "gpu-core-count"))
 
-  (allow iokit-set-properties
-    (require-all
-      (iokit-connection "IODisplay")
-        (require-any
-          (iokit-property "brightness"
-                          "linear-brightness"
-                          "commit"
-                          "rgcs"
-                          "ggcs"
-                          "bgcs"))))
-
+  ; Minimal IOKit connections needed for Metal compute
   (allow iokit-open
     (iokit-connection "IOAccelerator")
-    (iokit-user-client-class "AppleIntelMEUserClient")
-    (iokit-user-client-class "AppleSNBFBUserClient")
     (iokit-user-client-class "IOAccelerationUserClient")
-    (iokit-user-client-class "IOSurfaceRootUserClient")
-    (iokit-user-client-class "IOSurfaceSendRight")
-    (iokit-user-client-class "IOFramebufferSharedUserClient")
     (iokit-user-client-class "AGPMClient")
     (iokit-user-client-class "AppleGraphicsControlClient")
-    (iokit-user-client-class "IOHIDParamUserClient")
-    (iokit-user-client-class "RootDomainUserClient")
     (iokit-user-client-class "AppleMGPUPowerControlClient")
-    (iokit-user-client-class "AppleGraphicsControlClient")
     (iokit-user-client-class "AppleGraphicsPolicyClient"))
-
-  ; Fonts
-  (allow file-read*
-    (subpath "/Library/Fonts")
-    (subpath "/Library/Application Support/Apple/Fonts")
-    (home-subpath "/Library/Fonts")
-    ; Allow read access to paths allowed via sandbox extensions.
-    ; This is needed for fonts in non-standard locations normally
-    ; due to third party font managers. The extensions are
-    ; automatically issued by the font server in response to font
-    ; API calls.
-    (extension "com.apple.app-sandbox.read"))
-  ; Fonts may continue to work without explicitly allowing these
-  ; services because, at present, connections are made to the services
-  ; before the sandbox is enabled as a side-effect of some API calls.
-  (allow mach-lookup
-    (global-name "com.apple.fonts")
-    (global-name "com.apple.FontObjectsServer"))
 
   (if (string=? isRosettaTranslated "TRUE")
     (allow file-map-executable (subpath "/private/var/db/oah")))
