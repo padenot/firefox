@@ -562,8 +562,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
         audioForRecognition[i] = mAudioRing[ring_pos];
       }
 
-      LOGD("[SRParent:{}] Running recognition on {} samples ({:.2f}s of audio)",
-           static_cast<unsigned long>(mSessionId), samples_to_analyze,
+      LOGV("{} (id={}) Running recognition on {} samples ({:.2f}s of audio)",
+           __func__, mSessionId, samples_to_analyze,
            samples_to_analyze / (float)WHISPER_SAMPLE_RATE);
 
       // Dump audio data that will be sent to Whisper for debugging

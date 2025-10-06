@@ -3757,6 +3757,40 @@ with only_when(target_is_osx):
 
     set_config("MOZ_GPU_PROCESS_BUNDLEID", moz_gpu_process_bundle_id)
 
+    # HWInference Helper
+    #
+    # Set up configuration strings for building and referencing the HWInference process
+    # executable. For a local developer build where the display name is
+    # "Nightly", the strings will be as follows.
+    #
+    # MOZ_HWINFERENCE_PROCESS_NAME = hw-inference-helper
+    # MOZ_HWINFERENCE_PROCESS_NAME_BRANDED = Nightly HW Inference Helper
+    # MOZ_HWINFERENCE_PROCESS_NAME_BUNDLENAME = hw-inference-helper.app
+    # MOZ_HWINFERENCE_PROCESS_BUNDLEID = org.mozilla.nightly-hw-inference-helper
+    moz_hwinference_process_name = dependable("hw-inference-helper")
+
+    set_config("MOZ_HWINFERENCE_PROCESS_NAME", moz_hwinference_process_name)
+    set_config(
+        "MOZ_HWINFERENCE_PROCESS_NAME_BRANDED",
+        depends_if(moz_app_displayname)(lambda name: f"{name} HW Inference Helper"),
+    )
+    set_config(
+        "MOZ_HWINFERENCE_PROCESS_BUNDLENAME",
+        depends(moz_hwinference_process_name)(lambda name: f"{name}.app"),
+    )
+
+    # Generate a lower case string with no spaces to be used as the bundle ID
+    # for the HWInference helper .app of the form org.mozilla.<executable-name>.
+    @depends(moz_app_displayname, moz_hwinference_process_name, "--with-distribution-id")
+    def moz_hwinference_process_bundle_id(app_displayname, hwinference_process_name, distribution_id):
+        if not app_displayname:
+            return
+
+        hwinference_process_bundle_id = app_displayname.replace(" ", "-").lower()
+        return f"{distribution_id[0]}.{hwinference_process_bundle_id}-{hwinference_process_name}"
+
+    set_config("MOZ_HWINFERENCE_PROCESS_BUNDLEID", moz_hwinference_process_bundle_id)
+
 
 # JS Packaging
 # ==============================================================

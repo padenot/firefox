@@ -521,7 +521,7 @@ bool StartMacSandbox(MacSandboxInfo const& aInfo, std::string& aErrorMessage) {
     // For accessing shader cache paths in the cache dir that
     // are derived from the applications bundle ID.
     bundleIDCacheDir = userCacheDir;
-    bundleIDCacheDir.append("/" MOZ_GPU_PROCESS_BUNDLEID);
+    bundleIDCacheDir.append("/" MOZ_HWINFERENCE_PROCESS_BUNDLEID);
     params.push_back("BUNDLE_ID_CACHE_DIR");
     params.push_back(bundleIDCacheDir.c_str());
   } else {
