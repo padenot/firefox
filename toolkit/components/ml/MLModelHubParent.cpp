@@ -115,17 +115,6 @@ ModelHubCompletionCallback::OnError(const nsAString& aError) {
   return NS_OK;
 }
 
-// MLModelHubParent implementation
-MLModelHubParent::MLModelHubParent() {
-  PARENT_LOG(LogLevel::Debug,
-             "MLModelHubParent::MLModelHubParent() - constructor called");
-
-  // Dispatch XPCOM service initialization to main thread
-  PARENT_LOG(LogLevel::Debug,
-             "MLModelHubParent: Dispatching XPCOM service initialization to "
-             "main thread");
-}
-
 /* static */
 already_AddRefed<MLModelHubParent> MLModelHubParent::Create() {
   PARENT_LOG(LogLevel::Debug, "MLModelHubParent::Create() called");
@@ -154,8 +143,8 @@ already_AddRefed<MLModelHubParent> MLModelHubParent::Create() {
 mozilla::ipc::IPCResult MLModelHubParent::RecvIsModelAvailable(
     nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
     IsModelAvailableResolver&& aResolver) {
-  PARENT_LOG(LogLevel::Debug, "RecvIsModelAvailable: model={} revision={}",
-             aModel.get(), aRevision.get());
+  PARENT_LOG(LogLevel::Debug, "RecvIsModelAvailable: model={} revision={} filename={}",
+             aModel.get(), aRevision.get(), aFilename.get());
 
   // Dispatch to main thread to handle XPCOM service call
   NS_DispatchToMainThread(NS_NewRunnableFunction(
@@ -312,46 +301,6 @@ mozilla::ipc::IPCResult MLModelHubParent::RecvStartModelDownload(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult MLModelHubParent::RecvGetModelFilePath(
-    nsCString&& aModel, nsCString&& aRevision, nsCString&& aFile,
-    GetModelFilePathResolver&& aResolver) {
-  PARENT_LOG(LogLevel::Debug,
-             "RecvGetModelFilePath: model={} revision={} file={}", aModel.get(),
-             aRevision.get(), aFile.get());
-
-  // Dispatch to main thread to handle XPCOM service call
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "MLModelHubParent::RecvGetModelFilePath",
-      [self = RefPtr(this), model = std::move(aModel),
-       revision = std::move(aRevision), file = std::move(aFile),
-       resolver = std::move(aResolver)]() mutable {
-        if (!self->mModelHubService) {
-          PARENT_LOG(LogLevel::Error,
-                     "RecvGetModelFilePath: ModelHub service not available!");
-          resolver(""_ns);
-          return;
-        }
-
-        PARENT_LOG(
-            LogLevel::Debug,
-            "RecvGetModelFilePath: On main thread, calling ModelHub service");
-
-        nsString filePath;
-        nsresult rv = self->mModelHubService->GetModelFilePath(
-            NS_ConvertUTF8toUTF16(model), NS_ConvertUTF8toUTF16(revision),
-            NS_ConvertUTF8toUTF16(file), filePath);
-
-        nsCString filePathUTF8;
-        if (NS_SUCCEEDED(rv)) {
-          filePathUTF8 = NS_ConvertUTF16toUTF8(filePath);
-        }
-
-        resolver(filePathUTF8);
-      }));
-
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult MLModelHubParent::RecvGetModelBlob(
     nsCString&& aModel, nsCString&& aRevision, nsCString&& aFile,
     GetModelBlobResolver&& aResolver) {
@@ -480,7 +429,6 @@ void MLModelHubParent::NotifyComplete(const nsCString& aSessionId,
     result.success() = true;
     result.sessionId() = aSessionId;
     result.error() = "";
-    // TODO: Add file paths to result
 
     Unused << SendOnModelDownloadComplete(aSessionId, result);
   }

@@ -69,10 +69,6 @@ class MLModelHubParent final : public PMLModelHubParent {
       nsTArray<nsCString>&& aFiles,
       StartModelDownloadResolver&& aResolver);
 
-  mozilla::ipc::IPCResult RecvGetModelFilePath(
-      nsCString&& aModel, nsCString&& aRevision, nsCString&& aFile,
-      GetModelFilePathResolver&& aResolver);
-
   mozilla::ipc::IPCResult RecvGetModelBlob(
       nsCString&& aModel, nsCString&& aRevision, nsCString&& aFile,
       GetModelBlobResolver&& aResolver);
@@ -88,7 +84,7 @@ class MLModelHubParent final : public PMLModelHubParent {
   void NotifyError(const nsCString& aSessionId, const nsCString& aError);
 
  private:
-  MLModelHubParent();
+  MLModelHubParent() = default;
   ~MLModelHubParent() = default;
 
   // Reference to the XPCOM ModelHub service

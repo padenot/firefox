@@ -52,10 +52,6 @@ parent:
                           nsCString[] files)
     returns (nsCString sessionId);
 
-  // Get the local file path for a downloaded model file
-  async GetModelFilePath(nsCString model, nsCString revision, nsCString file)
-    returns (nsCString filePath);
-
   // Get a blob for a downloaded model file
   async GetModelBlob(nsCString model, nsCString revision, nsCString file)
     returns (ModelBlobResult result);

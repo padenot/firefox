@@ -7,58 +7,47 @@
 #define mozilla_ml_MLModelHubChild_h
 
 #include "mozilla/ml/PMLModelHubChild.h"
-#include "nsTHashMap.h"
-#include "nsString.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/dom/IPCBlob.h"
 
-namespace mozilla {
-namespace ml {
+namespace mozilla::ml {
 
-// Forward declarations
-class MLModelHubService;
-
-// Promise types for async operations
 using ModelAvailabilityPromise = MozPromise<bool, nsCString, false>;
-using ModelDownloadPromise = MozPromise<bool, nsCString, false>;  // Simplified to just success/failure
-using ModelFilePathPromise = MozPromise<nsCString, nsCString, false>;
+using ModelDownloadPromise =
+    MozPromise<bool, nsCString, false>;
 using ModelBlobPromise = MozPromise<mozilla::dom::IPCBlob, nsCString, false>;
 
-// Progress callback interface for utility process consumers
+// Progress callback interface
 class ModelDownloadProgressCallback {
  public:
   virtual ~ModelDownloadProgressCallback() = default;
   virtual void OnProgress(int32_t aProgress, int64_t aCurrentLoaded,
-                         int64_t aTotalLoaded, int64_t aTotal) = 0;
+                          int64_t aTotalLoaded, int64_t aTotal) = 0;
 };
 
-// Child-side IPDL actor for ModelHub operations
-// This actor runs in the HWInference utility process and makes calls to the parent
+// HWUtility-side IPDL actor for ModelHub operations.
+// This actor runs in the HWInference utility process and makes calls to the
+// main process.
 class MLModelHubChild final : public PMLModelHubChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MLModelHubChild, override);
 
+  MLModelHubChild() = default;
   static already_AddRefed<MLModelHubChild> Create();
 
-  // Public API for utility process consumers
   RefPtr<ModelAvailabilityPromise> IsModelAvailable(const nsCString& aModel,
-                                                   const nsCString& aRevision,
-                                                   const nsCString& aFilename);
+                                                    const nsCString& aRevision,
+                                                    const nsCString& aFilename);
 
-  RefPtr<ModelDownloadPromise> DownloadModel(const nsCString& aTaskName,
-                                           const nsCString& aModel,
-                                           const nsCString& aRevision,
-                                           const nsTArray<nsCString>& aFiles,
-                                           ModelDownloadProgressCallback* aProgressCallback = nullptr);
-
-  RefPtr<ModelFilePathPromise> GetModelFilePath(const nsCString& aModel,
-                                              const nsCString& aRevision,
-                                              const nsCString& aFile);
+  RefPtr<ModelDownloadPromise> DownloadModel(
+      const nsCString& aTaskName, const nsCString& aModel,
+      const nsCString& aRevision, const nsTArray<nsCString>& aFiles,
+      ModelDownloadProgressCallback* aProgressCallback = nullptr);
 
   RefPtr<ModelBlobPromise> GetModelBlob(const nsCString& aModel,
-                                       const nsCString& aRevision,
-                                       const nsCString& aFile);
+                                        const nsCString& aRevision,
+                                        const nsCString& aFile);
 
   // PMLModelHubChild implementation
   mozilla::ipc::IPCResult RecvOnModelDownloadProgress(
@@ -70,7 +59,6 @@ class MLModelHubChild final : public PMLModelHubChild {
   void ActorDestroy(ActorDestroyReason aReason) override;
 
  private:
-  MLModelHubChild();
   ~MLModelHubChild() = default;
 
   // Structure to track ongoing download requests
@@ -79,7 +67,7 @@ class MLModelHubChild final : public PMLModelHubChild {
     ModelDownloadProgressCallback* mProgressCallback;
 
     PendingDownload(ModelDownloadPromise::Private* aPromise,
-                   ModelDownloadProgressCallback* aProgressCallback)
+                    ModelDownloadProgressCallback* aProgressCallback)
         : mPromise(aPromise), mProgressCallback(aProgressCallback) {}
   };
 
@@ -87,7 +75,7 @@ class MLModelHubChild final : public PMLModelHubChild {
   nsTHashMap<nsCStringHashKey, UniquePtr<PendingDownload>> mPendingDownloads;
 };
 
-// Singleton service for ModelHub operations in the utility process
+// Singleton service for to use ModelHub from the utility process
 class MLModelHubService final {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MLModelHubService);
@@ -97,40 +85,31 @@ class MLModelHubService final {
   // Initialize the service with an IPDL endpoint
   bool Initialize(ipc::Endpoint<PMLModelHubChild>&& aEndpoint);
 
-  // Public API for utility process consumers
+  // Public API for utility process callers
   RefPtr<ModelAvailabilityPromise> IsModelAvailable(const nsCString& aModel,
-                                                   const nsCString& aRevision,
-                                                   const nsCString& aFilename);
+                                                    const nsCString& aRevision,
+                                                    const nsCString& aFilename);
 
-  RefPtr<ModelDownloadPromise> DownloadModel(const nsCString& aTaskName,
-                                           const nsCString& aModel,
-                                           const nsCString& aRevision,
-                                           const nsTArray<nsCString>& aFiles,
-                                           ModelDownloadProgressCallback* aProgressCallback = nullptr);
-
-  RefPtr<ModelFilePathPromise> GetModelFilePath(const nsCString& aModel,
-                                              const nsCString& aRevision,
-                                              const nsCString& aFile);
+  RefPtr<ModelDownloadPromise> DownloadModel(
+      const nsCString& aTaskName, const nsCString& aModel,
+      const nsCString& aRevision, const nsTArray<nsCString>& aFiles,
+      ModelDownloadProgressCallback* aProgressCallback = nullptr);
 
   RefPtr<ModelBlobPromise> GetModelBlob(const nsCString& aModel,
-                                       const nsCString& aRevision,
-                                       const nsCString& aFile);
+                                        const nsCString& aRevision,
+                                        const nsCString& aFile);
 
   // Called during process shutdown
   void Shutdown();
 
-  // Get the underlying MLModelHubChild for direct IPC access
-  RefPtr<MLModelHubChild> GetChild();
-
  private:
-  MLModelHubService() = default;
   ~MLModelHubService() = default;
 
   RefPtr<MLModelHubChild> mChild;
   mozilla::Mutex mMutex{"MLModelHubService"};
 };
 
-} // namespace ml
-} // namespace mozilla
+} // namespace mozilla::ml
 
-#endif // mozilla_ml_MLModelHubChild_h
+
+#endif  // mozilla_ml_MLModelHubChild_h
