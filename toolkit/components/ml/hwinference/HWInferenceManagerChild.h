@@ -44,7 +44,6 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
   nsRefPtrHashtable<nsUint64HashKey, SpeechRecognitionChild> mSpeechSessions;
 };
 
-} // namespace mozilla::ipc
-
+}  // namespace mozilla::ipc
 
 #endif  // mozilla_ipc_HWInferenceManagerChild_h

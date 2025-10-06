@@ -43,7 +43,7 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
   // Biasing phrases are passed in the ctor for now, but see:
   // https://github.com/WebAudio/web-speech-api/issues/172
   SpeechRecognitionBackend(SpeechRecognition* aParent, uint32_t aGraphRate,
-                           const nsString& aLanguage,
+                           const nsString& aLanguages,
                            const nsTArray<nsString>& aPhrases);
   // Called when SpeechRecognition.start() is called from JS
   // Starts the background thread and IPC session
@@ -123,7 +123,7 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
 
   // [Main thread write, Background thread read] Language for recognition
   // Set on main thread, read on background thread during IPC setup
-  const nsString mLanguage;
+  const nsCString mLanguage;
   // Written on main thread, read on background thread.
   // Phrases for recognition biasing.
   const nsTArray<nsString> mPhrases;

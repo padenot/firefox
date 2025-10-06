@@ -12,8 +12,7 @@
 #include "mozilla/ipc/PSpeechRecognitionChild.h"
 #include "nsISupportsImpl.h"
 
-namespace mozilla {
-namespace ipc {
+namespace mozilla::ipc {
 
 class HWInferenceManagerChild;
 
@@ -47,7 +46,7 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
   RecognitionErrorCallback mErrorCallback;
 };
 
-}  // namespace ipc
-}  // namespace mozilla
+} // namespace mozilla::ipc
+
 
 #endif  // mozilla_ipc_SpeechRecognitionChild_h

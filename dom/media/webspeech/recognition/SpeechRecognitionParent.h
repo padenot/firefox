@@ -13,13 +13,14 @@
 
 #include "WavDumper.h"
 #include "mozilla/SPSCQueue.h"
-#include "mozilla/ipc/PSpeechRecognitionParent.h"
 #include "mozilla/dom/Promise.h"
-#include "nsISupportsImpl.h"
-#include "nsIThread.h"
-#include "nsIInputStream.h"
+#include "mozilla/ipc/PSpeechRecognitionParent.h"
 #include "nsCOMPtr.h"
 #include "nsIFileStreams.h"
+#include "nsIInputStream.h"
+#include "nsISupportsImpl.h"
+#include "nsIThread.h"
+#include "nsStringFwd.h"
 
 struct whisper_context;
 
@@ -55,22 +56,33 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // Called when model blob metadata is ready
   void OnModelMetadataReceived();
 
+  struct ModelIdentifier {
+    nsCString mModelName;
+    nsCString mFileName;
+    nsCString mRevision = "main"_ns;
+    nsCString ToString() const;
+  };
+
+  ModelIdentifier LanguagesToModelIdentifier(
+      const nsTArray<nsCString>& aLanguages);
+
  private:
   ~SpeechRecognitionParent();
 
   void InitializeWhisperOnBackgroundThread();
+  void RetrieveModelBlob();
   void ProcessAudioOnBackgroundThread();
   void CleanupWhisperContext();
 
-  // Retrieve model blob and convert to file descriptor for Whisper
-  void RetrieveModelBlob();
-
   uint64_t mSessionId;
   nsCString mLanguage;
-  nsCString mModelPath;  // Path to the model file (will be replaced with fd)
-  nsCOMPtr<nsIInputStream> mModelStream;  // Stream for model blob
-  // int mModelFd;  // File descriptor for model (when whisper supports it)
+  // Stream allowing access to model data
+  nsCOMPtr<nsIInputStream> mModelStream;
   bool mIsActive;
+  RefPtr<SpeechRecognitionMetadataCallback> mMetadataCallback;
+  // Model file handle from blob
+  FILE* mModelFile = nullptr;
+  std::atomic<bool> mWhisperInitPending{false};
 
   // Whisper-related members
   whisper_context* mWhisperCtx;
@@ -85,23 +97,17 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   size_t mRingSize;
 
   // Whisper parameters
-  int32_t mRecognitionIntervalMs;  // How often to run recognition (1000ms = 1
-                                   // second)
-  int32_t mAudioLengthMs;  // Length of audio to analyze (e.g., 10 seconds)
+  // How often recognition is ran
+  int32_t mRecognitionIntervalMs;
+  // Duration of a segment sent to whisper each time
+  int32_t mAudioLengthMs;
   int32_t mNumThreads;
 
-  // Audio dumpers for debugging
-  WavDumper mIPCAudioDumper;      // Dumps audio received via IPC
-  WavDumper mWhisperAudioDumper;  // Dumps audio sent to Whisper
-
-  RefPtr<SpeechRecognitionMetadataCallback> mMetadataCallback;
-
-  // Model file handle from blob
-  FILE* mModelFile = nullptr;
-  std::atomic<bool> mWhisperInitPending{false};
+  // Dumps audio sent to Whisper. This will contain segments of about 10s of
+  // audio, representing the audio sent to whisper.
+  WavDumper mWhisperAudioDumper;
 };
 
-} // namespace mozilla::ipc
-
+}  // namespace mozilla::ipc
 
 #endif  // mozilla_ipc_SpeechRecognitionParent_h

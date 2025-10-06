@@ -275,7 +275,9 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvGetModelBlob(
     GetModelBlobResolver&& aResolver) {
   LOGD("{}, dispatching to main thread", __func__);
 
-  // XPCOM is main thread only
+  // ModelHub is the module that handles model management, and is implemented in
+  // JavaScript. We call into it using a thin XPCOM layer, and XPCOM is main
+  // thread only.
   NS_DispatchToMainThread(NS_NewRunnableFunction(
       "HWInferenceParent::RecvGetModelBlob",
       [self = RefPtr(this), model = std::move(aModel),

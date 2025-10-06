@@ -8,12 +8,13 @@
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
 
-
 namespace mozilla::ipc {
 
 extern LazyLogModule gHWInferenceLog;
-#define LOGD(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
-#define LOGE(fmt, ...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
+#define LOGD(fmt, ...) \
+  MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) \
+  MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
 
 HWInferenceManagerParent::HWInferenceManagerParent(
     dom::ContentParentId aContentId)
@@ -41,7 +42,6 @@ bool HWInferenceManagerParent::CreateForContent(
   return true;
 }
 
-
 void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("[{}] HWInferenceManagerParent::ActorDestroy reason={}", (void*)this,
        static_cast<int>(aReason));
@@ -53,8 +53,9 @@ void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
 PSpeechRecognitionParent*
 HWInferenceManagerParent::AllocPSpeechRecognitionParent(
     const uint64_t& aSessionId) {
-  LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent session={}",
-       (void*)this, aSessionId);
+  LOGD(
+      "[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent session={}",
+      (void*)this, aSessionId);
 
   // Create the actor with manual AddRef for IPDL ownership
   RefPtr<SpeechRecognitionParent> actor =
@@ -62,8 +63,10 @@ HWInferenceManagerParent::AllocPSpeechRecognitionParent(
 
   // Store the actor in our session map (this keeps a reference)
   mSpeechSessions.InsertOrUpdate(aSessionId, actor);
-  LOGD("[{}] Created and stored SpeechRecognitionParent actor={:p} for session={}, total sessions={}",
-       (void*)this, (void*)actor.get(), aSessionId, mSpeechSessions.Count());
+  LOGD(
+      "[{}] Created and stored SpeechRecognitionParent actor={:p} for "
+      "session={}, total sessions={}",
+      (void*)this, (void*)actor.get(), aSessionId, mSpeechSessions.Count());
 
   return actor.get();
 }
@@ -74,20 +77,21 @@ bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
       static_cast<SpeechRecognitionParent*>(aActor);
   uint64_t sessionId = actor->GetSessionId();
 
-  LOGD("[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent actor={:p} session={}",
-       (void*)this, (void*)aActor, sessionId);
+  LOGD(
+      "[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
+      "actor={:p} session={}",
+      (void*)this, (void*)aActor, sessionId);
 
   // Remove from our session map
   bool removed = mSpeechSessions.Remove(sessionId);
   LOGD("[{}] Removed session={} from map: {}, remaining sessions={}",
-       (void*)this, sessionId, removed ? "success" : "not found", mSpeechSessions.Count());
+       (void*)this, sessionId, removed ? "success" : "not found",
+       mSpeechSessions.Count());
 
   return true;
 }
 
-
-} // namespace mozilla::ipc
-
+}  // namespace mozilla::ipc
 
 #undef LOGD
 #undef LOGE

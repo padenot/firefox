@@ -22,7 +22,7 @@ parent: // HWUtility
   async IsModelAvailable(nsCString[] languages) returns (bool available);
   // Install speech recognition models for the given languages
   async InstallModels(nsCString[] languages) returns (bool success);
-  // Initialize the speech recognition session with a language
+  // Initialize the speech recognition session
   async Init(nsCString language) returns (bool success);
   // Send audio data for speech recognition (16kHz mono f32 samples)
   async ProcessAudioData(float[] audioData, uint32_t sampleRate);

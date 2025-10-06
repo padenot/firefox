@@ -27,23 +27,15 @@ XPIDL_SOURCES += [
     "nsIMLUtils.idl",
 ]
 
-IPDL_SOURCES += [
-    "PMLModelHub.ipdl",
-]
-
 EXTRA_JS_MODULES += [
     "MLModelHubService.sys.mjs",
 ]
 
 UNIFIED_SOURCES += [
-    "MLModelHubChild.cpp",
-    "MLModelHubParent.cpp",
     "MLUtils.cpp",
 ]
 
 EXPORTS.mozilla.ml += [
-    "MLModelHubChild.h",
-    "MLModelHubParent.h",
     "MLUtils.h",
 ]
 
