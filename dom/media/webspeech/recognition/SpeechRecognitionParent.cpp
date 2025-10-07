@@ -230,6 +230,10 @@ SpeechRecognitionParent::SpeechRecognitionParent()
   // MOZ_DUMP_AUDIO=1 MOZ_DISABLE_UTILITY_SANDBOX=1 to activate this
   mWhisperAudioDumper.Open("SpeechRecognition-Whisper-Input", 1,
                            WHISPER_SAMPLE_RATE);
+
+  // Initialize for continuous recognition
+  mProcessedAudioPos = 0;
+  mKeepAudioMs = 200;  // Keep 200ms of audio between segments for context
 }
 
 void SpeechRecognitionParent::RetrieveModelBlob() {
@@ -397,6 +401,12 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
   mPhrases = aPhrases.Clone();
   mIsActive = true;
 
+  // Reset continuous recognition state for new session
+  mAccumulatedTranscript.Truncate();
+  mLastSegmentText.Truncate();
+  mPromptTokens.clear();
+  mProcessedAudioPos = 0;
+
   if (!mThreadRunning.load()) {
     mThreadRunning.store(true);
     mBackgroundThread = std::thread([self = RefPtr{this}]() {
@@ -441,6 +451,12 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
 
   if (mIsActive) {
     mIsActive = false;
+
+    // Send final result with accumulated transcript
+    if (!mAccumulatedTranscript.IsEmpty() && CanSend()) {
+      LOGD("Sending final transcript: '{}'", mAccumulatedTranscript.get());
+      Unused << SendOnRecognitionResult(mAccumulatedTranscript, true);  // true = final
+    }
 
     // Stop background thread
     if (mThreadRunning.load()) {
@@ -489,9 +505,10 @@ void SpeechRecognitionParent::InitializeWhisperOnBackgroundThread() {
 }
 
 void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
-  LOGD("{} Starting recognition loop", __func__);
+  LOGD("{} Starting continuous recognition loop", __func__);
 
   std::vector<float> audioForRecognition;
+  std::vector<float> audioBuffer;  // Continuous audio buffer
 
   // Two background tasks: audio ring buffer management and periodic recognition
   std::thread audioConsumerThread([self = RefPtr{this}]() {
@@ -564,14 +581,33 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
           mRingSize,
           static_cast<size_t>((1e-3 * mAudioLengthMs) * WHISPER_SAMPLE_RATE));
 
+      // Calculate samples to keep from previous recognition (for context/overlap)
+      const size_t n_samples_keep = static_cast<size_t>((1e-3 * mKeepAudioMs) * WHISPER_SAMPLE_RATE);
+
+      audioForRecognition.clear();
+
+      // First, add kept samples from previous recognition if available
+      if (!mPreviousAudio.empty() && n_samples_keep > 0) {
+        size_t samples_to_keep = std::min(n_samples_keep, mPreviousAudio.size());
+        size_t start_idx = mPreviousAudio.size() - samples_to_keep;
+        audioForRecognition.insert(audioForRecognition.end(),
+                                  mPreviousAudio.begin() + start_idx,
+                                  mPreviousAudio.end());
+      }
+
+      // Then add new samples from ring buffer
+      size_t new_samples_needed = samples_to_analyze - audioForRecognition.size();
+      size_t start_pos = audioForRecognition.size();
       audioForRecognition.resize(samples_to_analyze);
 
-      // Extract from ring buffer (most recent samples)
-      for (size_t i = 0; i < samples_to_analyze; i++) {
+      for (size_t i = 0; i < new_samples_needed; i++) {
         size_t ring_pos =
-            (mRingWritePos + mRingSize - samples_to_analyze + i) % mRingSize;
-        audioForRecognition[i] = mAudioRing[ring_pos];
+            (mRingWritePos + mRingSize - new_samples_needed + i) % mRingSize;
+        audioForRecognition[start_pos + i] = mAudioRing[ring_pos];
       }
+
+      // Store current audio for next iteration
+      mPreviousAudio = audioForRecognition;
 
       LOGV("{} Running recognition on {} samples ({:.2f}s of audio)",
            __func__, samples_to_analyze,
@@ -595,6 +631,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
         wparams.language = mLanguage.get();
         wparams.n_threads = mNumThreads;
         wparams.audio_ctx = 0;
+
+        // Build prompt from phrases and previous context
         nsCString prompt;
         for (auto& phrase : mPhrases) {
           prompt.Append(NS_ConvertUTF16toUTF8(phrase));
@@ -602,34 +640,72 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
         }
         wparams.initial_prompt = prompt.get();
 
+        // Use tokens from previous segment as context for continuity
+        wparams.prompt_tokens = mPromptTokens.empty() ? nullptr : mPromptTokens.data();
+        wparams.prompt_n_tokens = mPromptTokens.size();
+        wparams.no_context = false;  // Keep context for continuous recognition
+
         if (mLib->whisper_full(mWhisperCtx, wparams, audioForRecognition.data(),
                                audioForRecognition.size()) == 0) {
           // Process results
           const int n_segments = mLib->whisper_full_n_segments(mWhisperCtx);
 
+          // Clear previous prompt tokens to build new ones
+          mPromptTokens.clear();
+
+          // Process each segment
           for (int i = 0; i < n_segments; ++i) {
             const char* text =
                 mLib->whisper_full_get_segment_text(mWhisperCtx, i);
 
             if (text && strlen(text) > 0) {
-              nsCString transcript(text);
-              bool isFinal =
-                  (i == n_segments - 1);  // Mark last segment as final
+              nsCString segmentText(text);
 
-              LOGV("{} recognition result: '{}' (final={})", __func__,
-                   transcript.get(), isFinal ? "true" : "false");
+              // Trim whitespace
+              segmentText.Trim(" \t\n\r");
 
-              // Send result via IPC (dispatch to main thread)
-              NS_DispatchToMainThread(NS_NewRunnableFunction(
-                  "SpeechRecognitionParent::SendResult",
-                  [self = RefPtr{this}, transcript = nsCString(transcript),
-                   isFinal]() {
-                    if (self->CanSend()) {
-                      Unused
-                          << self->SendOnRecognitionResult(transcript, isFinal);
-                    }
-                  }));
+              // Skip if this is a duplicate of the last segment
+              if (!segmentText.IsEmpty() && !segmentText.Equals(mLastSegmentText)) {
+                // Add to accumulated transcript with proper spacing
+                if (!mAccumulatedTranscript.IsEmpty()) {
+                  mAccumulatedTranscript.AppendLiteral(" ");
+                }
+                mAccumulatedTranscript.Append(segmentText);
+                mLastSegmentText = segmentText;
+
+                // Collect tokens from this segment for context in next recognition
+                const int token_count = mLib->whisper_full_n_tokens(mWhisperCtx, i);
+                for (int j = 0; j < token_count; ++j) {
+                  mPromptTokens.push_back(mLib->whisper_full_get_token_id(mWhisperCtx, i, j));
+                }
+
+                LOGV("{} New segment: '{}', Total transcript: '{}'", __func__,
+                     segmentText.get(), mAccumulatedTranscript.get());
+
+                // Send the accumulated transcript (not just the segment)
+                bool isFinal = false;  // In continuous mode, never mark as final until stop
+
+                NS_DispatchToMainThread(NS_NewRunnableFunction(
+                    "SpeechRecognitionParent::SendResult",
+                    [self = RefPtr{this},
+                     transcript = nsCString(mAccumulatedTranscript),
+                     isFinal]() {
+                      if (self->CanSend()) {
+                        Unused
+                            << self->SendOnRecognitionResult(transcript, isFinal);
+                      }
+                    }));
+              } else if (!segmentText.IsEmpty()) {
+                LOGV("{} Skipping duplicate segment: '{}'", __func__, segmentText.get());
+              }
             }
+          }
+
+          // Keep only the last N tokens for context (to avoid growing indefinitely)
+          const size_t maxContextTokens = 224;  // Reasonable context window
+          if (mPromptTokens.size() > maxContextTokens) {
+            mPromptTokens.erase(mPromptTokens.begin(),
+                               mPromptTokens.begin() + (mPromptTokens.size() - maxContextTokens));
           }
         } else {
           LOGD("Whisper inference failed");

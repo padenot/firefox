@@ -109,6 +109,14 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // Dumps audio sent to Whisper. This will contain segments of about 10s of
   // audio, representing the audio sent to whisper.
   WavDumper mWhisperAudioDumper;
+
+  // Continuous recognition members
+  size_t mProcessedAudioPos;  // Position in the audio stream that has been processed
+  int32_t mKeepAudioMs;  // Audio to keep from previous segment for context
+  std::vector<int32_t> mPromptTokens;  // Tokens from previous segment for context
+  nsCString mAccumulatedTranscript;  // Full transcript accumulation
+  nsCString mLastSegmentText;  // Last segment text to detect duplicates
+  std::vector<float> mPreviousAudio;  // Audio from previous segment for overlap
 };
 
 }  // namespace mozilla::ipc
