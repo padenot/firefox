@@ -14,6 +14,7 @@
 #include "WavDumper.h"
 #include "mozilla/FontPropertyTypes.h"
 #include "mozilla/SPSCQueue.h"
+#include "mozilla/ThreadSafety.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/ipc/PSpeechRecognitionParent.h"
 #include "nsCOMPtr.h"
@@ -65,47 +66,58 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   ModelIdentifier LanguagesToModelIdentifier(
       const nsTArray<nsCString>& aLanguages);
 
+  void ResolveOrRejectInitOnIPCThread(bool aSuccess);
+
  private:
   ~SpeechRecognitionParent();
 
   void InitializeWhisperOnBackgroundThread();
   void RetrieveModelBlob();
   void ProcessAudioOnBackgroundThread();
-  void CleanupWhisperContext();
   void LoadPreferences();
 
   // Static tracking of the single active recognition session
-  static StaticRefPtr<SpeechRecognitionParent> sActiveSession;
-  static StaticMutex sSessionMutex MOZ_UNANNOTATED;
-  nsCString mLanguage;
+  static StaticMutex sSessionMutex;
+  static StaticRefPtr<SpeechRecognitionParent> sActiveSession MOZ_GUARDED_BY(sSessionMutex);
+
+  Mutex mLock;
+  // Recognition language
+  // Set during RecvInit, then constant
+  nsCString mLanguage ;//MOZ_GUARDED_BY(mLock);
   // Contextual biasing phrases
-  nsTArray<nsString> mPhrases;
+  // Set during RecvInit, then constant
+  nsTArray<nsString> mPhrases; //MOZ_GUARDED_BY(mLock);
+  // Only used during init, main thread
   // Stream allowing access to model data
-  nsCOMPtr<nsIInputStream> mModelStream;
-  bool mIsActive;
-  RefPtr<SpeechRecognitionMetadataCallback> mMetadataCallback;
-  // Model file handle from blob
-  FILE* mModelFile = nullptr;
-  std::atomic<bool> mWhisperInitPending{false};
-
-  // Whisper-related members
-  whisper_context* mWhisperCtx;
+  nsCOMPtr<nsIInputStream> mModelStream; // MOZ_GUARDED_BY(mLock);
+  // Callback to receive metadata about the model file, required to then get its
+  // underlying file descriptor.
+  RefPtr<SpeechRecognitionMetadataCallback> mMetadataCallback; // MOZ_GUARDED_BY(mLock);
+  // Model file handle from blob -- closed
+  FILE* mModelFile /* MOZ_GUARDED_BY(mLock) */ = nullptr ;
+  // Dynamic linker pointer to the library containing whisper functions.
   mozilla::llama::LlamaLibWrapper* mLib;
-  std::thread mBackgroundThread;
-  std::atomic<bool> mThreadRunning;
+  // Whisper instance. Initialized on the background thread, destroyed after
+  // thread has been joined on another thread.
+  whisper_context* mWhisperCtx;
+  InitResolver mInitResolver;
 
-  // Audio processing members
+  // Lock-free queue to convey audio from the IPC thread to the processing
+  // thread. Producer is the IPC thread, consumer is the processing thread.
   mozilla::SPSCQueue<float> mAudioQueue;
-  std::vector<float> mAudioRing;
-  size_t mRingWritePos;
-  size_t mRingSize;
+
+  // Started in RecvInit, then stopped and join on actor destroyed, recognitions
+  // stopped, etc.
+  nsCOMPtr<nsIThread> mRecognitionThread;
+  // Atomic that allows telling the thread it needs to exits.
+  std::atomic<bool> mThreadRunning;
 
   // Tunable parameters for recognition
   struct RecognitionParams {
     // Latency & Timing
     int32_t mRecognitionIntervalMs = 1000;  // How often to run recognition
     int32_t mAudioLengthMs = 10000;         // Audio segment duration to process
-    int32_t mKeepAudioMs = 200;             // Audio overlap between segments
+    int32_t mKeepAudioMs = 1000;            // Audio overlap between segments (more context like CLI)
     int32_t mStepMs = 3000;                 // Step size for sliding window mode
 
     // Recognition Quality
@@ -137,7 +149,7 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
     int32_t mNumThreads = 4;                // Inference threads
     int32_t mAudioContextSize = 0;          // Whisper audio context (0=full)
     bool mSingleSegment = false;            // Force single segment mode
-    int32_t mMaxTokensPerSegment = 32;      // Max tokens per segment
+    int32_t mMaxTokensPerSegment = 0;       // Max tokens per segment (0 = no limit)
   };
 
   RecognitionParams mParams;
@@ -148,10 +160,18 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
   // Continuous recognition members
   size_t mProcessedAudioPos;  // Position in the audio stream that has been processed
-  std::vector<int32_t> mPromptTokens;  // Tokens from previous segment for context
-  nsCString mAccumulatedTranscript;  // Full transcript accumulation
-  nsCString mLastSegmentText;  // Last segment text to detect duplicates
-  std::vector<float> mPreviousAudio;  // Audio from previous segment for overlap
+  // Tokens from previous segment for context, only used when prompt carryover has been enabled.
+  std::vector<int32_t> mPromptTokens;
+  // Token-level streaming merge state
+  std::vector<int32_t> mGroupTokens;       // current group's best tokens
+  std::vector<int32_t> mLastFinalTokens;   // tokens of last committed group
+
+  // Audio buffer for keeping previous samples for context
+  std::vector<float> mPreviousAudio;
+  // Accumulated transcript for the session
+  nsCString mAccumulatedTranscript;
+  // Last segment text to avoid duplicates
+  nsCString mLastSegmentText;
 };
 
 }  // namespace mozilla::ipc

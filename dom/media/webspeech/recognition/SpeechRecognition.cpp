@@ -543,8 +543,6 @@ void SpeechRecognition::DispatchError(SpeechRecognitionErrorCode aErrorCode,
   DispatchEvent(*srError);
 }
 
-
-
 void SpeechRecognition::HandleRecognitionResultFromBackend(
     const nsCString& aTranscript, bool aIsFinal) {
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on main thread");
@@ -572,8 +570,9 @@ void SpeechRecognition::HandleRecognitionResultFromBackend(
   alternative->mConfidence = 1.0f;
 
   result->mItems.AppendElement(alternative);
-  // Note: IsFinal() currently always returns true in SpeechRecognitionResult
-  // The aIsFinal parameter is logged but not stored for now
+
+  // Set the isFinal flag properly based on what the backend tells us
+  result->SetFinal(aIsFinal);
 
   resultList->mItems.AppendElement(result);
 

@@ -100,20 +100,6 @@ nsresult SpeechRecognitionBackend::Start() {
           LOGE("Failed to establish IPC connection in Start()");
           return;
         }
-        // Start the background thread
-        self->mResamplingThreadRunning.store(true, std::memory_order_release);
-        nsCOMPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
-            "SpeechRecognitionBackend::ProcessAudioOnBackgroundThread",
-            [self]() { self->StartProcessingAudioOnBackgroundThread(); });
-        nsresult rv = NS_NewNamedThread("SpeechResampler",
-                                        getter_AddRefs(self->mResamplingThread),
-                                        runnable.forget());
-        if (NS_FAILED(rv)) {
-          LOGE("Failed to create background thread: {:x}",
-               static_cast<uint32_t>(rv));
-          self->mResamplingThreadRunning.store(false,
-                                               std::memory_order_release);
-        }
         OnIPCThread([self]() {
           self->StartSpeechRecognitionSession(self->mLanguage);
         });
@@ -199,7 +185,7 @@ void SpeechRecognitionBackend::DataCallback(TrackTime aTime,
   // Push the mono audio data to the ring buffer
   // The ring buffer expects float, and AudioDataValue is float on desktop
   // platforms
-  LOGV("Pushing {} frames to ring buffer", frameCount);
+  // LOGV("Pushing {} frames to ring buffer", frameCount);
   int written = mRingBuffer->Enqueue(mMonoBuffer.Elements(),
                                      AssertedCast<int>(frameCount));
 
@@ -223,6 +209,8 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     LOG("Background thread stopping, not scheduling next audio chunk");
     return;
   }
+
+  LOGV("ProcessAudioChunk");
 
   // Target sample rate for ASR models
   const int32_t kTargetRate = 16000;
@@ -284,7 +272,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
 
     size_t frames = resampledBuffer.Length();
 
-    LOGV("Sending {}s of audio via IPC", frames / kTargetRate);
+    LOGV("Sending {}s of audio via IPC", static_cast<float>(frames) / kTargetRate);
     SendAudioDataViaIPC(std::move(resampledBuffer));
   } else {
     LOGV("Not enough data in ringbuffer ({}s), retrying in a bit",
@@ -351,6 +339,20 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
           self->HandleRecognitionError(nsCString("concurrent-session"));
         } else {
           LOG("Speech recognition session initialized successfully");
+          // Start the background thread
+          self->mResamplingThreadRunning.store(true, std::memory_order_release);
+          nsCOMPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
+              "SpeechRecognitionBackend::ProcessAudioOnBackgroundThread",
+              [self]() { self->StartProcessingAudioOnBackgroundThread(); });
+          nsresult rv = NS_NewNamedThread("SpeechResampler",
+                                          getter_AddRefs(self->mResamplingThread),
+                                          runnable.forget());
+          if (NS_FAILED(rv)) {
+            LOGE("Failed to create background thread: {:x}",
+                 static_cast<uint32_t>(rv));
+            self->mResamplingThreadRunning.store(false,
+                                                 std::memory_order_release);
+          }
         }
       },
       [self = RefPtr{this}](mozilla::ipc::ResponseRejectReason aReason) {

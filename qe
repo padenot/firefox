@@ -1,0 +1,994 @@
+diff --git a/dom/media/webspeech/recognition/SpeechRecognitionParent.cpp b/dom/media/webspeech/recognition/SpeechRecognitionParent.cpp
+index 0fc507cabf..a22d3cf7c5 100644
+--- a/dom/media/webspeech/recognition/SpeechRecognitionParent.cpp
++++ b/dom/media/webspeech/recognition/SpeechRecognitionParent.cpp
+@@ -10,9 +10,12 @@
+ #include <chrono>
+ #include <cmath>
+ #include <memory>
++#include <ratio>
++#include <thread>
+ 
+ #include "mozIRemoteLazyInputStream.h"
+ #include "mozilla/Logging.h"
++#include "mozilla/Mutex.h"
+ #include "mozilla/Preferences.h"
+ #include "mozilla/dom/Blob.h"
+ #include "mozilla/dom/BlobImpl.h"
+@@ -27,9 +30,12 @@
+ #include "nsGkAtoms.h"
+ #include "nsIFileStreams.h"
+ #include "nsNetUtil.h"
++#include "nsReadableUtils.h"
+ #include "nsString.h"
++#include "nsThreadUtils.h"
+ #include "prio.h"
+ #include "private/pprio.h"
++#include "whisper.h"
+ 
+ #ifdef XP_WIN
+ #  include <fcntl.h>
+@@ -58,8 +64,7 @@
+     10000;  // 10 seconds of audio to analyze
+ static constexpr int32_t DEFAULT_NUM_THREADS = 4;
+ 
+-// Whisper sampling strategy enum value
+-static constexpr int WHISPER_SAMPLING_GREEDY = 0;
++// Use whisper.h enum values directly for sampling strategy.
+ 
+ // Metadata callback for model blob file descriptor retrieval
+ class SpeechRecognitionMetadataCallback final : public nsIFileMetadataCallback {
+@@ -112,6 +117,22 @@
+                       mRevision.get());
+ }
+ 
++void SpeechRecognitionParent::ResolveOrRejectInitOnIPCThread(bool aSuccess) {
++  if (GetActorEventTarget()->IsOnCurrentThread()) {
++    LOGV("Resolving init on same thread {}", aSuccess);
++    mInitResolver(aSuccess);
++    mInitResolver = nullptr;
++  } else {
++    LOGV("Resolving init accross thread {}", aSuccess);
++    GetActorEventTarget()->Dispatch(NS_NewRunnableFunction(
++        "Speech recognition init runnable",
++        [resolver = std::move(mInitResolver), aSuccess]() {
++          LOGV("Ok now on right thread {}", aSuccess);
++          resolver(aSuccess);
++        }));
++  }
++}
++
+ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
+     const nsTArray<nsCString>& aLanguages,
+     IsModelAvailableResolver&& aResolver) {
+@@ -125,7 +146,7 @@
+       mozilla::ipc::UtilityProcessChild::GetSingleton();
+   if (!utilityChild) {
+     LOGE("{} No UtilityProcessChild available", __func__);
+-    aResolver(false);
++    ResolveOrRejectInitOnIPCThread(false);
+     return IPC_OK();
+   }
+ 
+@@ -133,7 +154,7 @@
+       utilityChild->GetHWInferenceChild();
+   if (!hwInferenceChild) {
+     LOGE("{} No HWInferenceChild available", __func__);
+-    aResolver(false);
++    ResolveOrRejectInitOnIPCThread(false);
+     return IPC_OK();
+   }
+ 
+@@ -147,16 +168,15 @@
+       modelIdentifier.mFileName);
+   promise->Then(
+       GetCurrentSerialEventTarget(), __func__,
+-      [self = RefPtr{this}, resolver = aResolver](bool aAvailable) mutable {
++      [self = RefPtr{this}](bool aAvailable) mutable {
+         LOGD("Sending response back to content process: available={}",
+              aAvailable ? "true" : "false");
+-        resolver(aAvailable);
++        self->ResolveOrRejectInitOnIPCThread(aAvailable);
+       },
+-      [self = RefPtr{this},
+-       resolver = aResolver](ResponseRejectReason aReason) mutable {
++      [self = RefPtr{this}](ResponseRejectReason aReason) mutable {
+         LOGE("{} IPC call to main process failed: {}", __func__,
+              static_cast<int>(aReason));
+-        resolver(false);
++        self->ResolveOrRejectInitOnIPCThread(false);
+       });
+ 
+   return IPC_OK();
+@@ -214,51 +234,47 @@
+ }
+ 
+ SpeechRecognitionParent::SpeechRecognitionParent()
+-    : mIsActive(false),
++    : mLock("SpeechRecognitionLock"),
++      mLib(nullptr),
+       mWhisperCtx(nullptr),
+-      mLib(nullptr),
++      // We expect that in some less powerful computer that aren't doing hw
++      // accelerated recognition, having a very long queue can smooth things
++      // out.
++      mAudioQueue(WHISPER_SAMPLE_RATE * 30),
+       mThreadRunning(false),
+-      mAudioQueue(WHISPER_SAMPLE_RATE * 30),  // 30 seconds of audio buffer
+-      mRingWritePos(0),
+-      mRingSize(WHISPER_SAMPLE_RATE * 10),  // Default 10 seconds, will be updated
+       mParams() {  // Initialize with defaults
+-  // Initialize ring buffer
+-  mAudioRing.resize(mRingSize, 0.0f);
+ 
+   // MOZ_DUMP_AUDIO=1 MOZ_DISABLE_UTILITY_SANDBOX=1 to activate this
+   mWhisperAudioDumper.Open("SpeechRecognition-Whisper-Input", 1,
+                            WHISPER_SAMPLE_RATE);
+ 
+-  // Initialize for continuous recognition
+   mProcessedAudioPos = 0;
+ 
+-  // Load tunable parameters from preferences (can be overridden via about:config)
++  // Load tunable parameters from preferences (can be overridden via
++  // about:config)
+   LoadPreferences();
+ }
+ 
+ void SpeechRecognitionParent::LoadPreferences() {
+-  // These can be set via about:config for tuning
+-  // Example: media.webspeech.recognition.interval_ms
+-
+   // Timing parameters
+-  mParams.mRecognitionIntervalMs = Preferences::GetInt(
+-      "media.webspeech.recognition.interval_ms", 1000);
+-  mParams.mAudioLengthMs = Preferences::GetInt(
+-      "media.webspeech.recognition.audio_length_ms", 10000);
+-  mParams.mKeepAudioMs = Preferences::GetInt(
+-      "media.webspeech.recognition.keep_audio_ms", 200);
+-  mParams.mStepMs = Preferences::GetInt(
+-      "media.webspeech.recognition.step_ms", 3000);
++  mParams.mRecognitionIntervalMs =
++      Preferences::GetInt("media.webspeech.recognition.interval_ms", 500);
++  mParams.mAudioLengthMs =
++      Preferences::GetInt("media.webspeech.recognition.audio_length_ms", 10000);
++  mParams.mKeepAudioMs =
++      Preferences::GetInt("media.webspeech.recognition.keep_audio_ms", 200);
++  mParams.mStepMs =
++      Preferences::GetInt("media.webspeech.recognition.step_ms", 3000);
+ 
+   // Quality parameters
+-  mParams.mBeamSize = Preferences::GetInt(
+-      "media.webspeech.recognition.beam_size", 1);
+-  mParams.mTemperature = Preferences::GetFloat(
+-      "media.webspeech.recognition.temperature", 0.0f);
++  mParams.mBeamSize =
++      Preferences::GetInt("media.webspeech.recognition.beam_size", 1);
++  mParams.mTemperature =
++      Preferences::GetFloat("media.webspeech.recognition.temperature", 0.0f);
+   mParams.mTemperatureInc = Preferences::GetFloat(
+       "media.webspeech.recognition.temperature_inc", 0.2f);
+-  mParams.mBestOf = Preferences::GetInt(
+-      "media.webspeech.recognition.best_of", 2);
++  mParams.mBestOf =
++      Preferences::GetInt("media.webspeech.recognition.best_of", 2);
+ 
+   // Thresholds
+   mParams.mEntropyThreshold = Preferences::GetFloat(
+@@ -268,53 +284,51 @@
+   mParams.mNoSpeechThreshold = Preferences::GetFloat(
+       "media.webspeech.recognition.no_speech_threshold", 0.6f);
+ 
+-  // VAD parameters
+-  mParams.mUseVAD = Preferences::GetBool(
+-      "media.webspeech.recognition.use_vad", false);
+-  mParams.mVADThreshold = Preferences::GetFloat(
+-      "media.webspeech.recognition.vad_threshold", 0.6f);
+-  mParams.mVADMinSpeechMs = Preferences::GetInt(
+-      "media.webspeech.recognition.vad_min_speech_ms", 250);
++  // VAD parameters (not wired up yet)
++  mParams.mUseVAD =
++      Preferences::GetBool("media.webspeech.recognition.use_vad", false);
++  mParams.mVADThreshold =
++      Preferences::GetFloat("media.webspeech.recognition.vad_threshold", 0.6f);
++  mParams.mVADMinSpeechMs =
++      Preferences::GetInt("media.webspeech.recognition.vad_min_speech_ms", 250);
+   mParams.mVADMinSilenceMs = Preferences::GetInt(
+       "media.webspeech.recognition.vad_min_silence_ms", 2000);
+ 
+-  // Context parameters
++  // Context parameters. 224 is a constant in whisper models
+   mParams.mMaxContextTokens = Preferences::GetInt(
+       "media.webspeech.recognition.max_context_tokens", 224);
+-  mParams.mUseContextCarryover = Preferences::GetBool(
+-      "media.webspeech.recognition.use_context", true);
++  mParams.mUseContextCarryover =
++      Preferences::GetBool("media.webspeech.recognition.use_context", true);
+ 
+   // Performance parameters
+-  mParams.mNumThreads = Preferences::GetInt(
+-      "media.webspeech.recognition.num_threads", 4);
+-  mParams.mAudioContextSize = Preferences::GetInt(
+-      "media.webspeech.recognition.audio_context_size", 0);
++  // Not used when using GPU -- a single thread is used for submitting work to
++  // the GPU
++  mParams.mNumThreads =
++      Preferences::GetInt("media.webspeech.recognition.num_threads", 4);
++  mParams.mAudioContextSize =
++      Preferences::GetInt("media.webspeech.recognition.audio_context_size", 0);
+   mParams.mMaxTokensPerSegment = Preferences::GetInt(
+-      "media.webspeech.recognition.max_tokens_per_segment", 32);
+-
+-  // Update ring buffer size if audio length changed
+-  mRingSize = WHISPER_SAMPLE_RATE * (mParams.mAudioLengthMs / 1000);
+-  mAudioRing.resize(mRingSize, 0.0f);
+-
+-  LOGD("Loaded recognition parameters: interval={}ms, length={}ms, beam={}, threads={}",
+-       mParams.mRecognitionIntervalMs, mParams.mAudioLengthMs,
+-       mParams.mBeamSize, mParams.mNumThreads);
++      "media.webspeech.recognition.max_tokens_per_segment", 0);
+ }
+ 
+ void SpeechRecognitionParent::RetrieveModelBlob() {
++  MOZ_ASSERT(NS_IsMainThread());
+   RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
+       mozilla::ipc::UtilityProcessChild::GetSingleton();
+   if (!utilityChild) {
+     LOGE("{} ERROR: No UtilityProcessChild available", __func__);
++    ResolveOrRejectInitOnIPCThread(false);
+     return;
+   }
+   mozilla::ipc::HWInferenceChild* hwInferenceChild =
+       utilityChild->GetHWInferenceChild();
+   if (!hwInferenceChild) {
+     LOGE("{} No HWInferenceChild available for model blob retrieval", __func__);
++    ResolveOrRejectInitOnIPCThread(false);
+     return;
+   }
+ 
++  // MutexAutoLock lock(mLock);
+   ModelIdentifier modelIdentifier =
+       LanguagesToModelIdentifier(nsTArray{mLanguage});
+ 
+@@ -328,11 +342,13 @@
+           GetCurrentSerialEventTarget(), __func__,
+           [self = RefPtr{this}](
+               const mozilla::ipc::GetModelBlobResult& aResult) mutable {
++            // MutexAutoLock lock(self->mLock);
+             if (aResult.type() ==
+                 mozilla::ipc::GetModelBlobResult::TGetModelBlobError) {
+               LOGE("{} GetModelBlobError with nsresult={:x}", __func__,
+                    static_cast<uint32_t>(
+                        aResult.get_GetModelBlobError().errorCode()));
++              self->ResolveOrRejectInitOnIPCThread(false);
+               return;
+             }
+ 
+@@ -343,6 +359,7 @@
+ 
+             if (!blobImpl) {
+               LOGE("{} Could not deserialize IPCBlob", __func__);
++              self->ResolveOrRejectInitOnIPCThread(false);
+               return;
+             }
+             mozilla::ErrorResult errorResult;
+@@ -350,6 +367,7 @@
+                                         errorResult);
+             if (errorResult.Failed()) {
+               LOGE("{}: CreateInputStream failed", __func__);
++              self->ResolveOrRejectInitOnIPCThread(false);
+               return;
+             }
+ 
+@@ -368,17 +386,22 @@
+             if (NS_WARN_IF(NS_FAILED(rv))) {
+               LOGE("{} AsyncFileMetadataWait returned error 0x{:x}", __func__,
+                    static_cast<uint32_t>(rv));
++              self->ResolveOrRejectInitOnIPCThread(false);
+               return;
+             }
++            // In case of success, next steps in `OnModelMetadataReceived`
++            // just below
+           },
+           [self = RefPtr{this}](
+               mozilla::ipc::ResponseRejectReason aReason) mutable {
+             LOGE("{} Promise rejected with reason {}", __func__,
+                  static_cast<int>(aReason));
++            self->ResolveOrRejectInitOnIPCThread(false);
+           });
+ }
+ 
+ void SpeechRecognitionParent::OnModelMetadataReceived() {
++  // MutexAutoLock lock(mLock);
+   mMetadataCallback = nullptr;
+ 
+   const nsCOMPtr<nsIFileMetadata> fileMetadata =
+@@ -393,6 +416,7 @@
+   if (NS_WARN_IF(NS_FAILED(rv))) {
+     LOGE("{} GetFileDescriptor error, neresult=0x{:x}", __func__,
+          static_cast<uint32_t>(rv));
++    ResolveOrRejectInitOnIPCThread(false);
+     return;
+   }
+   MOZ_ASSERT(fileDesc);
+@@ -403,6 +427,7 @@
+   int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_RDONLY);
+   if (fd == -1) {
+     LOGE("{} _open_osfhandle failed", __func__);
++    ResolveOrRejectOnIPCThread(false);
+     return;
+   }
+ #else
+@@ -411,15 +436,41 @@
+   FILE* fp = fdopen(fd, "rb");
+   if (!fp) {
+     LOGE("{} fdopen failed", __func__);
++    ResolveOrRejectInitOnIPCThread(false);
+     return;
+   }
+ 
+   mModelFile = fp;
+-  mWhisperInitPending.store(true);
++
++  struct whisper_context_params cparams =
++      mLib->whisper_context_default_params();
++#ifdef XP_MACOSX
++  cparams.use_gpu = true;
++#else
++  cparams.use_gpu = false;
++#endif
++  mWhisperCtx =
++      mLib->whisper_init_from_file_handle_with_params(mModelFile, cparams);
++  if (!mWhisperCtx) {
++    LOGE("{} whisper_init_from_file_handle_with_params failed", __func__);
++    fclose(mModelFile);
++    mModelFile = nullptr;
++    ResolveOrRejectInitOnIPCThread(false);
++    return;
++  }
++
++  ResolveOrRejectInitOnIPCThread(true);
++  LOGD("Whisper context ready, starting main recognition loop");
++
++  // MutexAutoUnlock unlock(mLock);
++
++  mRecognitionThread->Dispatch(NS_NewRunnableFunction(
++      "Whisper Loop",
++      [self = RefPtr{this}] { self->ProcessAudioOnBackgroundThread(); }));
+ }
+ 
+ SpeechRecognitionParent::~SpeechRecognitionParent() {
+-  LOGD("{} mIsActive={}", __func__, mIsActive ? "true" : "false");
++  LOGD("{}", __func__);
+ 
+   // Clear active session if this was it
+   {
+@@ -430,19 +481,21 @@
+     }
+   }
+ 
+-  if (mIsActive) {
+-    LOGD("Destroying active session, cleaning up");
+-    mIsActive = false;
+-  }
+-
+   if (mThreadRunning.load()) {
+     mThreadRunning.store(false);
+-    if (mBackgroundThread.joinable()) {
+-      mBackgroundThread.join();
+-    }
+-  }
+-
+-  CleanupWhisperContext();
++    mRecognitionThread->Shutdown();
++  }
++
++  if (mWhisperCtx && mLib) {
++    mLib->whisper_free(mWhisperCtx);
++    mWhisperCtx = nullptr;
++  }
++
++  // MutexAutoLock lock(mLock);
++  if (mModelFile) {
++    fclose(mModelFile);
++    mModelFile = nullptr;
++  }
+ }
+ 
+ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
+@@ -462,27 +515,34 @@
+     LOGD("Session registered as active");
+   }
+ 
++  // MutexAutoLock lock(mLock);
+   mLanguage = aLanguage;
+   mPhrases = aPhrases.Clone();
+-  mIsActive = true;
+ 
+-  // Reset continuous recognition state for new session
+-  mAccumulatedTranscript.Truncate();
+-  mLastSegmentText.Truncate();
+   mPromptTokens.clear();
+   mProcessedAudioPos = 0;
+-
+-  if (!mThreadRunning.load()) {
+-    mThreadRunning.store(true);
+-    mBackgroundThread = std::thread([self = RefPtr{this}]() {
+-      self->InitializeWhisperOnBackgroundThread();
+-      self->ProcessAudioOnBackgroundThread();
+-    });
++  mGroupTokens.clear();
++  mLastFinalTokens.clear();
++
++  // What follows is a long chain of asynchronous steps within and outside of
++  // this process. Stash the resolver here to properly call it when it's time.
++  mInitResolver = aResolver;
++
++  // We perform the initialization on the same thread we'll later use for the
++  // main recognition loop.
++  MOZ_ASSERT(!mThreadRunning.load());
++  mThreadRunning.store(true);
++
++  nsCOMPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
++      "SpeechRecognitionBackend::ProcessAudioOnBackgroundThread",
++      [self = RefPtr{this}]() { self->InitializeWhisperOnBackgroundThread(); });
++  nsresult rv = NS_NewNamedThread("Whisper", getter_AddRefs(mRecognitionThread),
++                                  runnable.forget());
++  if (NS_FAILED(rv)) {
++    LOGE("Failed creating Whisper recognition thread.");
++    mInitResolver(false);
+   }
+ 
+-  // Since we're using blob-based loading, we'll initialize in the background
+-  // thread For now, just resolve success
+-  aResolver(true);
+   return IPC_OK();
+ }
+ 
+@@ -490,11 +550,6 @@
+     nsTArray<float>&& aAudioData) {
+   LOGV("{} {} samples", __func__, aAudioData.Length());
+ 
+-  if (!mIsActive) {
+-    LOGD("Received audio data but session is not active, ignoring");
+-    return IPC_OK();
+-  }
+-
+   if (!mAudioQueue.Enqueue(aAudioData.Elements(), (int)aAudioData.Length())) {
+     LOGD("Audio queue full, dropping sample");
+   }
+@@ -503,8 +558,6 @@
+ }
+ 
+ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
+-  LOGD("RecvStop called, mIsActive={}", mIsActive ? "true" : "false");
+-
+   // Clear active session if this was it
+   {
+     StaticMutexAutoLock lock(sSessionMutex);
+@@ -514,43 +567,21 @@
+     }
+   }
+ 
+-  if (mIsActive) {
+-    mIsActive = false;
+-
+-    // Send final result with accumulated transcript
+-    if (!mAccumulatedTranscript.IsEmpty() && CanSend()) {
+-      LOGD("Sending final transcript: '{}'", mAccumulatedTranscript.get());
+-      Unused << SendOnRecognitionResult(mAccumulatedTranscript, true);  // true = final
+-    }
+-
+-    // Stop background thread
+-    if (mThreadRunning.load()) {
+-      mThreadRunning.store(false);
+-      LOGD("Signaled background thread to stop");
+-    }
+-
+-    LOGD("Stopping speech recognition session and cleaning up resources");
+-  } else {
+-    LOGD("Stop called on inactive session");
++  // Stop background thread
++  if (mThreadRunning.load()) {
++    mThreadRunning.store(false);
++    LOGD("Signaled background thread to stop");
+   }
++
++  LOGD("Stopping speech recognition session and cleaning up resources");
+   return IPC_OK();
+ }
+ 
+ void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
+-  LOGD("ActorDestroy called, reason={}, mIsActive={}",
+-       static_cast<int>(aReason), mIsActive ? "true" : "false");
+-
+-  if (mIsActive) {
+-    LOGD("Actor destroyed while session was active, cleaning up");
+-    mIsActive = false;
+-  }
+-
+   // Stop background thread
+   if (mThreadRunning.load()) {
+     mThreadRunning.store(false);
+-    if (mBackgroundThread.joinable()) {
+-      mBackgroundThread.join();
+-    }
++    mRecognitionThread->Shutdown();
+   }
+ }
+ 
+@@ -559,6 +590,7 @@
+     mLib = mozilla::llama::LlamaRuntimeLinker::Get();
+     if (!mLib) {
+       LOGE("{} Failed to get runtime linker", __func__);
++      ResolveOrRejectInitOnIPCThread(false);
+       return;
+     }
+   }
+@@ -570,260 +602,226 @@
+ }
+ 
+ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
+-  LOGD("{} Starting continuous recognition loop", __func__);
+-
++  // This system only use mono audio. We use the term audio frame in gecko,
++  // but it is interchageable with the term sample here since we're always
++  // dealing with a single audio channel.
++
++  // Interval at which recognition runs (typically a few hundreds ms)
++  const int n_samples_step =
++      (int)((1e-3 * mParams.mStepMs) * WHISPER_SAMPLE_RATE);
++  // Duration of the audio for a single recognition (typically a few seconds)
++  const int n_samples_len =
++      (int)((1e-3 * mParams.mAudioLengthMs) * WHISPER_SAMPLE_RATE);
++  // Amount of audio to keep between recognitions (typically a small number of
++  // hundreds of ms)
++  const int n_samples_keep = std::min(
++      (int)((1e-3 * mParams.mKeepAudioMs) * WHISPER_SAMPLE_RATE),
++      n_samples_len);
++
++  // We stream continuously; no periodic forced finals here
++
++  // We need a few different audio buffer in this recognition loop
++
++  // This ring buffer receives audio from the spsc ring buffer.
++  size_t ringSize = WHISPER_SAMPLE_RATE * (mParams.mAudioLengthMs / 1000);
++  std::vector<float> audioRing(ringSize, 0.0f);
++  size_t audioRingPos = 0;
++  size_t audioRingCount = 0;  // how many valid samples currently in ring
++  // Audio buffers: build recognition window from previous tail + newest ring
+   std::vector<float> audioForRecognition;
+-  std::vector<float> audioBuffer;  // Continuous audio buffer
+-
+-  // Two background tasks: audio ring buffer management and periodic recognition
+-  std::thread audioConsumerThread([self = RefPtr{this}]() {
+-    while (self->mThreadRunning.load()) {
+-      // Continuously dequeue audio and add to ring buffer
+-      size_t available = self->mAudioQueue.AvailableRead();
+-      if (available > 0) {
+-        // Process available audio in chunks
+-        size_t samples_to_process =
+-            std::min(available, static_cast<size_t>(1024));
+-        std::vector<float> samples(samples_to_process);
+-        size_t dequeued =
+-            self->mAudioQueue.Dequeue(samples.data(), samples_to_process);
+-
+-        // Add samples to ring buffer
+-        for (size_t i = 0; i < dequeued; i++) {
+-          self->mAudioRing[self->mRingWritePos] = samples[i];
+-          self->mRingWritePos = (self->mRingWritePos + 1) % self->mRingSize;
+-        }
+-
+-        LOGV("Added {} samples to ring buffer, writePos={}", dequeued, self->mRingWritePos);
+-      }
+-
+-      // Small sleep to prevent excessive CPU usage
+-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
++  std::vector<float> previousAudio;
++
++  nsCString accumulated;      // accumulated transcript for the session
++  nsCString lastSegmentText;  // last emitted segment text to skip dupes
++
++  nsCString language;
++  nsCString prompt;
++  {
++    // Get a thread-local copies of a couple things
++    // MutexAutoLock lock(mLock);
++    language = mLanguage;
++    // Bias with phrases (replicate old behavior with ". ")
++    for (const auto& phrase : mPhrases) {
++      prompt.Append(NS_ConvertUTF16toUTF8(phrase));
++      prompt.AppendLiteral(". ");
+     }
+-  });
++  }
+ 
+-  // Main recognition loop - runs every recognition interval
++  // Main recognition loop, exits + thread joined in dtor.
+   auto lastRecognitionTime = std::chrono::steady_clock::now();
+-
+   while (mThreadRunning.load()) {
+-    // Check if we need to initialize Whisper with the FILE* handle
+-    if (mWhisperInitPending.load() && mModelFile && !mWhisperCtx) {
+-      struct whisper_context_params cparams =
+-          mLib->whisper_context_default_params();
+-
+-#ifdef XP_MACOSX
+-      cparams.use_gpu = true;
+-#else
+-      cparams.use_gpu = false;
+-#endif
+-
+-      mWhisperCtx =
+-          mLib->whisper_init_from_file_handle_with_params(mModelFile, cparams);
+-
+-      if (!mWhisperCtx) {
+-        LOGE(
+-            "{} ERROR whisper_init_from_file_handle_with_params "
+-            "returned nullptr",
+-            __func__);
+-        fclose(mModelFile);
+-        mModelFile = nullptr;
++    // Drain whatever is available from the SPSC queue into our local ring
++    int available = mAudioQueue.AvailableRead();
++    size_t chunk = (size_t)available;
++    const size_t toEnd = audioRing.size() - audioRingPos;
++    if (chunk <= toEnd) {
++      const size_t got = mAudioQueue.Dequeue(&audioRing[audioRingPos], chunk);
++      audioRingPos = (audioRingPos + got) % audioRing.size();
++      audioRingCount = std::min(audioRing.size(), audioRingCount + got);
++    } else {
++      const size_t got1 = mAudioQueue.Dequeue(&audioRing[audioRingPos], toEnd);
++      if (got1 == toEnd && chunk > toEnd) {
++        const size_t got2 = mAudioQueue.Dequeue(&audioRing[0], chunk - toEnd);
++        audioRingPos = got2;  // wrapped
++        audioRingCount = std::min(audioRing.size(), audioRingCount + got1 + got2);
+       } else {
+-        LOGD("{} Got Whisper context", __func__);
+-      }
+-
+-      mWhisperInitPending.store(false);
+-    }
+-
+-    auto currentTime = std::chrono::steady_clock::now();
+-    auto timeSinceLastRecognition =
+-        std::chrono::duration_cast<std::chrono::milliseconds>(
+-            currentTime - lastRecognitionTime)
+-            .count();
+-
+-    if (timeSinceLastRecognition >= mParams.mRecognitionIntervalMs) {
+-      // Time for recognition - extract audio from ring buffer
+-      size_t samples_to_analyze = std::min(
+-          mRingSize,
+-          static_cast<size_t>((1e-3 * mParams.mAudioLengthMs) * WHISPER_SAMPLE_RATE));
+-
+-      // Calculate samples to keep from previous recognition (for context/overlap)
+-      const size_t n_samples_keep = static_cast<size_t>((1e-3 * mParams.mKeepAudioMs) * WHISPER_SAMPLE_RATE);
+-
+-      audioForRecognition.clear();
+-
+-      // First, add kept samples from previous recognition if available
+-      if (!mPreviousAudio.empty() && n_samples_keep > 0) {
+-        size_t samples_to_keep = std::min(n_samples_keep, mPreviousAudio.size());
+-        size_t start_idx = mPreviousAudio.size() - samples_to_keep;
+-        audioForRecognition.insert(audioForRecognition.end(),
+-                                  mPreviousAudio.begin() + start_idx,
+-                                  mPreviousAudio.end());
+-      }
+-
+-      // Then add new samples from ring buffer
+-      size_t new_samples_needed = samples_to_analyze - audioForRecognition.size();
+-      size_t start_pos = audioForRecognition.size();
+-      audioForRecognition.resize(samples_to_analyze);
+-
+-      for (size_t i = 0; i < new_samples_needed; i++) {
+-        size_t ring_pos =
+-            (mRingWritePos + mRingSize - new_samples_needed + i) % mRingSize;
+-        audioForRecognition[start_pos + i] = mAudioRing[ring_pos];
+-      }
+-
+-      // Store current audio for next iteration
+-      mPreviousAudio = audioForRecognition;
+-
+-      LOGV("{} Running recognition on {} samples ({:.2f}s of audio)",
+-           __func__, samples_to_analyze,
+-           samples_to_analyze / (float)WHISPER_SAMPLE_RATE);
+-
+-      // Dump audio data that will be sent to Whisper for debugging
+-      mWhisperAudioDumper.Write(audioForRecognition.data(),
+-                                audioForRecognition.size());
+-
+-      if (mWhisperCtx && audioForRecognition.size() > 0 && mLib) {
+-        // Run Whisper inference with configurable parameters
+-        enum whisper_sampling_strategy strategy = static_cast<enum whisper_sampling_strategy>(
+-            mParams.mBeamSize > 1
+-            ? WHISPER_SAMPLING_BEAM_SEARCH
+-            : WHISPER_SAMPLING_GREEDY);
+-        whisper_full_params wparams = mLib->whisper_full_default_params(strategy);
+-
+-        // Basic settings
+-        wparams.print_progress = false;
+-        wparams.print_special = false;
+-        wparams.print_realtime = false;
+-        wparams.print_timestamps = true;
+-        wparams.translate = false;
+-        wparams.single_segment = mParams.mSingleSegment;
+-        wparams.max_tokens = mParams.mMaxTokensPerSegment;
+-        wparams.language = mLanguage.get();
+-        wparams.n_threads = mParams.mNumThreads;
+-        wparams.audio_ctx = mParams.mAudioContextSize;
+-
+-        // Quality parameters
+-        wparams.temperature = mParams.mTemperature;
+-        wparams.temperature_inc = mParams.mTemperatureInc;
+-        wparams.beam_search.beam_size = mParams.mBeamSize;
+-        wparams.greedy.best_of = mParams.mBestOf;
+-
+-        // Confidence thresholds
+-        wparams.entropy_thold = mParams.mEntropyThreshold;
+-        wparams.logprob_thold = mParams.mLogProbThreshold;
+-        wparams.no_speech_thold = mParams.mNoSpeechThreshold;
+-
+-        // Build prompt from phrases and previous context
+-        nsCString prompt;
+-        for (auto& phrase : mPhrases) {
+-          prompt.Append(NS_ConvertUTF16toUTF8(phrase));
+-          prompt.AppendLiteral(". ");
+-        }
+-        wparams.initial_prompt = prompt.get();
+-
+-        // Use tokens from previous segment as context for continuity
+-        if (mParams.mUseContextCarryover) {
+-          wparams.prompt_tokens = mPromptTokens.empty() ? nullptr : mPromptTokens.data();
+-          wparams.prompt_n_tokens = mPromptTokens.size();
+-          wparams.no_context = false;  // Keep context for continuous recognition
+-        } else {
+-          wparams.prompt_tokens = nullptr;
+-          wparams.prompt_n_tokens = 0;
+-          wparams.no_context = true;
+-        }
+-
+-        if (mLib->whisper_full(mWhisperCtx, wparams, audioForRecognition.data(),
+-                               audioForRecognition.size()) == 0) {
+-          // Process results
+-          const int n_segments = mLib->whisper_full_n_segments(mWhisperCtx);
+-
+-          // Clear previous prompt tokens to build new ones
+-          mPromptTokens.clear();
+-
+-          // Process each segment
+-          for (int i = 0; i < n_segments; ++i) {
+-            const char* text =
+-                mLib->whisper_full_get_segment_text(mWhisperCtx, i);
+-
+-            if (text && strlen(text) > 0) {
+-              nsCString segmentText(text);
+-
+-              // Trim whitespace
+-              segmentText.Trim(" \t\n\r");
+-
+-              // Skip if this is a duplicate of the last segment
+-              if (!segmentText.IsEmpty() && !segmentText.Equals(mLastSegmentText)) {
+-                // Add to accumulated transcript with proper spacing
+-                if (!mAccumulatedTranscript.IsEmpty()) {
+-                  mAccumulatedTranscript.AppendLiteral(" ");
+-                }
+-                mAccumulatedTranscript.Append(segmentText);
+-                mLastSegmentText = segmentText;
+-
+-                // Collect tokens from this segment for context in next recognition
+-                const int token_count = mLib->whisper_full_n_tokens(mWhisperCtx, i);
+-                for (int j = 0; j < token_count; ++j) {
+-                  mPromptTokens.push_back(mLib->whisper_full_get_token_id(mWhisperCtx, i, j));
+-                }
+-
+-                LOGV("{} New segment: '{}', Total transcript: '{}'", __func__,
+-                     segmentText.get(), mAccumulatedTranscript.get());
+-
+-                // Send the accumulated transcript (not just the segment)
+-                bool isFinal = false;  // In continuous mode, never mark as final until stop
+-
+-                NS_DispatchToMainThread(NS_NewRunnableFunction(
+-                    "SpeechRecognitionParent::SendResult",
+-                    [self = RefPtr{this},
+-                     transcript = nsCString(mAccumulatedTranscript),
+-                     isFinal]() {
+-                      if (self->CanSend()) {
+-                        Unused
+-                            << self->SendOnRecognitionResult(transcript, isFinal);
+-                      }
+-                    }));
+-              } else if (!segmentText.IsEmpty()) {
+-                LOGV("{} Skipping duplicate segment: '{}'", __func__, segmentText.get());
+-              }
++        audioRingPos = (audioRingPos + got1) % audioRing.size();
++        audioRingCount = std::min(audioRing.size(), audioRingCount + got1);
++      }
++    }
++
++    // Recognition cadence: run every mRecognitionIntervalMs
++    auto now = std::chrono::steady_clock::now();
++    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
++                               now - lastRecognitionTime)
++                               .count();
++    if (elapsedMs < mParams.mRecognitionIntervalMs) {
++      // Small sleep to avoid busy spinning
++      std::this_thread::sleep_for(std::chrono::milliseconds(50));
++      continue;
++    }
++
++    // Build recognition window from previous tail + newest ring tail
++    const size_t samples_to_analyze =
++        std::min((size_t)ringSize, (size_t)n_samples_len);
++    const size_t samples_to_keep =
++        std::min((size_t)n_samples_keep, previousAudio.size());
++    audioForRecognition.clear();
++    if (samples_to_keep > 0) {
++      audioForRecognition.insert(audioForRecognition.end(),
++                                 previousAudio.end() - samples_to_keep,
++                                 previousAudio.end());
++    }
++    const size_t new_samples_needed =
++        samples_to_analyze - audioForRecognition.size();
++    const size_t start_pos = audioForRecognition.size();
++    audioForRecognition.resize(samples_to_analyze);
++    for (size_t i = 0; i < new_samples_needed; ++i) {
++      const size_t ring_pos =
++          (audioRingPos + ringSize - new_samples_needed + i) % ringSize;
++      audioForRecognition[start_pos + i] = audioRing[ring_pos];
++    }
++    previousAudio = audioForRecognition;
++
++    // Dump audio for debugging
++    mWhisperAudioDumper.Write(audioForRecognition.data(),
++                              audioForRecognition.size());
++
++    // Configure whisper params like CLI
++    enum whisper_sampling_strategy strat =
++        static_cast<enum whisper_sampling_strategy>(
++            (mParams.mBeamSize > 1) ? WHISPER_SAMPLING_BEAM_SEARCH
++                                    : WHISPER_SAMPLING_GREEDY);
++    whisper_full_params wparams = mLib->whisper_full_default_params(strat);
++    wparams.print_progress = false;
++    wparams.print_special = false;
++    wparams.print_realtime = false;
++    wparams.print_timestamps = true;
++    wparams.translate = false;
++    wparams.single_segment = mParams.mSingleSegment;
++    wparams.max_tokens =
++        mParams.mMaxTokensPerSegment;  // 0 = unlimited (recommended)
++    wparams.language = language.get();
++    wparams.n_threads = mParams.mNumThreads;
++    wparams.audio_ctx = mParams.mAudioContextSize;
++
++    wparams.temperature = mParams.mTemperature;
++    wparams.temperature_inc = mParams.mTemperatureInc;
++    wparams.beam_search.beam_size = mParams.mBeamSize;
++    wparams.greedy.best_of = mParams.mBestOf;
++    wparams.entropy_thold = mParams.mEntropyThreshold;
++    wparams.logprob_thold = mParams.mLogProbThreshold;
++    wparams.no_speech_thold = mParams.mNoSpeechThreshold;
++
++    wparams.initial_prompt = prompt.IsEmpty() ? nullptr : prompt.get();
++
++    if (mParams.mUseContextCarryover) {
++      wparams.prompt_tokens =
++          mPromptTokens.empty() ? nullptr : mPromptTokens.data();
++      wparams.prompt_n_tokens = (int)mPromptTokens.size();
++      wparams.no_context = false;
++    } else {
++      wparams.prompt_tokens = nullptr;
++      wparams.prompt_n_tokens = 0;
++      wparams.no_context = true;
++    }
++
++    if (!(mWhisperCtx &&
++          mLib->whisper_full(mWhisperCtx, wparams, audioForRecognition.data(),
++                              (int)audioForRecognition.size()) == 0)) {
++      LOGD("whisper_full failed or context not ready");
++      // Back-off briefly to avoid busy loop
++      std::this_thread::sleep_for(std::chrono::milliseconds(20));
++      continue;
++    }
++    // Process results: accumulate new segments, skipping duplicates
++    const int n_segments = mLib->whisper_full_n_segments(mWhisperCtx);
++    bool appendedAnything = false;
++    for (int i = 0; i < n_segments; ++i) {
++      const char* text = mLib->whisper_full_get_segment_text(mWhisperCtx, i);
++      if (!text || !text[0]) {
++        continue;
++      }
++      nsCString segmentText(text);
++      segmentText.Trim(" \t\n\r");
++      if (segmentText.IsEmpty() || segmentText.Equals(lastSegmentText)) {
++        continue;
++      }
++      if (!accumulated.IsEmpty()) {
++        accumulated.AppendLiteral(" ");
++      }
++      accumulated.Append(segmentText);
++      lastSegmentText = segmentText;
++      appendedAnything = true;
++    }
++
++    // Emit accumulated transcript only if it changed (never mark final here)
++    if (appendedAnything) {
++      nsCString toSend = accumulated;
++      NS_DispatchToMainThread(NS_NewRunnableFunction(
++          "SpeechRecognitionParent::SendAccumulated",
++          [self = RefPtr{this}, payload = toSend]() {
++            if (self->CanSend()) {
++              Unused << self->SendOnRecognitionResult(payload, false);
+             }
+-          }
+-
+-          // Keep only the last N tokens for context (to avoid growing indefinitely)
+-          if (mParams.mUseContextCarryover &&
+-              mPromptTokens.size() > static_cast<size_t>(mParams.mMaxContextTokens)) {
+-            mPromptTokens.erase(mPromptTokens.begin(),
+-                               mPromptTokens.begin() + (mPromptTokens.size() - mParams.mMaxContextTokens));
+-          }
+-        } else {
+-          LOGD("Whisper inference failed");
++          }));
++    }
++
++    // Audio tail for next iteration kept in previousAudio
++
++    // Update prompt tokens from this pass if carryover enabled
++    if (mParams.mUseContextCarryover) {
++      mPromptTokens.clear();
++      for (int i = 0; i < n_segments; ++i) {
++        const int token_count = mLib->whisper_full_n_tokens(mWhisperCtx, i);
++        for (int j = 0; j < token_count; ++j) {
++          mPromptTokens.push_back(
++              mLib->whisper_full_get_token_id(mWhisperCtx, i, j));
+         }
+       }
+-
+-      lastRecognitionTime = currentTime;
++      if (mPromptTokens.size() > (size_t)mParams.mMaxContextTokens) {
++        mPromptTokens.erase(
++            mPromptTokens.begin(),
++            mPromptTokens.begin() +
++                (mPromptTokens.size() - mParams.mMaxContextTokens));
++      }
+     }
+-
+-    // Sleep until next recognition time
++    // Update last recognition time and yield a bit
++    lastRecognitionTime = now;
+     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+   }
+ 
+-  // Wait for audio consumer thread to finish
+-  if (audioConsumerThread.joinable()) {
+-    audioConsumerThread.join();
+-  }
+-
+-  LOGD("Continuous audio processing loop terminated");
+-}
+-
+-void SpeechRecognitionParent::CleanupWhisperContext() {
+-  if (mWhisperCtx && mLib) {
+-    mLib->whisper_free(mWhisperCtx);
+-    mWhisperCtx = nullptr;
+-  }
+-
+-  if (mModelFile) {
+-    fclose(mModelFile);
+-    mModelFile = nullptr;
+-  }
++  // Send final accumulated transcript on shutdown
++  if (!accumulated.IsEmpty()) {
++    NS_DispatchToMainThread(NS_NewRunnableFunction(
++        "SpeechRecognitionParent::SendFinalOnExit",
++        [self = RefPtr{this}, payload = accumulated]() {
++          if (self->CanSend()) {
++            Unused << self->SendOnRecognitionResult(payload, true);
++          }
++        }));
++  }
++  LOGD("Recognition loop terminated");
+ }
+ 
+ }  // namespace mozilla::ipc

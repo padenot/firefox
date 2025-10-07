@@ -98,6 +98,14 @@ namespace mozilla::llama {
     (struct whisper_context* ctx, int i_segment))                           \
   X(whisper_token, whisper_full_get_token_id,                               \
     (struct whisper_context* ctx, int i_segment, int i_token))              \
+  X(const char*, whisper_full_get_token_text,                               \
+    (struct whisper_context* ctx, int i_segment, int i_token))              \
+  X(const char*, whisper_token_to_str,                                      \
+    (struct whisper_context* ctx, whisper_token token))                     \
+  X(whisper_token, whisper_token_eot,                                       \
+    (struct whisper_context* ctx))                                          \
+  X(whisper_token, whisper_token_beg,                                       \
+    (struct whisper_context* ctx))                                          \
   X(void, whisper_free, (struct whisper_context* ctx))
 
 struct LlamaLibWrapper {
