@@ -13,6 +13,7 @@
 
 #include "mozIRemoteLazyInputStream.h"
 #include "mozilla/Logging.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/dom/Blob.h"
 #include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/IPCBlobUtils.h"
@@ -219,11 +220,8 @@ SpeechRecognitionParent::SpeechRecognitionParent()
       mThreadRunning(false),
       mAudioQueue(WHISPER_SAMPLE_RATE * 30),  // 30 seconds of audio buffer
       mRingWritePos(0),
-      mRingSize(WHISPER_SAMPLE_RATE *
-                (DEFAULT_AUDIO_LENGTH_MS / 1000)),  // 10 seconds
-      mRecognitionIntervalMs(DEFAULT_RECOGNITION_INTERVAL_MS),
-      mAudioLengthMs(DEFAULT_AUDIO_LENGTH_MS),
-      mNumThreads(DEFAULT_NUM_THREADS) {
+      mRingSize(WHISPER_SAMPLE_RATE * 10),  // Default 10 seconds, will be updated
+      mParams() {  // Initialize with defaults
   // Initialize ring buffer
   mAudioRing.resize(mRingSize, 0.0f);
 
@@ -233,7 +231,74 @@ SpeechRecognitionParent::SpeechRecognitionParent()
 
   // Initialize for continuous recognition
   mProcessedAudioPos = 0;
-  mKeepAudioMs = 200;  // Keep 200ms of audio between segments for context
+
+  // Load tunable parameters from preferences (can be overridden via about:config)
+  LoadPreferences();
+}
+
+void SpeechRecognitionParent::LoadPreferences() {
+  // These can be set via about:config for tuning
+  // Example: media.webspeech.recognition.interval_ms
+
+  // Timing parameters
+  mParams.mRecognitionIntervalMs = Preferences::GetInt(
+      "media.webspeech.recognition.interval_ms", 1000);
+  mParams.mAudioLengthMs = Preferences::GetInt(
+      "media.webspeech.recognition.audio_length_ms", 10000);
+  mParams.mKeepAudioMs = Preferences::GetInt(
+      "media.webspeech.recognition.keep_audio_ms", 200);
+  mParams.mStepMs = Preferences::GetInt(
+      "media.webspeech.recognition.step_ms", 3000);
+
+  // Quality parameters
+  mParams.mBeamSize = Preferences::GetInt(
+      "media.webspeech.recognition.beam_size", 1);
+  mParams.mTemperature = Preferences::GetFloat(
+      "media.webspeech.recognition.temperature", 0.0f);
+  mParams.mTemperatureInc = Preferences::GetFloat(
+      "media.webspeech.recognition.temperature_inc", 0.2f);
+  mParams.mBestOf = Preferences::GetInt(
+      "media.webspeech.recognition.best_of", 2);
+
+  // Thresholds
+  mParams.mEntropyThreshold = Preferences::GetFloat(
+      "media.webspeech.recognition.entropy_threshold", 2.4f);
+  mParams.mLogProbThreshold = Preferences::GetFloat(
+      "media.webspeech.recognition.logprob_threshold", -1.0f);
+  mParams.mNoSpeechThreshold = Preferences::GetFloat(
+      "media.webspeech.recognition.no_speech_threshold", 0.6f);
+
+  // VAD parameters
+  mParams.mUseVAD = Preferences::GetBool(
+      "media.webspeech.recognition.use_vad", false);
+  mParams.mVADThreshold = Preferences::GetFloat(
+      "media.webspeech.recognition.vad_threshold", 0.6f);
+  mParams.mVADMinSpeechMs = Preferences::GetInt(
+      "media.webspeech.recognition.vad_min_speech_ms", 250);
+  mParams.mVADMinSilenceMs = Preferences::GetInt(
+      "media.webspeech.recognition.vad_min_silence_ms", 2000);
+
+  // Context parameters
+  mParams.mMaxContextTokens = Preferences::GetInt(
+      "media.webspeech.recognition.max_context_tokens", 224);
+  mParams.mUseContextCarryover = Preferences::GetBool(
+      "media.webspeech.recognition.use_context", true);
+
+  // Performance parameters
+  mParams.mNumThreads = Preferences::GetInt(
+      "media.webspeech.recognition.num_threads", 4);
+  mParams.mAudioContextSize = Preferences::GetInt(
+      "media.webspeech.recognition.audio_context_size", 0);
+  mParams.mMaxTokensPerSegment = Preferences::GetInt(
+      "media.webspeech.recognition.max_tokens_per_segment", 32);
+
+  // Update ring buffer size if audio length changed
+  mRingSize = WHISPER_SAMPLE_RATE * (mParams.mAudioLengthMs / 1000);
+  mAudioRing.resize(mRingSize, 0.0f);
+
+  LOGD("Loaded recognition parameters: interval={}ms, length={}ms, beam={}, threads={}",
+       mParams.mRecognitionIntervalMs, mParams.mAudioLengthMs,
+       mParams.mBeamSize, mParams.mNumThreads);
 }
 
 void SpeechRecognitionParent::RetrieveModelBlob() {
@@ -575,14 +640,14 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
             currentTime - lastRecognitionTime)
             .count();
 
-    if (timeSinceLastRecognition >= mRecognitionIntervalMs) {
+    if (timeSinceLastRecognition >= mParams.mRecognitionIntervalMs) {
       // Time for recognition - extract audio from ring buffer
       size_t samples_to_analyze = std::min(
           mRingSize,
-          static_cast<size_t>((1e-3 * mAudioLengthMs) * WHISPER_SAMPLE_RATE));
+          static_cast<size_t>((1e-3 * mParams.mAudioLengthMs) * WHISPER_SAMPLE_RATE));
 
       // Calculate samples to keep from previous recognition (for context/overlap)
-      const size_t n_samples_keep = static_cast<size_t>((1e-3 * mKeepAudioMs) * WHISPER_SAMPLE_RATE);
+      const size_t n_samples_keep = static_cast<size_t>((1e-3 * mParams.mKeepAudioMs) * WHISPER_SAMPLE_RATE);
 
       audioForRecognition.clear();
 
@@ -618,19 +683,35 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
                                 audioForRecognition.size());
 
       if (mWhisperCtx && audioForRecognition.size() > 0 && mLib) {
-        // Run Whisper inference
-        whisper_full_params wparams = mLib->whisper_full_default_params(
-            whisper_sampling_strategy(WHISPER_SAMPLING_GREEDY));
+        // Run Whisper inference with configurable parameters
+        enum whisper_sampling_strategy strategy = static_cast<enum whisper_sampling_strategy>(
+            mParams.mBeamSize > 1
+            ? WHISPER_SAMPLING_BEAM_SEARCH
+            : WHISPER_SAMPLING_GREEDY);
+        whisper_full_params wparams = mLib->whisper_full_default_params(strategy);
+
+        // Basic settings
         wparams.print_progress = false;
         wparams.print_special = false;
         wparams.print_realtime = false;
         wparams.print_timestamps = true;
         wparams.translate = false;
-        wparams.single_segment = false;
-        wparams.max_tokens = 32;
+        wparams.single_segment = mParams.mSingleSegment;
+        wparams.max_tokens = mParams.mMaxTokensPerSegment;
         wparams.language = mLanguage.get();
-        wparams.n_threads = mNumThreads;
-        wparams.audio_ctx = 0;
+        wparams.n_threads = mParams.mNumThreads;
+        wparams.audio_ctx = mParams.mAudioContextSize;
+
+        // Quality parameters
+        wparams.temperature = mParams.mTemperature;
+        wparams.temperature_inc = mParams.mTemperatureInc;
+        wparams.beam_search.beam_size = mParams.mBeamSize;
+        wparams.greedy.best_of = mParams.mBestOf;
+
+        // Confidence thresholds
+        wparams.entropy_thold = mParams.mEntropyThreshold;
+        wparams.logprob_thold = mParams.mLogProbThreshold;
+        wparams.no_speech_thold = mParams.mNoSpeechThreshold;
 
         // Build prompt from phrases and previous context
         nsCString prompt;
@@ -641,9 +722,15 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
         wparams.initial_prompt = prompt.get();
 
         // Use tokens from previous segment as context for continuity
-        wparams.prompt_tokens = mPromptTokens.empty() ? nullptr : mPromptTokens.data();
-        wparams.prompt_n_tokens = mPromptTokens.size();
-        wparams.no_context = false;  // Keep context for continuous recognition
+        if (mParams.mUseContextCarryover) {
+          wparams.prompt_tokens = mPromptTokens.empty() ? nullptr : mPromptTokens.data();
+          wparams.prompt_n_tokens = mPromptTokens.size();
+          wparams.no_context = false;  // Keep context for continuous recognition
+        } else {
+          wparams.prompt_tokens = nullptr;
+          wparams.prompt_n_tokens = 0;
+          wparams.no_context = true;
+        }
 
         if (mLib->whisper_full(mWhisperCtx, wparams, audioForRecognition.data(),
                                audioForRecognition.size()) == 0) {
@@ -702,10 +789,10 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
           }
 
           // Keep only the last N tokens for context (to avoid growing indefinitely)
-          const size_t maxContextTokens = 224;  // Reasonable context window
-          if (mPromptTokens.size() > maxContextTokens) {
+          if (mParams.mUseContextCarryover &&
+              mPromptTokens.size() > static_cast<size_t>(mParams.mMaxContextTokens)) {
             mPromptTokens.erase(mPromptTokens.begin(),
-                               mPromptTokens.begin() + (mPromptTokens.size() - maxContextTokens));
+                               mPromptTokens.begin() + (mPromptTokens.size() - mParams.mMaxContextTokens));
           }
         } else {
           LOGD("Whisper inference failed");

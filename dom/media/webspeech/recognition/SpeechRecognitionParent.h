@@ -72,6 +72,7 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   void RetrieveModelBlob();
   void ProcessAudioOnBackgroundThread();
   void CleanupWhisperContext();
+  void LoadPreferences();
 
   // Static tracking of the single active recognition session
   static StaticRefPtr<SpeechRecognitionParent> sActiveSession;
@@ -99,12 +100,47 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   size_t mRingWritePos;
   size_t mRingSize;
 
-  // Whisper parameters
-  // How often recognition is ran
-  int32_t mRecognitionIntervalMs;
-  // Duration of a segment sent to whisper each time
-  int32_t mAudioLengthMs;
-  int32_t mNumThreads;
+  // Tunable parameters for recognition
+  struct RecognitionParams {
+    // Latency & Timing
+    int32_t mRecognitionIntervalMs = 1000;  // How often to run recognition
+    int32_t mAudioLengthMs = 10000;         // Audio segment duration to process
+    int32_t mKeepAudioMs = 200;             // Audio overlap between segments
+    int32_t mStepMs = 3000;                 // Step size for sliding window mode
+
+    // Recognition Quality
+    int32_t mBeamSize = 1;                  // Beam search width (1=greedy, >1=beam)
+    float mTemperature = 0.0f;              // Sampling temperature
+    float mTemperatureInc = 0.2f;           // Temperature increment for fallback
+    int32_t mBestOf = 2;                    // Best of N candidates
+
+    // Confidence Thresholds
+    float mEntropyThreshold = 2.4f;         // Entropy threshold for decoder
+    float mLogProbThreshold = -1.0f;        // Log probability threshold
+    float mNoSpeechThreshold = 0.6f;        // No speech detection threshold
+    float mCompressionRatioThreshold = 2.4f; // Compression ratio threshold
+
+    // VAD Parameters
+    bool mUseVAD = false;                   // Enable VAD pre-filtering
+    float mVADThreshold = 0.6f;             // VAD activation threshold
+    int32_t mVADMinSpeechMs = 250;          // Min speech duration
+    int32_t mVADMinSilenceMs = 2000;        // Min silence before cutting
+    float mVADEnergyThreshold = 0.01f;      // Energy-based VAD
+    int32_t mVADSpeechPadMs = 300;          // Padding around speech
+
+    // Context & Memory
+    int32_t mMaxContextTokens = 224;        // Max tokens for context
+    int32_t mMaxTextContext = 16384;        // Max text context chars
+    bool mUseContextCarryover = true;       // Enable context carryover
+
+    // Performance
+    int32_t mNumThreads = 4;                // Inference threads
+    int32_t mAudioContextSize = 0;          // Whisper audio context (0=full)
+    bool mSingleSegment = false;            // Force single segment mode
+    int32_t mMaxTokensPerSegment = 32;      // Max tokens per segment
+  };
+
+  RecognitionParams mParams;
 
   // Dumps audio sent to Whisper. This will contain segments of about 10s of
   // audio, representing the audio sent to whisper.
@@ -112,7 +148,6 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
   // Continuous recognition members
   size_t mProcessedAudioPos;  // Position in the audio stream that has been processed
-  int32_t mKeepAudioMs;  // Audio to keep from previous segment for context
   std::vector<int32_t> mPromptTokens;  // Tokens from previous segment for context
   nsCString mAccumulatedTranscript;  // Full transcript accumulation
   nsCString mLastSegmentText;  // Last segment text to detect duplicates
