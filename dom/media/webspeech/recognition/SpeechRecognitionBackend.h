@@ -23,6 +23,10 @@ class HWInferenceManagerChild;
 class SpeechRecognitionChild;
 }  // namespace mozilla::ipc
 
+namespace mozilla {
+class AudibilityMonitor;
+}
+
 namespace mozilla::dom {
 
 class SpeechRecognition;
@@ -147,6 +151,15 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
   // [Main thread write, Background thread read] Graph sample rate
   // Set once in Initialize(), read by background thread for resampling
   uint32_t mGraphRate = 0;
+
+  // Sound detection for soundstart/soundend events
+  // Updated by resampling thread, events dispatched to main thread
+  bool mCurrentlyAudible = false;
+  // Track if we've dispatched audiostart event
+  bool mAudioStartDispatched = false;
+
+  // Audibility monitor for detecting sound (500ms silence duration)
+  UniquePtr<mozilla::AudibilityMonitor> mAudibilityMonitor;
 
   // Per-instance IPC channel for speech recognition sessions
   RefPtr<mozilla::ipc::SpeechRecognitionChild> mSpeechRecognitionChild;

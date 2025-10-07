@@ -22,15 +22,18 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
 
   using RecognitionResultCallback = std::function<void(const nsCString&, bool)>;
   using RecognitionErrorCallback = std::function<void(const nsCString&)>;
+  using SpeechChangeCallback = std::function<void(bool)>;
 
   explicit SpeechRecognitionChild(HWInferenceManagerChild* aManager);
 
   void SetResultCallback(RecognitionResultCallback&& aCallback);
   void SetErrorCallback(RecognitionErrorCallback&& aCallback);
+  void SetSpeechChangeCallback(SpeechChangeCallback&& aCallback);
 
   mozilla::ipc::IPCResult RecvOnRecognitionResult(const nsCString& aTranscript,
                                                   const bool& aIsFinal);
   mozilla::ipc::IPCResult RecvOnRecognitionError(const nsCString& aError);
+  mozilla::ipc::IPCResult RecvOnSpeechChange(const bool& aSpeechDetected);
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
@@ -39,6 +42,7 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
   RefPtr<HWInferenceManagerChild> mManager;
   RecognitionResultCallback mResultCallback;
   RecognitionErrorCallback mErrorCallback;
+  SpeechChangeCallback mSpeechChangeCallback;
 };
 
 } // namespace mozilla::ipc

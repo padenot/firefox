@@ -9,6 +9,7 @@
 #include <speex/speex_resampler.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "AudioConfig.h"
 #include "AudioConverter.h"
@@ -27,6 +28,7 @@
 #include "mozilla/ipc/HWInferenceManagerChild.h"
 #include "mozilla/ipc/SpeechRecognitionChild.h"
 #include "nsComponentManagerUtils.h"
+#include "AudibilityMonitor.h"
 #include "nsGkAtoms.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
@@ -84,6 +86,10 @@ nsresult SpeechRecognitionBackend::Start() {
 
   MOZ_ASSERT(!mSpeechRecognitionChild);
 
+  // Initialize the audibility monitor (500ms silence duration)
+  mAudibilityMonitor = MakeUnique<mozilla::AudibilityMonitor>(mGraphRate, 0.5f);
+  mCurrentlyAudible = false;
+
   // Ensure IPC connection is established, create an IPC session, then start our
   // resampling thread that will feed the IPC real-time audio data at the
   // correcte rate
@@ -134,6 +140,23 @@ void SpeechRecognitionBackend::Stop() {
   }
 
   mMonoBuffer.Clear();
+
+  RefPtr<SpeechRecognition> parent = mParent;
+
+  // If sound was detected, dispatch soundend first (per spec)
+  if (mCurrentlyAudible) {
+    nsCOMPtr<nsIRunnable> soundendRunnable = NS_NewRunnableFunction(
+        "SpeechRecognitionBackend::DispatchSoundEnd",
+        [parent]() { parent->DispatchTrustedEvent(u"soundend"_ns); });
+    NS_DispatchToMainThread(soundendRunnable.forget());
+    mCurrentlyAudible = false;
+  }
+
+  // Then dispatch audioend event
+  nsCOMPtr<nsIRunnable> audioendRunnable = NS_NewRunnableFunction(
+      "SpeechRecognitionBackend::DispatchAudioEnd",
+      [parent]() { parent->DispatchTrustedEvent(u"audioend"_ns); });
+  NS_DispatchToMainThread(audioendRunnable.forget());
 }
 
 void SpeechRecognitionBackend::Abort() {
@@ -224,6 +247,37 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     audioBuffer.SetLength(available);
     int read = mRingBuffer->Dequeue(audioBuffer.Elements(), available);
 
+    // Dispatch audiostart event on first audio processing
+    if (!mAudioStartDispatched) {
+      mAudioStartDispatched = true;
+      RefPtr<SpeechRecognition> parent = mParent;
+      nsCOMPtr<nsIRunnable> audiostartRunnable = NS_NewRunnableFunction(
+          "SpeechRecognitionBackend::DispatchAudioStart",
+          [parent]() { parent->DispatchTrustedEvent(u"audiostart"_ns); });
+      NS_DispatchToMainThread(audiostartRunnable.forget());
+    }
+
+    // Check audibility after dequeuing (mono audio, so 1 channel)
+    if (mAudibilityMonitor) {
+      const float* audioData = audioBuffer.Elements();
+      mAudibilityMonitor->ProcessPlanar(Span<const float* const>(&audioData, 1), read);
+
+      bool nowAudible = mAudibilityMonitor->RecentlyAudible();
+      if (nowAudible != mCurrentlyAudible) {
+        // Audibility changed, dispatch appropriate event
+        mCurrentlyAudible = nowAudible;
+
+        RefPtr<SpeechRecognition> parent = mParent;
+        nsString eventName = nowAudible ? u"soundstart"_ns : u"soundend"_ns;
+        nsCOMPtr<nsIRunnable> soundEventRunnable = NS_NewRunnableFunction(
+            "SpeechRecognitionBackend::DispatchSoundEvent",
+            [parent, eventName]() {
+              parent->DispatchTrustedEvent(eventName);
+            });
+        NS_DispatchToMainThread(soundEventRunnable.forget());
+      }
+    }
+
     // Resample to 16kHz
     nsTArray<float> resampledBuffer;
     mAudioConverter->Process(resampledBuffer, audioBuffer.Elements(), read);
@@ -270,6 +324,22 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
         LOGE("Recognition error: {}", aError.get());
 
         self->HandleRecognitionError(aError);
+      });
+
+  mSpeechRecognitionChild->SetSpeechChangeCallback(
+      [self = RefPtr{this}](bool aSpeechDetected) {
+        // Handle speech change events from HWInference process
+        LOG("Speech change: {}", aSpeechDetected ? "started" : "ended");
+
+        // Dispatch speechstart/speechend events to main thread
+        RefPtr<SpeechRecognition> parent = self->mParent;
+        nsCOMPtr<nsIRunnable> eventRunnable = NS_NewRunnableFunction(
+            "SpeechRecognitionBackend::HandleSpeechChange",
+            [parent, speechDetected = aSpeechDetected]() {
+              parent->DispatchTrustedEvent(speechDetected ? u"speechstart"_ns
+                                                          : u"speechend"_ns);
+            });
+        NS_DispatchToMainThread(eventRunnable.forget());
       });
 
   // Initialize the session with the language and biasing phrases
