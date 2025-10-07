@@ -48,7 +48,6 @@ class SpeechRecognitionBackend;
 class GlobalObject;
 class AudioStreamTrack;
 class MediaStreamTrack;
-class SpeechEvent;
 class SpeechTrackListener;
 
 LogModule* GetSpeechRecognitionLog();
@@ -138,17 +137,6 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   IMPL_EVENT_HANDLER(start)
   IMPL_EVENT_HANDLER(end)
 
-  enum EventType {
-    EVENT_START,
-    EVENT_STOP,
-    EVENT_ABORT,
-    EVENT_AUDIO_DATA,
-    EVENT_AUDIO_ERROR,
-    EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT,
-    EVENT_RECOGNITIONSERVICE_FINAL_RESULT,
-    EVENT_RECOGNITIONSERVICE_ERROR,
-    EVENT_COUNT
-  };
 
   void NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack);
 
@@ -170,60 +158,28 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   // aMessage should be valid UTF-8, but invalid UTF-8 byte sequences are
   // replaced with the REPLACEMENT CHARACTER on conversion to UTF-16.
-  void DispatchError(EventType aErrorType,
-                     SpeechRecognitionErrorCode aErrorCode,
+  void DispatchError(SpeechRecognitionErrorCode aErrorCode,
                      const nsACString& aMessage);
   template <int N>
-  void DispatchError(EventType aErrorType,
-                     SpeechRecognitionErrorCode aErrorCode,
+  void DispatchError(SpeechRecognitionErrorCode aErrorCode,
                      const char (&aMessage)[N]) {
-    DispatchError(aErrorType, aErrorCode, nsLiteralCString(aMessage));
+    DispatchError(aErrorCode, nsLiteralCString(aMessage));
   }
   // Backend methods
   void DataCallback(TrackTime aTime, const AudioChunk& aChunk);
   void HandleRecognitionResultFromBackend(const nsCString& aTranscript, bool aIsFinal);
   void HandleRecognitionErrorFromBackend(const nsCString& aError);
 
-  friend class SpeechEvent;
-
  private:
   virtual ~SpeechRecognition();
-
-  enum FSMState {
-    STATE_IDLE,
-    STATE_STARTING,
-    STATE_ESTIMATING,
-    STATE_WAITING_FOR_SPEECH,
-    STATE_RECOGNIZING,
-    STATE_WAITING_FOR_RESULT,
-    STATE_ABORTING,
-    STATE_COUNT
-  };
-
-  void SetState(FSMState state);
-  bool StateBetween(FSMState begin, FSMState end);
 
   NS_IMETHOD StartRecording(RefPtr<AudioStreamTrack>& aDOMStream);
   RefPtr<GenericNonExclusivePromise> StopRecording();
 
   uint32_t ProcessAudioSegment(AudioSegment* aSegment, TrackRate aTrackRate);
-  void NotifyError(SpeechEvent* aEvent);
-
-  void ProcessEvent(SpeechEvent* aEvent);
-  void Transition(SpeechEvent* aEvent);
 
   void Reset();
   void ResetAndEnd();
-  void WaitForAudioData(SpeechEvent* aEvent);
-  void StartedAudioCapture(SpeechEvent* aEvent);
-  void StopRecordingAndRecognize(SpeechEvent* aEvent);
-  void WaitForEstimation(SpeechEvent* aEvent);
-  void DetectSpeech(SpeechEvent* aEvent);
-  void WaitForSpeechEnd(SpeechEvent* aEvent);
-  void NotifyFinalResult(SpeechEvent* aEvent);
-  void DoNothing(SpeechEvent* aEvent);
-  void AbortSilently(SpeechEvent* aEvent);
-  void AbortError(SpeechEvent* aEvent);
 
   RefPtr<DOMMediaStream> mStream;
   RefPtr<AudioStreamTrack> mTrack;
@@ -237,21 +193,15 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   uint8_t mStreamGeneration = 0;
 
   nsCOMPtr<nsITimer> mSpeechDetectionTimer;
-  bool mAborted;
+  // Tracks if recognition has been started (spec's [[started]] internal slot)
+  bool mStarted;
 
   nsString mLang;
 
   RefPtr<SpeechGrammarList> mSpeechGrammarList;
 
-  // private flag used to hold if the user called the setContinuous() method
-  // of the API
   bool mContinuous;
-
-  FSMState mCurrentState;
-
   bool mInterimResults;
-
-  FSMState mState;
 
   // WebSpeechAPI (http://bit.ly/1JAiqeo) states:
   //
@@ -276,39 +226,6 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   // Backend instance for handling audio processing
   RefPtr<SpeechRecognitionBackend> mBackend;
-
-  const char* GetName(FSMState aId);
-  const char* GetName(SpeechEvent* aEvent);
-};
-
-class SpeechEvent : public Runnable {
- public:
-  SpeechEvent(SpeechRecognition* aRecognition,
-              SpeechRecognition::EventType aType);
-  SpeechEvent(nsMainThreadPtrHandle<SpeechRecognition>& aRecognition,
-              SpeechRecognition::EventType aType);
-
-  ~SpeechEvent();
-
-  NS_IMETHOD Run() override;
-  AudioSegment* mAudioSegment;
-  RefPtr<SpeechRecognitionResultList>
-      mRecognitionResultList;  // TODO: make this a session being passed which
-                               // also has index and stuff
-  RefPtr<SpeechRecognitionError> mError;
-
-  friend class SpeechRecognition;
-
- private:
-  nsMainThreadPtrHandle<SpeechRecognition> mRecognition;
-
-  // for AUDIO_DATA events, keep a reference to the provider
-  // of the data (i.e., the SpeechTrackListener) to ensure it
-  // is kept alive (and keeps SpeechRecognition alive) until this
-  // event gets processed.
-  RefPtr<MediaTrackListener> mProvider;
-  SpeechRecognition::EventType mType;
-  TrackRate mTrackRate;
 };
 
 }  // namespace dom

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Speech Recognition Single Session Test</title>
+</head>
+<body>
+  <h1>Speech Recognition Single Session Test</h1>
+
+  <div>
+    <button id="test1">Test 1: Start two sessions (should reject second)</button>
+    <button id="test2">Test 2: Start → Stop → Start (should work)</button>
+    <button id="test3">Test 3: Available while session active (should work)</button>
+    <button id="test4">Test 4: Install while session active (should work)</button>
+  </div>
+
+  <div id="output" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; min-height: 200px; white-space: pre-wrap; font-family: monospace;"></div>
+
+  <script>
+    const output = document.getElementById('output');
+
+    function log(msg) {
+      output.textContent += msg + '\n';
+      console.log(msg);
+    }
+
+    function clearLog() {
+      output.textContent = '';
+    }
+
+    // Test 1: Try to start two sessions simultaneously
+    document.getElementById('test1').addEventListener('click', async () => {
+      clearLog();
+      log('Test 1: Starting two sessions simultaneously...');
+
+      try {
+        const recognition1 = new webkitSpeechRecognition();
+        recognition1.continuous = true;
+        recognition1.lang = 'en-US';
+
+        const recognition2 = new webkitSpeechRecognition();
+        recognition2.continuous = true;
+        recognition2.lang = 'en-US';
+
+        let error1 = null;
+        let error2 = null;
+
+        recognition1.onerror = (event) => {
+          error1 = event.error;
+          log(`Recognition1 error: ${event.error}`);
+        };
+
+        recognition2.onerror = (event) => {
+          error2 = event.error;
+          log(`Recognition2 error: ${event.error}`);
+        };
+
+        recognition1.onstart = () => log('Recognition1 started');
+        recognition2.onstart = () => log('Recognition2 started');
+
+        // Start both
+        recognition1.start();
+        recognition2.start();
+
+        // Wait a bit for errors
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Check results
+        if (!error1 && error2 === 'service-not-allowed') {
+          log('✓ Test 1 PASSED: Second session correctly rejected with service-not-allowed');
+        } else if (error1 === 'service-not-allowed' && !error2) {
+          log('✓ Test 1 PASSED: First session correctly rejected with service-not-allowed');
+        } else {
+          log(`✗ Test 1 FAILED: Expected one service-not-allowed error, got error1=${error1}, error2=${error2}`);
+        }
+
+        // Clean up
+        try { recognition1.stop(); } catch(e) {}
+        try { recognition2.stop(); } catch(e) {}
+
+      } catch (e) {
+        log(`Test 1 error: ${e}`);
+      }
+    });
+
+    // Test 2: Start → Stop → Start pattern
+    document.getElementById('test2').addEventListener('click', async () => {
+      clearLog();
+      log('Test 2: Testing Start → Stop → Start pattern...');
+
+      try {
+        const recognition1 = new webkitSpeechRecognition();
+        recognition1.continuous = true;
+        recognition1.lang = 'en-US';
+
+        let started1 = false;
+        let stopped1 = false;
+        let error1 = null;
+
+        recognition1.onstart = () => {
+          started1 = true;
+          log('First recognition started');
+        };
+
+        recognition1.onend = () => {
+          stopped1 = true;
+          log('First recognition ended');
+        };
+
+        recognition1.onerror = (event) => {
+          error1 = event.error;
+          log(`First recognition error: ${event.error}`);
+        };
+
+        // Start first session
+        recognition1.start();
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Stop first session
+        recognition1.stop();
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Start second session
+        const recognition2 = new webkitSpeechRecognition();
+        recognition2.continuous = true;
+        recognition2.lang = 'en-US';
+
+        let started2 = false;
+        let error2 = null;
+
+        recognition2.onstart = () => {
+          started2 = true;
+          log('Second recognition started');
+        };
+
+        recognition2.onerror = (event) => {
+          error2 = event.error;
+          log(`Second recognition error: ${event.error}`);
+        };
+
+        recognition2.start();
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Check results
+        if (started1 && stopped1 && started2 && !error2) {
+          log('✓ Test 2 PASSED: Start → Stop → Start pattern works correctly');
+        } else {
+          log(`✗ Test 2 FAILED: started1=${started1}, stopped1=${stopped1}, started2=${started2}, error2=${error2}`);
+        }
+
+        // Clean up
+        try { recognition2.stop(); } catch(e) {}
+
+      } catch (e) {
+        log(`Test 2 error: ${e}`);
+      }
+    });
+
+    // Test 3: Available while session active
+    document.getElementById('test3').addEventListener('click', async () => {
+      clearLog();
+      log('Test 3: Testing Available() while session active...');
+
+      try {
+        const recognition = new webkitSpeechRecognition();
+        recognition.continuous = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => log('Recognition started');
+        recognition.onerror = (event) => log(`Recognition error: ${event.error}`);
+
+        // Start session
+        recognition.start();
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Call Available while session is active
+        log('Calling Available() while session active...');
+        try {
+          const available = await webkitSpeechRecognition.isAvailable(['en-US']);
+          log(`✓ Test 3 PASSED: Available() worked while session active, result=${available}`);
+        } catch (e) {
+          log(`✗ Test 3 FAILED: Available() threw error: ${e}`);
+        }
+
+        // Clean up
+        recognition.stop();
+
+      } catch (e) {
+        log(`Test 3 error: ${e}`);
+      }
+    });
+
+    // Test 4: Install while session active
+    document.getElementById('test4').addEventListener('click', async () => {
+      clearLog();
+      log('Test 4: Testing Install() while session active...');
+
+      try {
+        const recognition = new webkitSpeechRecognition();
+        recognition.continuous = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => log('Recognition started');
+        recognition.onerror = (event) => log(`Recognition error: ${event.error}`);
+
+        // Start session
+        recognition.start();
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Call Install while session is active
+        log('Calling Install() while session active...');
+        try {
+          await webkitSpeechRecognition.install(['en-US']);
+          log('✓ Test 4 PASSED: Install() worked while session active');
+        } catch (e) {
+          log(`Install() error (may be expected if model already installed): ${e}`);
+          // Install might fail for other reasons, but it shouldn't be blocked by active session
+          if (e.toString().includes('service-not-allowed') || e.toString().includes('concurrent')) {
+            log('✗ Test 4 FAILED: Install() blocked by active session');
+          } else {
+            log('✓ Test 4 PASSED: Install() not blocked by active session (failed for other reason)');
+          }
+        }
+
+        // Clean up
+        recognition.stop();
+
+      } catch (e) {
+        log(`Test 4 error: ${e}`);
+      }
+    });
+
+    log('Test page ready. Click buttons to run tests.');
+  </script>
+</body>
+</html>

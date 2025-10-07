@@ -90,12 +90,10 @@ NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 SpeechRecognition::SpeechRecognition(nsPIDOMWindowInner* aOwnerWindow)
     : DOMEventTargetHelper(aOwnerWindow),
       mSpeechDetectionTimer(NS_NewTimer()),
-      mAborted(false),
+      mStarted(false),
       mSpeechGrammarList(new SpeechGrammarList(GetOwnerGlobal())),
       mContinuous(false),
-      mCurrentState(FSMState::STATE_IDLE),
       mInterimResults(false),
-      mState(FSMState::STATE_IDLE),
       mMaxAlternatives(1),
       mProcessLocally(false) {
   LOG("SpeechRecognition::SpeechRecognition");
@@ -114,14 +112,6 @@ SpeechRecognition::~SpeechRecognition() {
   }
 }
 
-bool SpeechRecognition::StateBetween(FSMState begin, FSMState end) {
-  return mCurrentState >= begin && mCurrentState <= end;
-}
-
-void SpeechRecognition::SetState(FSMState state) {
-  mCurrentState = state;
-  LOG("Transitioned to state %s", GetName(mCurrentState));
-}
 
 JSObject* SpeechRecognition::WrapObject(JSContext* aCx,
                                         JS::Handle<JSObject*> aGivenProto) {
@@ -140,216 +130,12 @@ already_AddRefed<SpeechRecognition> SpeechRecognition::Constructor(
   return object.forget();
 }
 
-void SpeechRecognition::ProcessEvent(SpeechEvent* aEvent) {
-  MOZ_ASSERT(NS_IsMainThread(), "ProcessEvent must be on main thread");
-  LOG("Processing %s, current state is %s", GetName(aEvent),
-      GetName(mCurrentState));
-
-  if (mAborted && aEvent->mType != EVENT_ABORT) {
-    // ignore all events while aborting
-    return;
-  }
-
-  Transition(aEvent);
-}
-
-void SpeechRecognition::Transition(SpeechEvent* aEvent) {
-  switch (mCurrentState) {
-    case STATE_IDLE:
-      switch (aEvent->mType) {
-        case EVENT_START:
-          // TODO: may want to time out if we wait too long
-          // for user to approve
-          WaitForAudioData(aEvent);
-          break;
-        case EVENT_STOP:
-        case EVENT_ABORT:
-        case EVENT_AUDIO_DATA:
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-          DoNothing(aEvent);
-          break;
-        case EVENT_AUDIO_ERROR:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          AbortError(aEvent);
-          break;
-        default:
-          MOZ_CRASH("Invalid event");
-      }
-      break;
-    case STATE_STARTING:
-      switch (aEvent->mType) {
-        case EVENT_AUDIO_DATA:
-          StartedAudioCapture(aEvent);
-          break;
-        case EVENT_AUDIO_ERROR:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          AbortError(aEvent);
-          break;
-        case EVENT_ABORT:
-          break;
-        case EVENT_STOP:
-          ResetAndEnd();
-          break;
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-          DoNothing(aEvent);
-          break;
-        case EVENT_START:
-          LOG("STATE_STARTING: Unhandled event %s", GetName(aEvent));
-          break;
-        default:
-          MOZ_CRASH("Invalid event");
-      }
-      break;
-    case STATE_ESTIMATING:
-      switch (aEvent->mType) {
-        case EVENT_AUDIO_DATA:
-          WaitForEstimation(aEvent);
-          break;
-        case EVENT_STOP:
-          StopRecordingAndRecognize(aEvent);
-          break;
-        case EVENT_ABORT:
-          break;
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          DoNothing(aEvent);
-          break;
-        case EVENT_AUDIO_ERROR:
-          AbortError(aEvent);
-          break;
-        case EVENT_START:
-          LOG("STATE_ESTIMATING: Unhandled event {}",
-              static_cast<int>(aEvent->mType));
-          break;
-        default:
-          MOZ_CRASH("Invalid event");
-      }
-      break;
-    case STATE_WAITING_FOR_SPEECH:
-      switch (aEvent->mType) {
-        case EVENT_AUDIO_DATA:
-          DetectSpeech(aEvent);
-          break;
-        case EVENT_STOP:
-          StopRecordingAndRecognize(aEvent);
-          break;
-        case EVENT_ABORT:
-          break;
-        case EVENT_AUDIO_ERROR:
-          AbortError(aEvent);
-          break;
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          DoNothing(aEvent);
-          break;
-        case EVENT_START:
-          LOG("STATE_STARTING: Unhandled event %s", GetName(aEvent));
-          break;
-        default:
-          MOZ_CRASH("Invalid event");
-      }
-      break;
-    case STATE_RECOGNIZING:
-      switch (aEvent->mType) {
-        case EVENT_AUDIO_DATA:
-          WaitForSpeechEnd(aEvent);
-          break;
-        case EVENT_STOP:
-          StopRecordingAndRecognize(aEvent);
-          break;
-        case EVENT_AUDIO_ERROR:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          AbortError(aEvent);
-          break;
-        case EVENT_ABORT:
-          break;
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-          DoNothing(aEvent);
-          break;
-        case EVENT_START:
-          LOG("STATE_RECOGNIZING: Unhandled aEvent %s", GetName(aEvent));
-          break;
-        default:
-          LOG("Not handled ?");
-          break;
-      }
-      break;
-    case STATE_WAITING_FOR_RESULT:
-      switch (aEvent->mType) {
-        case EVENT_STOP:
-          DoNothing(aEvent);
-          break;
-        case EVENT_AUDIO_ERROR:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          AbortError(aEvent);
-          break;
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-          NotifyFinalResult(aEvent);
-          break;
-        case EVENT_AUDIO_DATA:
-          DoNothing(aEvent);
-          break;
-        case EVENT_ABORT:
-          break;
-        case EVENT_START:
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-          LOG("STATE_WAITING_FOR_RESULT: Unhandled aEvent %s", GetName(aEvent));
-          break;
-        default:
-          LOG("Not handled");
-          break;
-      }
-      break;
-    case STATE_ABORTING:
-      switch (aEvent->mType) {
-        case EVENT_STOP:
-        case EVENT_ABORT:
-        case EVENT_AUDIO_DATA:
-        case EVENT_AUDIO_ERROR:
-        case EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT:
-        case EVENT_RECOGNITIONSERVICE_FINAL_RESULT:
-        case EVENT_RECOGNITIONSERVICE_ERROR:
-          DoNothing(aEvent);
-          break;
-        case EVENT_START:
-          LOG("STATE_ABORTING: Unhandled aEvent %s", GetName(aEvent));
-          break;
-        default:
-          LOG("Invalid event");
-      }
-      break;
-    default:
-      LOG("Invalid state");
-  }
-}
-
-/****************************************************************************
- * FSM Transition functions
- *
- * If a transition function may cause a DOM event to be fired,
- * it may also be re-entered, since the event handler may cause the
- * event loop to spin and new SpeechEvents to be processed.
- *
- * Rules:
- * 1) These methods should call SetState as soon as possible.
- * 2) If these methods dispatch DOM events, or call methods that dispatch
- * DOM events, that should be done as late as possible.
- * 3) If anything must happen after dispatching a DOM event, make sure
- * the state is still what the method expected it to be.
- ****************************************************************************/
-
 void SpeechRecognition::Reset() {
   MOZ_ASSERT(NS_IsMainThread(), "Reset must be on main thread");
-  SetState(STATE_IDLE);
+  mStarted = false;
   mTrack = nullptr;
   mStopRecordingPromise = nullptr;
   mSpeechDetectionTimer->Cancel();
-  mAborted = false;
 }
 
 void SpeechRecognition::ResetAndEnd() {
@@ -357,47 +143,6 @@ void SpeechRecognition::ResetAndEnd() {
   DispatchTrustedEvent(u"end"_ns);
 }
 
-void SpeechRecognition::WaitForAudioData(SpeechEvent* aEvent) {
-  SetState(STATE_STARTING);
-}
-
-void SpeechRecognition::StartedAudioCapture(SpeechEvent* aEvent) {}
-
-void SpeechRecognition::StopRecordingAndRecognize(SpeechEvent* aEvent) {}
-
-void SpeechRecognition::WaitForEstimation(SpeechEvent* aEvent) {}
-
-void SpeechRecognition::DetectSpeech(SpeechEvent* aEvent) {}
-
-void SpeechRecognition::WaitForSpeechEnd(SpeechEvent* aEvent) {}
-
-void SpeechRecognition::NotifyFinalResult(SpeechEvent* aEvent) {
-  ResetAndEnd();
-
-  RootedDictionary<SpeechRecognitionEventInit> init(RootingCx());
-  init.mBubbles = true;
-  init.mCancelable = false;
-  // init.mResultIndex = 0;
-  init.mResults = aEvent->mRecognitionResultList;
-  init.mInterpretation = JS::NullValue();
-  // init.mEmma = nullptr;
-
-  RefPtr<SpeechRecognitionEvent> event =
-      SpeechRecognitionEvent::Constructor(this, u"result"_ns, init);
-  event->SetTrusted(true);
-
-  DispatchEvent(*event);
-}
-
-void SpeechRecognition::DoNothing(SpeechEvent* aEvent) {}
-
-void SpeechRecognition::AbortError(SpeechEvent* aEvent) { NotifyError(aEvent); }
-
-void SpeechRecognition::NotifyError(SpeechEvent* aEvent) {
-  aEvent->mError->SetTrusted(true);
-
-  DispatchEvent(*aEvent->mError);
-}
 
 /**************************************
  * Event triggers and other functions *
@@ -602,9 +347,10 @@ already_AddRefed<Promise> SpeechRecognition::Install(
 void SpeechRecognition::Start(
     const Optional<NonNull<MediaStreamTrack>>& aAudioTrack,
     CallerType aCallerType, ErrorResult& aRv) {
-  LOG("SpeechRecognition::Start called, current state: %s",
-      GetName(mCurrentState));
-  if (mCurrentState != STATE_IDLE) {
+  LOG("SpeechRecognition::Start called");
+
+  // Check if already started (spec's [[started]] internal slot)
+  if (mStarted) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
   }
@@ -648,6 +394,12 @@ void SpeechRecognition::Start(
     return;
   }
 
+  // Set started flag per spec
+  mStarted = true;
+
+  // Fire start event
+  DispatchTrustedEvent(u"start"_ns);
+
   // MediaStreamTrack (argument passed) vs. Microphone (no argument passed)
   if (aAudioTrack.WasPassed()) {
     RefPtr<MediaStreamTrack> track = &aAudioTrack.Value();
@@ -683,9 +435,8 @@ void SpeechRecognition::Start(
              generation = mStreamGeneration](RefPtr<DOMMediaStream>&& aStream) {
               nsTArray<RefPtr<AudioStreamTrack>> tracks;
               aStream->GetAudioTracks(tracks);
-              if (mAborted || mCurrentState != STATE_STARTING ||
-                  mStreamGeneration != generation) {
-                // We were probably aborted. Exit early.
+              if (!mStarted || mStreamGeneration != generation) {
+                // Recognition was stopped. Exit early.
                 for (const RefPtr<AudioStreamTrack>& track : tracks) {
                   track->Stop();
                 }
@@ -701,9 +452,8 @@ void SpeechRecognition::Start(
             },
             [this, self,
              generation = mStreamGeneration](RefPtr<MediaMgrError>&& error) {
-              if (mAborted || mCurrentState != STATE_STARTING ||
-                  mStreamGeneration != generation) {
-                // We were probably aborted. Exit early.
+              if (!mStarted || mStreamGeneration != generation) {
+                // Recognition was stopped. Exit early.
                 return;
               }
               SpeechRecognitionErrorCode errorCode;
@@ -713,33 +463,34 @@ void SpeechRecognition::Start(
               } else {
                 errorCode = SpeechRecognitionErrorCode::Audio_capture;
               }
-              DispatchError(SpeechRecognition::EVENT_AUDIO_ERROR, errorCode,
+              DispatchError(errorCode,
                             error->mMessage);
             });
   }
-
-  RefPtr<SpeechEvent> event = new SpeechEvent(this, EVENT_START);
-  NS_DispatchToMainThread(event);
 }
 
 void SpeechRecognition::Stop() {
   MOZ_ASSERT(NS_IsMainThread(), "Stop must be on main thread");
+
+  // If not started, ignore per spec
+  if (!mStarted) {
+    return;
+  }
+
   if (mBackend) {
     mBackend->Stop();
     // Don't null out mBackend here - it may still deliver final results
     // It will be cleaned up in destructor or when creating a new one
   }
-
-  RefPtr<SpeechEvent> event = new SpeechEvent(this, EVENT_STOP);
-  NS_DispatchToMainThread(event);
 }
 
 void SpeechRecognition::Abort() {
-  if (mAborted) {
+  MOZ_ASSERT(NS_IsMainThread(), "Abort must be on main thread");
+
+  // If not started, ignore per spec
+  if (!mStarted) {
     return;
   }
-
-  mAborted = true;
 
   if (mBackend) {
     mBackend->Abort();
@@ -747,8 +498,8 @@ void SpeechRecognition::Abort() {
     mBackend = nullptr;
   }
 
-  RefPtr<SpeechEvent> event = new SpeechEvent(this, EVENT_ABORT);
-  NS_DispatchToMainThread(event);
+  // Fire end event and reset
+  ResetAndEnd();
 }
 
 void SpeechRecognition::DataCallback(TrackTime aTime, const AudioChunk& aChunk) {
@@ -778,63 +529,30 @@ void SpeechRecognition::NotifyTrackAdded(
   StartRecording(audioTrack);
 }
 
-void SpeechRecognition::DispatchError(EventType aErrorType,
-                                      SpeechRecognitionErrorCode aErrorCode,
+void SpeechRecognition::DispatchError(SpeechRecognitionErrorCode aErrorCode,
                                       const nsACString& aMessage) {
   MOZ_ASSERT(NS_IsMainThread(), "DispatchError must be on main thread");
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aErrorType == EVENT_RECOGNITIONSERVICE_ERROR ||
-                 aErrorType == EVENT_AUDIO_ERROR,
-             "Invalid error type!");
 
   RefPtr<SpeechRecognitionError> srError =
       new SpeechRecognitionError(nullptr, nullptr, nullptr);
 
   srError->InitSpeechRecognitionError(u"error"_ns, true, false, aErrorCode,
                                       aMessage);
+  srError->SetTrusted(true);
 
-  RefPtr<SpeechEvent> event = new SpeechEvent(this, aErrorType);
-  event->mError = srError;
-  NS_DispatchToMainThread(event);
+  DispatchEvent(*srError);
 }
 
 
-const char* SpeechRecognition::GetName(FSMState aId) {
-  static const char* names[] = {
-      "STATE_IDLE",        "STATE_STARTING",
-      "STATE_ESTIMATING",  "STATE_WAITING_FOR_SPEECH",
-      "STATE_RECOGNIZING", "STATE_WAITING_FOR_RESULT",
-      "STATE_ABORTING",
-  };
-
-  MOZ_ASSERT(aId < STATE_COUNT);
-  MOZ_ASSERT(std::size(names) == STATE_COUNT);
-  return names[aId];
-}
-
-const char* SpeechRecognition::GetName(SpeechEvent* aEvent) {
-  static const char* names[] = {"EVENT_START",
-                                "EVENT_STOP",
-                                "EVENT_ABORT",
-                                "EVENT_AUDIO_DATA",
-                                "EVENT_AUDIO_ERROR",
-                                "EVENT_RECOGNITIONSERVICE_INTERMEDIATE_RESULT",
-                                "EVENT_RECOGNITIONSERVICE_FINAL_RESULT",
-                                "EVENT_RECOGNITIONSERVICE_ERROR"};
-
-  MOZ_ASSERT(aEvent->mType < EVENT_COUNT);
-  MOZ_ASSERT(std::size(names) == EVENT_COUNT);
-  return names[aEvent->mType];
-}
 
 void SpeechRecognition::HandleRecognitionResultFromBackend(
     const nsCString& aTranscript, bool aIsFinal) {
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on main thread");
   LOG("HandleRecognitionResultFromBackend: {} (final={})", aTranscript.get(), aIsFinal);
 
-  // Check if we're still active (not aborted)
-  if (mAborted || !mBackend) {
-    LOG("Ignoring result - recognition was aborted or backend is gone");
+  // Check if we're still active
+  if (!mBackend) {
+    LOG("Ignoring result - backend is gone");
     return;
   }
 
@@ -880,8 +598,8 @@ void SpeechRecognition::HandleRecognitionErrorFromBackend(
   LOGE("HandleRecognitionErrorFromBackend: {}", aError.get());
 
   // Check if we're still active
-  if (mAborted || !mBackend) {
-    LOG("Ignoring error - recognition was aborted or backend is gone");
+  if (!mBackend) {
+    LOG("Ignoring error - backend is gone");
     return;
   }
 
@@ -905,33 +623,5 @@ void SpeechRecognition::HandleRecognitionErrorFromBackend(
   DispatchEvent(*srError);
 }
 
-SpeechEvent::SpeechEvent(SpeechRecognition* aRecognition,
-                         SpeechRecognition::EventType aType)
-    : Runnable("dom::SpeechEvent"),
-      mAudioSegment(nullptr),
-      mRecognitionResultList(nullptr),
-      mError(nullptr),
-      mRecognition(new nsMainThreadPtrHolder<SpeechRecognition>(
-          "SpeechEvent::SpeechEvent", aRecognition)),
-      mType(aType),
-      mTrackRate(0) {}
-
-SpeechEvent::SpeechEvent(nsMainThreadPtrHandle<SpeechRecognition>& aRecognition,
-                         SpeechRecognition::EventType aType)
-    : Runnable("dom::SpeechEvent"),
-      mAudioSegment(nullptr),
-      mRecognitionResultList(nullptr),
-      mError(nullptr),
-      mRecognition(aRecognition),
-      mType(aType),
-      mTrackRate(0) {}
-
-SpeechEvent::~SpeechEvent() { delete mAudioSegment; }
-
-NS_IMETHODIMP
-SpeechEvent::Run() {
-  mRecognition->ProcessEvent(this);
-  return NS_OK;
-}
 
 }  // namespace mozilla::dom
