@@ -48,7 +48,7 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
   // Called when SpeechRecognition.start() is called from JS
   // Starts the background thread and IPC session
   // Creates background thread and establishes IPC connection
-  nsresult Start(uint64_t aSessionId);
+  nsresult Start();
   // Called when SpeechRecognition.stop() is called from JS
   // Stops the background thread and IPC session
   // Gracefully shuts down background thread and closes IPC
@@ -76,12 +76,11 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
   void ProcessAudioChunk();
 
   // Send audio data to HWInference process
-  void SendAudioDataViaIPC(uint64_t aSessionId, nsTArray<float>&& aAudioData);
+  void SendAudioDataViaIPC(nsTArray<float>&& aAudioData);
 
-  void StartSpeechRecognitionSession(uint64_t aSessionId,
-                                     const nsCString& aLanguage);
+  void StartSpeechRecognitionSession(const nsCString& aLanguage);
   // Stop the current recognition session
-  void StopSpeechRecognitionSession(uint64_t aSessionId);
+  void StopSpeechRecognitionSession();
   // Called via IPC with recognition results. This dispatches the result to the
   // main thread, calling the SpeechRecognition object
   void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal);
@@ -148,9 +147,6 @@ class SpeechRecognitionBackend : public nsISupports, public SupportsWeakPtr {
   // [Main thread write, Background thread read] Graph sample rate
   // Set once in Initialize(), read by background thread for resampling
   uint32_t mGraphRate = 0;
-
-  // [Main thread write, Background thread read] Session identifier
-  std::atomic<uint64_t> mSessionId = 0;
 
   // Per-instance IPC channel for speech recognition sessions
   RefPtr<mozilla::ipc::SpeechRecognitionChild> mSpeechRecognitionChild;

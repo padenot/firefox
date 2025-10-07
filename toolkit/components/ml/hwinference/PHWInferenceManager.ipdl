@@ -22,7 +22,7 @@ protocol PHWInferenceManager
 
 parent:
   // Create a new speech recognition session
-  async PSpeechRecognition(uint64_t sessionId);
+  async PSpeechRecognition();
 };
 
 } // namespace ipc

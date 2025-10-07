@@ -34,7 +34,14 @@
 #  include <fcntl.h>
 #endif
 
+#include "mozilla/StaticMutex.h"
+#include "mozilla/StaticPtr.h"
+
 namespace mozilla::ipc {
+
+// Static initialization
+StaticRefPtr<SpeechRecognitionParent> SpeechRecognitionParent::sActiveSession;
+StaticMutex SpeechRecognitionParent::sSessionMutex;
 
 static LazyLogModule gSpeechRecognitionParentLog("SpeechRecognitionParent");
 #define LOGV(fmt, ...)                                             \
@@ -107,8 +114,8 @@ nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
     const nsTArray<nsCString>& aLanguages,
     IsModelAvailableResolver&& aResolver) {
-  LOGD("{} (id={}) RecvIsModelAvailable called for languages: {}", __func__,
-       static_cast<unsigned long>(mSessionId), fmt::join(aLanguages, ", "));
+  LOGD("{} RecvIsModelAvailable called for languages: {}", __func__,
+       fmt::join(aLanguages, ", "));
 
   ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
 
@@ -116,7 +123,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
   RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
       mozilla::ipc::UtilityProcessChild::GetSingleton();
   if (!utilityChild) {
-    LOGE("{} (id={}) No UtilityProcessChild available", __func__, mSessionId);
+    LOGE("{} No UtilityProcessChild available", __func__);
     aResolver(false);
     return IPC_OK();
   }
@@ -124,16 +131,15 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
   mozilla::ipc::HWInferenceChild* hwInferenceChild =
       utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
-    LOGE("{} (id={}) No HWInferenceChild available", __func__, mSessionId);
+    LOGE("{} No HWInferenceChild available", __func__);
     aResolver(false);
     return IPC_OK();
   }
 
   LOGD(
-      "{} (id={}) Sending model availability request to main process, {} "
+      "{} Sending model availability request to main process, {} "
       "mapped to model={}",
-      __func__, mSessionId, fmt::join(aLanguages, ", "),
-      modelIdentifier.ToString().get());
+      __func__, fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
 
   auto promise = hwInferenceChild->SendIsModelAvailable(
       modelIdentifier.mModelName, modelIdentifier.mRevision,
@@ -159,15 +165,14 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
     const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver) {
   ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
 
-  LOGD("[{} (id={}) Mapped to model: {}, revision: {}, filename: {}", __func__,
-       static_cast<unsigned long>(mSessionId), modelIdentifier.mModelName.get(),
-       modelIdentifier.mRevision.get(), modelIdentifier.mFileName.get());
+  LOGD("[{} Mapped to model: {}, revision: {}, filename: {}", __func__,
+       modelIdentifier.mModelName.get(), modelIdentifier.mRevision.get(),
+       modelIdentifier.mFileName.get());
 
   RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
       mozilla::ipc::UtilityProcessChild::GetSingleton();
   if (!utilityChild) {
-    LOGE("{} No UtilityProcessChild available", __func__,
-         static_cast<unsigned long>(mSessionId));
+    LOGE("{} No UtilityProcessChild available", __func__);
     aResolver(false);
     return IPC_OK();
   }
@@ -175,8 +180,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
   mozilla::ipc::HWInferenceChild* hwInferenceChild =
       utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
-    LOGE("{} No HWInferenceChild available", __func__,
-         static_cast<unsigned long>(mSessionId));
+    LOGE("{} No HWInferenceChild available", __func__);
     aResolver(false);
     return IPC_OK();
   }
@@ -184,8 +188,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
   LOGD(
       "{} Sending model installation request to main process via "
       "HWInference: model={}",
-      __func__, static_cast<unsigned long>(mSessionId),
-      modelIdentifier.ToString().get());
+      __func__, modelIdentifier.ToString().get());
 
   hwInferenceChild
       ->SendInstallModel(modelIdentifier.mModelName, modelIdentifier.mRevision,
@@ -209,9 +212,8 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
   return IPC_OK();
 }
 
-SpeechRecognitionParent::SpeechRecognitionParent(uint64_t aSessionId)
-    : mSessionId(aSessionId),
-      mIsActive(false),
+SpeechRecognitionParent::SpeechRecognitionParent()
+    : mIsActive(false),
       mWhisperCtx(nullptr),
       mLib(nullptr),
       mThreadRunning(false),
@@ -234,22 +236,20 @@ void SpeechRecognitionParent::RetrieveModelBlob() {
   RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
       mozilla::ipc::UtilityProcessChild::GetSingleton();
   if (!utilityChild) {
-    LOGE("{} (id={}) ERROR: No UtilityProcessChild available", __func__,
-         mSessionId);
+    LOGE("{} ERROR: No UtilityProcessChild available", __func__);
     return;
   }
   mozilla::ipc::HWInferenceChild* hwInferenceChild =
       utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
-    LOGE("{} (id={}) No HWInferenceChild available for model blob retrieval",
-         __func__, mSessionId);
+    LOGE("{} No HWInferenceChild available for model blob retrieval", __func__);
     return;
   }
 
   ModelIdentifier modelIdentifier =
       LanguagesToModelIdentifier(nsTArray{mLanguage});
 
-  LOGD("{} (id={}) Requesting model blob: model={}", __func__, mSessionId,
+  LOGD("{} Requesting model blob: model={}", __func__,
        modelIdentifier.ToString().get());
 
   hwInferenceChild
@@ -261,8 +261,7 @@ void SpeechRecognitionParent::RetrieveModelBlob() {
               const mozilla::ipc::GetModelBlobResult& aResult) mutable {
             if (aResult.type() ==
                 mozilla::ipc::GetModelBlobResult::TGetModelBlobError) {
-              LOGE("{} (id={}) GetModelBlobError with nsresult={:x}", __func__,
-                   self->mSessionId,
+              LOGE("{} GetModelBlobError with nsresult={:x}", __func__,
                    static_cast<uint32_t>(
                        aResult.get_GetModelBlobError().errorCode()));
               return;
@@ -274,16 +273,14 @@ void SpeechRecognitionParent::RetrieveModelBlob() {
                 mozilla::dom::IPCBlobUtils::Deserialize(blob);
 
             if (!blobImpl) {
-              LOGE("{} (id={}): Could not deserialize IPCBlob", __func__,
-                   self->mSessionId);
+              LOGE("{} Could not deserialize IPCBlob", __func__);
               return;
             }
             mozilla::ErrorResult errorResult;
             blobImpl->CreateInputStream(getter_AddRefs(self->mModelStream),
                                         errorResult);
             if (errorResult.Failed()) {
-              LOGE("{} (id={}): CreateInputStream failed", __func__,
-                   self->mSessionId);
+              LOGE("{}: CreateInputStream failed", __func__);
               return;
             }
 
@@ -300,15 +297,15 @@ void SpeechRecognitionParent::RetrieveModelBlob() {
             nsresult rv = asyncFileMetadata->AsyncFileMetadataWait(
                 self->mMetadataCallback.get(), eventTarget);
             if (NS_WARN_IF(NS_FAILED(rv))) {
-              LOGE("{} (id={})AsyncFileMetadataWait returned error 0x{:x}",
-                   __func__, self->mSessionId, static_cast<uint32_t>(rv));
+              LOGE("{} AsyncFileMetadataWait returned error 0x{:x}", __func__,
+                   static_cast<uint32_t>(rv));
               return;
             }
           },
           [self = RefPtr{this}](
               mozilla::ipc::ResponseRejectReason aReason) mutable {
-            LOGE("{} (id={}) Promise rejected with reason {}", __func__,
-                 self->mSessionId, static_cast<int>(aReason));
+            LOGE("{} Promise rejected with reason {}", __func__,
+                 static_cast<int>(aReason));
           });
 }
 
@@ -325,8 +322,8 @@ void SpeechRecognitionParent::OnModelMetadataReceived() {
   PRFileDesc* fileDesc;
   const nsresult rv = fileMetadata->GetFileDescriptor(&fileDesc);
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    LOGE("{} (id={}) GetFileDescriptor error, neresult=0x{:x}", __func__,
-         mSessionId, static_cast<uint32_t>(rv));
+    LOGE("{} GetFileDescriptor error, neresult=0x{:x}", __func__,
+         static_cast<uint32_t>(rv));
     return;
   }
   MOZ_ASSERT(fileDesc);
@@ -336,7 +333,7 @@ void SpeechRecognitionParent::OnModelMetadataReceived() {
       PR_FileDesc2NativeHandle(fileDesc));
   int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_RDONLY);
   if (fd == -1) {
-    LOGE("{} (id={}): _open_osfhandle failed", __func__, mSessionId);
+    LOGE("{} _open_osfhandle failed", __func__);
     return;
   }
 #else
@@ -344,7 +341,7 @@ void SpeechRecognitionParent::OnModelMetadataReceived() {
 #endif
   FILE* fp = fdopen(fd, "rb");
   if (!fp) {
-    LOGE("{} (id={}) fdopen failed", __func__, mSessionId);
+    LOGE("{} fdopen failed", __func__);
     return;
   }
 
@@ -353,11 +350,19 @@ void SpeechRecognitionParent::OnModelMetadataReceived() {
 }
 
 SpeechRecognitionParent::~SpeechRecognitionParent() {
-  LOGD("{} (id={}) mIsActive={}", __func__, mSessionId,
-       mIsActive ? "true" : "false");
+  LOGD("{} mIsActive={}", __func__, mIsActive ? "true" : "false");
+
+  // Clear active session if this was it
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession == this) {
+      LOGD("Clearing active session in destructor");
+      sActiveSession = nullptr;
+    }
+  }
+
   if (mIsActive) {
-    LOGD("[SRParent:{}] Destroying active session, cleaning up",
-         static_cast<unsigned long>(mSessionId));
+    LOGD("Destroying active session, cleaning up");
     mIsActive = false;
   }
 
@@ -374,7 +379,19 @@ SpeechRecognitionParent::~SpeechRecognitionParent() {
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
     const nsCString& aLanguage, const nsTArray<nsString>& aPhrases,
     InitResolver&& aResolver) {
-  LOGD("{} (id={}) language='{}'", __func__, mSessionId, aLanguage.get());
+  LOGD("{} language='{}'", __func__, aLanguage.get());
+
+  // Enforce single active session
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession) {
+      LOGE("Rejecting Init - another recognition session is already active");
+      aResolver(false);
+      return IPC_OK();
+    }
+    sActiveSession = this;
+    LOGD("Session registered as active");
+  }
 
   mLanguage = aLanguage;
   mPhrases = aPhrases.Clone();
@@ -396,26 +413,31 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvProcessAudioData(
     nsTArray<float>&& aAudioData) {
-  LOGV("{} (id={}) {} samples", __func__, mSessionId, aAudioData.Length());
+  LOGV("{} {} samples", __func__, aAudioData.Length());
 
   if (!mIsActive) {
-    LOGD(
-        "[SRParent:{}] Received audio data but session is not active, ignoring",
-        static_cast<unsigned long>(mSessionId));
+    LOGD("Received audio data but session is not active, ignoring");
     return IPC_OK();
   }
 
   if (!mAudioQueue.Enqueue(aAudioData.Elements(), (int)aAudioData.Length())) {
-    LOGD("[SRParent:{}] Audio queue full, dropping sample",
-         static_cast<unsigned long>(mSessionId));
+    LOGD("Audio queue full, dropping sample");
   }
 
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
-  LOGD("[SRParent:{}] RecvStop called, mIsActive={}",
-       static_cast<unsigned long>(mSessionId), mIsActive ? "true" : "false");
+  LOGD("RecvStop called, mIsActive={}", mIsActive ? "true" : "false");
+
+  // Clear active session if this was it
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession == this) {
+      LOGD("Clearing active session in RecvStop");
+      sActiveSession = nullptr;
+    }
+  }
 
   if (mIsActive) {
     mIsActive = false;
@@ -423,29 +445,22 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
     // Stop background thread
     if (mThreadRunning.load()) {
       mThreadRunning.store(false);
-      LOGD("[SRParent:{}] Signaled background thread to stop",
-           static_cast<unsigned long>(mSessionId));
+      LOGD("Signaled background thread to stop");
     }
 
-    LOGD(
-        "[SRParent:{}] Stopping speech recognition session and cleaning up "
-        "resources",
-        static_cast<unsigned long>(mSessionId));
+    LOGD("Stopping speech recognition session and cleaning up resources");
   } else {
-    LOGD("[SRParent:{}] Stop called on inactive session",
-         static_cast<unsigned long>(mSessionId));
+    LOGD("Stop called on inactive session");
   }
   return IPC_OK();
 }
 
 void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
-  LOGD("[SRParent:{}] ActorDestroy called, reason={}, mIsActive={}",
-       static_cast<unsigned long>(mSessionId), static_cast<int>(aReason),
-       mIsActive ? "true" : "false");
+  LOGD("ActorDestroy called, reason={}, mIsActive={}",
+       static_cast<int>(aReason), mIsActive ? "true" : "false");
 
   if (mIsActive) {
-    LOGD("[SRParent:{}] Actor destroyed while session was active, cleaning up",
-         static_cast<unsigned long>(mSessionId));
+    LOGD("Actor destroyed while session was active, cleaning up");
     mIsActive = false;
   }
 
@@ -462,8 +477,7 @@ void SpeechRecognitionParent::InitializeWhisperOnBackgroundThread() {
   if (!mLib) {
     mLib = mozilla::llama::LlamaRuntimeLinker::Get();
     if (!mLib) {
-      LOGE("[SRParent:{}] Failed to get runtime linker",
-           static_cast<unsigned long>(mSessionId));
+      LOGE("{} Failed to get runtime linker", __func__);
       return;
     }
   }
@@ -475,8 +489,7 @@ void SpeechRecognitionParent::InitializeWhisperOnBackgroundThread() {
 }
 
 void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
-  LOGD("{} (id={}) Starting recognition loop", __func__,
-       static_cast<unsigned long>(mSessionId));
+  LOGD("{} Starting recognition loop", __func__);
 
   std::vector<float> audioForRecognition;
 
@@ -499,9 +512,7 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
           self->mRingWritePos = (self->mRingWritePos + 1) % self->mRingSize;
         }
 
-        LOGV("[SRParent:{}] Added {} samples to ring buffer, writePos={}",
-             static_cast<unsigned long>(self->mSessionId), dequeued,
-             self->mRingWritePos);
+        LOGV("Added {} samples to ring buffer, writePos={}", dequeued, self->mRingWritePos);
       }
 
       // Small sleep to prevent excessive CPU usage
@@ -529,13 +540,13 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
 
       if (!mWhisperCtx) {
         LOGE(
-            "{} (id={}) ERROR whisper_init_from_file_handle_with_params "
+            "{} ERROR whisper_init_from_file_handle_with_params "
             "returned nullptr",
-            __func__, mSessionId);
+            __func__);
         fclose(mModelFile);
         mModelFile = nullptr;
       } else {
-        LOGD("{} (id={}) Got Whisper context", __func__, mSessionId);
+        LOGD("{} Got Whisper context", __func__);
       }
 
       mWhisperInitPending.store(false);
@@ -562,8 +573,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
         audioForRecognition[i] = mAudioRing[ring_pos];
       }
 
-      LOGV("{} (id={}) Running recognition on {} samples ({:.2f}s of audio)",
-           __func__, mSessionId, samples_to_analyze,
+      LOGV("{} Running recognition on {} samples ({:.2f}s of audio)",
+           __func__, samples_to_analyze,
            samples_to_analyze / (float)WHISPER_SAMPLE_RATE);
 
       // Dump audio data that will be sent to Whisper for debugging
@@ -605,8 +616,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
               bool isFinal =
                   (i == n_segments - 1);  // Mark last segment as final
 
-              LOGV("{} recognition result: '{}' (final={})",
-                   __func__, mSessionId, transcript.get(), isFinal ? "true" : "false");
+              LOGV("{} recognition result: '{}' (final={})", __func__,
+                   transcript.get(), isFinal ? "true" : "false");
 
               // Send result via IPC (dispatch to main thread)
               NS_DispatchToMainThread(NS_NewRunnableFunction(
@@ -621,8 +632,7 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
             }
           }
         } else {
-          LOGD("[SRParent:{}] Whisper inference failed",
-               static_cast<unsigned long>(mSessionId));
+          LOGD("Whisper inference failed");
         }
       }
 
@@ -638,8 +648,7 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
     audioConsumerThread.join();
   }
 
-  LOGD("[SRParent:{}] Continuous audio processing loop terminated",
-       static_cast<unsigned long>(mSessionId));
+  LOGD("Continuous audio processing loop terminated");
 }
 
 void SpeechRecognitionParent::CleanupWhisperContext() {

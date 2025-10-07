@@ -23,8 +23,7 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
                                dom::ContentParentId aContentId);
 
   // PSpeechRecognition management
-  PSpeechRecognitionParent* AllocPSpeechRecognitionParent(
-      const uint64_t& aSessionId);
+  PSpeechRecognitionParent* AllocPSpeechRecognitionParent();
   bool DeallocPSpeechRecognitionParent(PSpeechRecognitionParent* aActor);
 
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -35,8 +34,8 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
 
   const dom::ContentParentId mContentId;
 
-  // Map of session IDs to speech recognition actors
-  nsRefPtrHashtable<nsUint64HashKey, SpeechRecognitionParent> mSpeechSessions;
+  // Speech recognition actors (multiple allowed for Available/Install/Start)
+  nsTArray<RefPtr<SpeechRecognitionParent>> mSpeechSessions;
 
 };
 

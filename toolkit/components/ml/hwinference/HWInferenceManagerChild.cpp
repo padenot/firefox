@@ -57,16 +57,13 @@ void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   sSingleton = nullptr;
 }
 
-PSpeechRecognitionChild* HWInferenceManagerChild::AllocPSpeechRecognitionChild(
-    const uint64_t& aSessionId) {
+PSpeechRecognitionChild* HWInferenceManagerChild::AllocPSpeechRecognitionChild() {
   RefPtr<SpeechRecognitionChild> actor =
-      new SpeechRecognitionChild(aSessionId, this);
+      new SpeechRecognitionChild(this);
 
-  mSpeechSessions.InsertOrUpdate(aSessionId, actor);
-  LOGD(
-      "Created and stored SpeechRecognitionChild actor={:p} for session={}, "
-      "session count={}",
-      fmt::ptr(actor.get()), aSessionId, mSpeechSessions.Count());
+  mSpeechSessions.AppendElement(actor);
+  LOGD("Created SpeechRecognitionChild actor={:p}, total={}",
+       fmt::ptr(actor.get()), mSpeechSessions.Length());
 
   return actor.get();
 }
@@ -75,36 +72,31 @@ bool HWInferenceManagerChild::DeallocPSpeechRecognitionChild(
     PSpeechRecognitionChild* aActor) {
   RefPtr<SpeechRecognitionChild> actor =
       static_cast<SpeechRecognitionChild*>(aActor);
-  uint64_t sessionId = actor->GetSessionId();
 
-  bool removed = mSpeechSessions.Remove(sessionId);
-  LOGD(
-      "Dealloc SpeechRecognitionChild actor={:p} for session={}, session "
-      "count={}: {}",
-      fmt::ptr(actor.get()), sessionId, mSpeechSessions.Count(),
-      removed ? "success" : "not found");
+  LOGD("Dealloc SpeechRecognitionChild actor={:p}",
+       fmt::ptr(aActor));
 
+  mSpeechSessions.RemoveElement(actor);
   return true;
 }
 
 RefPtr<SpeechRecognitionChild>
-HWInferenceManagerChild::CreateSpeechRecognitionSession(uint64_t aSessionId) {
-  LOGD("{} session={}", __func__, aSessionId);
+HWInferenceManagerChild::CreateSpeechRecognitionSession() {
+  LOGD("{}", __func__);
 
   if (!CanSend()) {
-    LOGE("{} - Cannot send for session={}", __func__, aSessionId);
+    LOGE("{} - Cannot send", __func__);
     return nullptr;
   }
 
   RefPtr<SpeechRecognitionChild> actor = static_cast<SpeechRecognitionChild*>(
-      SendPSpeechRecognitionConstructor(aSessionId));
+      SendPSpeechRecognitionConstructor());
 
   if (actor) {
-    LOGD(
-        "Successfully created SpeechRecognitionChild actor={:p} for session={}",
-        fmt::ptr(actor.get()), aSessionId);
+    LOGD("Successfully created SpeechRecognitionChild actor={:p}",
+         fmt::ptr(actor.get()));
   } else {
-    LOGE("Failed to create SpeechRecognitionChild for session={}", aSessionId);
+    LOGE("Failed to create SpeechRecognitionChild");
   }
 
   return actor;

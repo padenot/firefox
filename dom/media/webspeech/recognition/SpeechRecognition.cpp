@@ -54,8 +54,6 @@
 namespace mozilla::dom {
 using mozilla::CubebUtils::PreferredSampleRate;
 
-std::atomic<uint64_t> SpeechRecognition::sNextSessionId{0};
-
 static LazyLogModule gSpeechRecognitionLog("SpeechRecognition");
 
 #define LOG(fmt, ...)                                               \
@@ -618,9 +616,6 @@ void SpeechRecognition::Start(
 
   MOZ_ASSERT(!mListener);
 
-  // Generate a unique session ID using incrementing counter
-  mSessionId = ++sNextSessionId;
-
   // Clean up any existing backend before creating a new one
   if (mBackend) {
     mBackend->Abort();
@@ -646,7 +641,7 @@ void SpeechRecognition::Start(
     }
   }
   mBackend = MakeRefPtr<SpeechRecognitionBackend>(this, graphRate, mLang, phrasesForBackend);
-  nsresult rv = mBackend->Start(mSessionId);
+  nsresult rv = mBackend->Start();
   if (NS_FAILED(rv)) {
     LOGE("Failed to start backend: {:x}", static_cast<uint32_t>(rv));
     aRv.Throw(rv);
@@ -734,7 +729,6 @@ void SpeechRecognition::Stop() {
     // Don't null out mBackend here - it may still deliver final results
     // It will be cleaned up in destructor or when creating a new one
   }
-  mSessionId = 0;
 
   RefPtr<SpeechEvent> event = new SpeechEvent(this, EVENT_STOP);
   NS_DispatchToMainThread(event);
@@ -752,7 +746,6 @@ void SpeechRecognition::Abort() {
     // Clear backend after abort since no more results are expected
     mBackend = nullptr;
   }
-  mSessionId = 0;
 
   RefPtr<SpeechEvent> event = new SpeechEvent(this, EVENT_ABORT);
   NS_DispatchToMainThread(event);
@@ -896,8 +889,15 @@ void SpeechRecognition::HandleRecognitionErrorFromBackend(
   RefPtr<SpeechRecognitionError> srError =
       new SpeechRecognitionError(nullptr, nullptr, nullptr);
 
+  // Map backend errors to appropriate error codes
+  SpeechRecognitionErrorCode errorCode = SpeechRecognitionErrorCode::Network;
+  if (aError.EqualsLiteral("concurrent-session")) {
+    // Use service-not-allowed for concurrent session rejection
+    errorCode = SpeechRecognitionErrorCode::Service_not_allowed;
+  }
+
   srError->InitSpeechRecognitionError(u"error"_ns, true, false,
-                                      SpeechRecognitionErrorCode::Network,
+                                      errorCode,
                                       aError);
   srError->SetTrusted(true);
 

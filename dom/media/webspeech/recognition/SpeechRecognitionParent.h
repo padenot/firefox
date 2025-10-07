@@ -37,7 +37,7 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
  public:
   NS_INLINE_DECL_REFCOUNTING(SpeechRecognitionParent)
 
-  explicit SpeechRecognitionParent(uint64_t aSessionId);
+  SpeechRecognitionParent();
 
   mozilla::ipc::IPCResult RecvIsModelAvailable(
       const nsTArray<nsCString>& aLanguages,
@@ -51,8 +51,6 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   mozilla::ipc::IPCResult RecvStop();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
-
-  uint64_t GetSessionId() const { return mSessionId; }
 
   // Called when model blob metadata is ready
   void OnModelMetadataReceived();
@@ -75,7 +73,9 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   void ProcessAudioOnBackgroundThread();
   void CleanupWhisperContext();
 
-  uint64_t mSessionId;
+  // Static tracking of the single active recognition session
+  static StaticRefPtr<SpeechRecognitionParent> sActiveSession;
+  static StaticMutex sSessionMutex MOZ_UNANNOTATED;
   nsCString mLanguage;
   // Contextual biasing phrases
   nsTArray<nsString> mPhrases;

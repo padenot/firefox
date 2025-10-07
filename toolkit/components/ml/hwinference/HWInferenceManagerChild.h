@@ -27,21 +27,19 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   // PSpeechRecognition management
-  PSpeechRecognitionChild* AllocPSpeechRecognitionChild(
-      const uint64_t& aSessionId);
+  PSpeechRecognitionChild* AllocPSpeechRecognitionChild();
   bool DeallocPSpeechRecognitionChild(PSpeechRecognitionChild* aActor);
 
   // Create a new speech recognition session
-  RefPtr<SpeechRecognitionChild> CreateSpeechRecognitionSession(
-      uint64_t aSessionId);
+  RefPtr<SpeechRecognitionChild> CreateSpeechRecognitionSession();
 
  private:
   ~HWInferenceManagerChild() = default;
 
   static RefPtr<HWInferenceManagerChild> sSingleton;
 
-  // Map of session IDs to speech recognition actors
-  nsRefPtrHashtable<nsUint64HashKey, SpeechRecognitionChild> mSpeechSessions;
+  // Speech recognition actors
+  nsTArray<RefPtr<SpeechRecognitionChild>> mSpeechSessions;
 };
 
 }  // namespace mozilla::ipc

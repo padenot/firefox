@@ -17,12 +17,11 @@ namespace mozilla::ipc {
 static LazyLogModule gSpeechRecognitionChildLog("SpeechRecognitionChild");
 #define SRCHILD_LOG(level, fmt, ...)         \
   MOZ_LOG(gSpeechRecognitionChildLog, level, \
-          ("[SRChild:%p:%lu] " fmt, this,    \
-           static_cast<unsigned long>(mSessionId), ##__VA_ARGS__))
+          ("[SRChild:%p] " fmt, this, ##__VA_ARGS__))
 
 SpeechRecognitionChild::SpeechRecognitionChild(
-    uint64_t aSessionId, HWInferenceManagerChild* aManager)
-    : mSessionId(aSessionId), mManager(aManager) {
+    HWInferenceManagerChild* aManager)
+    : mManager(aManager) {
   SRCHILD_LOG(LogLevel::Debug, "Constructor called with manager=%p", aManager);
   MOZ_ASSERT(mManager);
 }

@@ -23,8 +23,7 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
   using RecognitionResultCallback = std::function<void(const nsCString&, bool)>;
   using RecognitionErrorCallback = std::function<void(const nsCString&)>;
 
-  explicit SpeechRecognitionChild(uint64_t aSessionId,
-                                  HWInferenceManagerChild* aManager);
+  explicit SpeechRecognitionChild(HWInferenceManagerChild* aManager);
 
   void SetResultCallback(RecognitionResultCallback&& aCallback);
   void SetErrorCallback(RecognitionErrorCallback&& aCallback);
@@ -35,12 +34,8 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
-  uint64_t GetSessionId() const { return mSessionId; }
-
  private:
   ~SpeechRecognitionChild();
-
-  uint64_t mSessionId;
   RefPtr<HWInferenceManagerChild> mManager;
   RecognitionResultCallback mResultCallback;
   RecognitionErrorCallback mErrorCallback;

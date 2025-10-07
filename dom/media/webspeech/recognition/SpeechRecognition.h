@@ -279,12 +279,6 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   const char* GetName(FSMState aId);
   const char* GetName(SpeechEvent* aEvent);
-
-  // Session ID for speech recognition
-  uint64_t mSessionId = 0;
-
-  // Static counter for generating session IDs
-  static std::atomic<uint64_t> sNextSessionId;
 };
 
 class SpeechEvent : public Runnable {

@@ -78,11 +78,9 @@ SpeechRecognitionBackend::~SpeechRecognitionBackend() {
   }
 }
 
-nsresult SpeechRecognitionBackend::Start(uint64_t aSessionId) {
+nsresult SpeechRecognitionBackend::Start() {
   MOZ_ASSERT(NS_IsMainThread(), "Start must be called on main thread");
-  LOG("SpeechRecognitionBackend::Start - session ID: {}", aSessionId);
-
-  mSessionId = aSessionId;
+  LOG("SpeechRecognitionBackend::Start");
 
   MOZ_ASSERT(!mSpeechRecognitionChild);
 
@@ -91,7 +89,7 @@ nsresult SpeechRecognitionBackend::Start(uint64_t aSessionId) {
   // correcte rate
   EnsureIPC()->Then(
       GetCurrentSerialEventTarget(), __func__,
-      [self = RefPtr{this}, aSessionId](bool aSuccess) {
+      [self = RefPtr{this}](bool aSuccess) {
         if (!aSuccess) {
           LOGE("Failed to establish IPC connection in Start()");
           return;
@@ -110,8 +108,8 @@ nsresult SpeechRecognitionBackend::Start(uint64_t aSessionId) {
           self->mResamplingThreadRunning.store(false,
                                                std::memory_order_release);
         }
-        OnIPCThread([self, aSessionId]() {
-          self->StartSpeechRecognitionSession(aSessionId, self->mLanguage);
+        OnIPCThread([self]() {
+          self->StartSpeechRecognitionSession(self->mLanguage);
         });
       },
       [self = RefPtr{this}](nsresult aError) {
@@ -123,18 +121,16 @@ nsresult SpeechRecognitionBackend::Start(uint64_t aSessionId) {
 }
 
 void SpeechRecognitionBackend::Stop() {
-  LOG("SpeechRecognitionBackend::Stop ({})", mSessionId.load());
+  LOG("SpeechRecognitionBackend::Stop");
 
-  if (mSessionId != 0 && mResamplingThread) {
+  if (mResamplingThread) {
     RefPtr<SpeechRecognitionBackend> self = this;
-    uint64_t sessionId = mSessionId;
-    OnIPCThread([self = RefPtr{this}, sessionId]() {
-      self->StopSpeechRecognitionSession(sessionId);
+    OnIPCThread([self = RefPtr{this}]() {
+      self->StopSpeechRecognitionSession();
     });
     mResamplingThreadRunning.store(false, std::memory_order_release);
     mResamplingThread->Shutdown();
     mResamplingThread = nullptr;
-    mSessionId = 0;
   }
 
   mMonoBuffer.Clear();
@@ -235,7 +231,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     size_t frames = resampledBuffer.Length();
 
     LOGV("Sending {}s of audio via IPC", frames / kTargetRate);
-    SendAudioDataViaIPC(mSessionId, std::move(resampledBuffer));
+    SendAudioDataViaIPC(std::move(resampledBuffer));
   } else {
     LOGV("Not enough data in ringbuffer ({}s), retrying in a bit",
          secondsAvailable);
@@ -252,37 +248,48 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
 }
 
 void SpeechRecognitionBackend::StartSpeechRecognitionSession(
-    uint64_t aSessionId, const nsCString& aLanguage) {
+    const nsCString& aLanguage) {
   AssertOnIPCThread();
 
   mSpeechRecognitionChild =
-      sHWInferenceChild->CreateSpeechRecognitionSession(aSessionId);
+      sHWInferenceChild->CreateSpeechRecognitionSession();
   // Set up callbacks for receiving results
   // Capture weak reference to avoid circular reference
   mSpeechRecognitionChild->SetResultCallback(
-      [self = RefPtr{this}, aSessionId](const nsCString& aTranscript,
-                                        bool aIsFinal) {
+      [self = RefPtr{this}](const nsCString& aTranscript, bool aIsFinal) {
         // Handle speech recognition result
-        LOG("Received recognition result for session {}: {} (final={})",
-            aSessionId, aTranscript.get(), aIsFinal);
+        LOG("Received recognition result: {} (final={})", aTranscript.get(),
+            aIsFinal);
 
         self->HandleRecognitionResult(aTranscript, aIsFinal);
       });
 
   mSpeechRecognitionChild->SetErrorCallback(
-      [self = RefPtr{this}, aSessionId](const nsCString& aError) {
+      [self = RefPtr{this}](const nsCString& aError) {
         // Handle speech recognition error
-        LOGE("Recognition error for session {}: {}", aSessionId, aError.get());
+        LOGE("Recognition error: {}", aError.get());
 
         self->HandleRecognitionError(aError);
       });
 
   // Initialize the session with the language and biasing phrases
-  mSpeechRecognitionChild->SendInit(aLanguage, mPhrases);
+  mSpeechRecognitionChild->SendInit(aLanguage, mPhrases)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [self = RefPtr{this}](bool aSuccess) {
+        if (!aSuccess) {
+          LOGE("Failed to initialize speech recognition session - likely another session is active");
+          self->HandleRecognitionError(nsCString("concurrent-session"));
+        } else {
+          LOG("Speech recognition session initialized successfully");
+        }
+      },
+      [self = RefPtr{this}](mozilla::ipc::ResponseRejectReason aReason) {
+        LOGE("Init IPC call failed: {}", static_cast<int>(aReason));
+        self->HandleRecognitionError(nsCString("network"));
+      });
 }
 
-void SpeechRecognitionBackend::SendAudioDataViaIPC(uint64_t aSessionId,
-                                                   nsTArray<float>&& aAudioData) {
+void SpeechRecognitionBackend::SendAudioDataViaIPC(nsTArray<float>&& aAudioData) {
   AssertOnResamplingThread();
 
   // Dispatch the actual IPC call to the IPC thread
@@ -299,10 +306,9 @@ void SpeechRecognitionBackend::SendAudioDataViaIPC(uint64_t aSessionId,
   });
 }
 
-void SpeechRecognitionBackend::StopSpeechRecognitionSession(
-    uint64_t aSessionId) {
+void SpeechRecognitionBackend::StopSpeechRecognitionSession() {
   AssertOnIPCThread();
-  LOG("Stopping HWInference speech recognition session: {}", aSessionId);
+  LOG("Stopping HWInference speech recognition session");
   mSpeechRecognitionChild->SendStop();
   // Clean up the actor
   mozilla::ipc::SpeechRecognitionChild::Send__delete__(mSpeechRecognitionChild);
@@ -435,7 +441,7 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Available(
           // Create a temporary speech recognition session to check model
           // availability
           RefPtr<mozilla::ipc::SpeechRecognitionChild> speechChild =
-              sHWInferenceChild->CreateSpeechRecognitionSession(PR_Now());
+              sHWInferenceChild->CreateSpeechRecognitionSession();
 
           if (!speechChild) {
             LOG("SpeechRecognitionBackend::Available - Failed to create speech "
@@ -606,7 +612,7 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Install(
 
           // Create a temporary speech recognition session to install models
           RefPtr<mozilla::ipc::SpeechRecognitionChild> speechChild =
-              sHWInferenceChild->CreateSpeechRecognitionSession(PR_Now());
+              sHWInferenceChild->CreateSpeechRecognitionSession();
 
           if (!speechChild) {
             LOG("SpeechRecognitionBackend::Install - Failed to create speech "

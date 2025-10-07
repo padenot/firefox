@@ -51,22 +51,17 @@ void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
 }
 
 PSpeechRecognitionParent*
-HWInferenceManagerParent::AllocPSpeechRecognitionParent(
-    const uint64_t& aSessionId) {
-  LOGD(
-      "[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent session={}",
-      (void*)this, aSessionId);
+HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
+  LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
+       (void*)this);
 
-  // Create the actor with manual AddRef for IPDL ownership
-  RefPtr<SpeechRecognitionParent> actor =
-      new SpeechRecognitionParent(aSessionId);
+  // Create the actor
+  RefPtr<SpeechRecognitionParent> actor = new SpeechRecognitionParent();
 
-  // Store the actor in our session map (this keeps a reference)
-  mSpeechSessions.InsertOrUpdate(aSessionId, actor);
-  LOGD(
-      "[{}] Created and stored SpeechRecognitionParent actor={:p} for "
-      "session={}, total sessions={}",
-      (void*)this, (void*)actor.get(), aSessionId, mSpeechSessions.Count());
+  // Store the actor
+  mSpeechSessions.AppendElement(actor);
+  LOGD("[{}] Created SpeechRecognitionParent actor={:p}, total sessions={}",
+       (void*)this, (void*)actor.get(), mSpeechSessions.Length());
 
   return actor.get();
 }
@@ -75,18 +70,15 @@ bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
     PSpeechRecognitionParent* aActor) {
   RefPtr<SpeechRecognitionParent> actor =
       static_cast<SpeechRecognitionParent*>(aActor);
-  uint64_t sessionId = actor->GetSessionId();
 
-  LOGD(
-      "[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
-      "actor={:p} session={}",
-      (void*)this, (void*)aActor, sessionId);
+  LOGD("[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
+       "actor={:p}",
+       (void*)this, (void*)aActor);
 
-  // Remove from our session map
-  bool removed = mSpeechSessions.Remove(sessionId);
-  LOGD("[{}] Removed session={} from map: {}, remaining sessions={}",
-       (void*)this, sessionId, removed ? "success" : "not found",
-       mSpeechSessions.Count());
+  // Remove from our array
+  mSpeechSessions.RemoveElement(actor);
+  LOGD("[{}] Removed actor from array, remaining sessions={}",
+       (void*)this, mSpeechSessions.Length());
 
   return true;
 }
