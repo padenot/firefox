@@ -38,8 +38,7 @@ interface SpeechRecognition : EventTarget {
 
     // New attributes from current spec
     attribute boolean processLocally;
-    [Cached, Frozen, Pure]
-    attribute sequence<DOMString> phrases;
+    attribute ObservableArray<SpeechRecognitionPhrase> phrases;
 
     // Deprecated but kept for compatibility
     [Throws, Pref="media.webspeech.recognition.service_uri_enable"]

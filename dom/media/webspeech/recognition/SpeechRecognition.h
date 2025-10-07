@@ -22,6 +22,7 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/SpeechRecognitionBinding.h"
 #include "mozilla/dom/SpeechRecognitionError.h"
+#include "mozilla/dom/SpeechRecognitionPhrase.h"
 #include "nsCOMPtr.h"
 #include "nsISpeechRecognitionService.h"
 #include "nsITimer.h"
@@ -100,9 +101,11 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   bool ProcessLocally() const;
   void SetProcessLocally(bool aProcessLocally);
 
-  void GetPhrases(nsTArray<nsString>& aPhrases);
-  void SetPhrases(const Sequence<nsString>& aPhrases);
-  void ClearCachedPhrasesValue();
+  // ObservableArray callbacks for phrases
+  void OnSetPhrases(SpeechRecognitionPhrase& aPhrase, uint32_t aIndex,
+                     ErrorResult& aRv);
+  void OnDeletePhrases(SpeechRecognitionPhrase& aPhrase, uint32_t aIndex,
+                        ErrorResult& aRv);
 
   // Static methods from current spec
   static already_AddRefed<Promise> Available(
@@ -265,7 +268,9 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   // New attributes from current spec
   bool mProcessLocally;
-  nsTArray<nsString> mPhrases;
+  // The backend gets these at Start() time; spec is unclear on dynamic updates
+  // Probably better as a SimpleMap or something so it's sparse
+  nsTArray<RefPtr<SpeechRecognitionPhrase>> mPhrases;
 
   RefPtr<TrackListener> mListener;
 

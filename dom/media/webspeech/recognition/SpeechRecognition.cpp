@@ -71,7 +71,7 @@ static LazyLogModule gSpeechRecognitionLog("SpeechRecognition");
 NS_IMPL_CYCLE_COLLECTION_WEAK_PTR_INHERITED(SpeechRecognition,
                                             DOMEventTargetHelper, mTrack,
                                             mSpeechGrammarList, mListener,
-                                            mBackend)
+                                            mBackend, mPhrases)
 
 NS_IMPL_ADDREF_INHERITED(SpeechRecognition, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(SpeechRecognition, DOMEventTargetHelper)
@@ -508,15 +508,18 @@ void SpeechRecognition::SetProcessLocally(bool aProcessLocally) {
   // This always processes locally
 }
 
-void SpeechRecognition::GetPhrases(nsTArray<nsString>& aPhrases) {
-  aPhrases = mPhrases.Clone();
+void SpeechRecognition::OnSetPhrases(SpeechRecognitionPhrase& aPhrase,
+                                     uint32_t aIndex, ErrorResult& aRv) {
+  // Note: The spec is unclear on whether dynamic updates during recognition
+  // should affect ongoing recognition. For now, the backend only gets phrases
+  // at Start() time.
+  mPhrases.InsertElementAt(aIndex, &aPhrase);
 }
 
-void SpeechRecognition::SetPhrases(const Sequence<nsString>& aPhrases) {
-  mPhrases.Clear();
-  for (const auto& phrase : aPhrases) {
-    mPhrases.AppendElement(phrase);
-  }
+void SpeechRecognition::OnDeletePhrases(SpeechRecognitionPhrase& aPhrase,
+                                         uint32_t aIndex, ErrorResult& aRv) {
+  MOZ_ASSERT(mPhrases.ElementAt(aIndex) == &aPhrase);
+  mPhrases.RemoveElementAt(aIndex);
 }
 
 /* static */
@@ -632,7 +635,17 @@ void SpeechRecognition::Start(
   }
 
   // init and start the backend
-  mBackend = MakeRefPtr<SpeechRecognitionBackend>(this, graphRate, mLang, mPhrases);
+  // Extract phrase strings from our local copy of SpeechRecognitionPhrase objects
+  // The backend gets these at Start() time; the spec is unclear on dynamic updates
+  nsTArray<nsString> phrasesForBackend;
+  for (const auto& phrase : mPhrases) {
+    if (phrase) {
+      nsString phraseStr;
+      phrase->GetPhrase(phraseStr);
+      phrasesForBackend.AppendElement(phraseStr);
+    }
+  }
+  mBackend = MakeRefPtr<SpeechRecognitionBackend>(this, graphRate, mLang, phrasesForBackend);
   nsresult rv = mBackend->Start(mSessionId);
   if (NS_FAILED(rv)) {
     LOGE("Failed to start backend: {:x}", static_cast<uint32_t>(rv));
