@@ -635,7 +635,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
     // Step 1: Dequeue audio from SPSC (mimicking cubeb-transcript line 741)
     int available = mAudioQueue.AvailableRead();
     if (available < n_samples_step) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      float ms_to_sleep = 1000.f * WHISPER_SAMPLE_RATE * static_cast<float>(n_samples_step - available);
+      std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(ms_to_sleep)));
       continue;
     }
 
@@ -658,7 +659,6 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
       continue;
     }
 
-    // Step 2: Build audio buffer (similar to cubeb-transcript lines 769-780)
     const int n_samples_new = pcmf32_new.size();
 
     // Take up to keep_ms audio from previous iteration
@@ -785,8 +785,6 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
       currentLineTranscript.Truncate();
       lastSegmentText.Truncate();
 
-      // Keep part of audio for next iteration (similar to cubeb-transcript line
-      // 947)
       pcmf32_old =
           std::vector<float>(pcmf32.end() - n_samples_keep, pcmf32.end());
 
