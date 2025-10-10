@@ -8,6 +8,7 @@
 #include "mozilla/ipc/PUtilityProcessChild.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
 #include "mozilla/ipc/UtilityMediaServiceParent.h"
+#include "mozilla/ipc/HWInferenceChild.h"
 #include "mozilla/UniquePtr.h"
 #include "ChildProfilerController.h"
 
@@ -83,6 +84,9 @@ class UtilityProcessChild final : public PUtilityProcessChild {
 
   AsyncBlockers& AsyncShutdownService() { return mShutdownBlockers; }
 
+  mozilla::ipc::IPCResult RecvStartHWInferenceService(
+      Endpoint<PHWInferenceChild>&& aEndpoint);
+
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
 #if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
@@ -94,6 +98,10 @@ class UtilityProcessChild final : public PUtilityProcessChild {
     return mUtilityMediaServiceInstance;
   }
 
+  HWInferenceChild* GetHWInferenceChild() const {
+    return mHWInferenceInstance;
+  }
+
  protected:
   friend class UtilityProcessImpl;
   ~UtilityProcessChild();
@@ -103,6 +111,7 @@ class UtilityProcessChild final : public PUtilityProcessChild {
   RefPtr<ChildProfilerController> mProfilerController;
   RefPtr<UtilityMediaServiceParent> mUtilityMediaServiceInstance{};
   RefPtr<dom::JSOracleChild> mJSOracleInstance{};
+  RefPtr<HWInferenceChild> mHWInferenceInstance{};
 #ifdef XP_WIN
   RefPtr<PWindowsUtilsChild> mWindowsUtilsInstance;
 #endif

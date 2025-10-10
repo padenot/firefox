@@ -146,10 +146,12 @@
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
+#include "mozilla/ipc/PHWInferenceManagerChild.h"
 #include "mozilla/ipc/ProcessUtils.h"
 #include "mozilla/ipc/SharedMemoryHandle.h"
 #include "mozilla/ipc/TestShellParent.h"
 #include "mozilla/ipc/URIUtils.h"
+#include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/ImageBridgeParent.h"
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
@@ -5050,6 +5052,38 @@ mozilla::ipc::IPCResult ContentParent::RecvCreateAudioIPCConnection(
     result = NS_ERROR_FAILURE;
   }
   aResolver(result);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult ContentParent::RecvRequestHWInferenceConnection(
+    RequestHWInferenceConnectionResolver&& aResolver) {
+  static LazyLogModule sHWInferenceLog("HWInference");
+  MOZ_LOG(sHWInferenceLog, LogLevel::Debug,
+          ("[%p] ContentParent::RecvRequestHWInferenceConnection - Creating "
+           "direct content-utility connection",
+           this));
+
+  UtilityProcessManager::GetSingleton()
+      ->StartContentHWInferenceManager(OtherEndpointProcInfo(), mChildID)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [aResolver](Endpoint<PHWInferenceManagerChild>&& aEndpoint) {
+            static LazyLogModule sHWInferenceLog("HWInference");
+            MOZ_LOG(sHWInferenceLog, LogLevel::Debug,
+                    ("ContentParent::RecvRequestHWInferenceConnection - Direct "
+                     "connection created successfully"));
+            aResolver(std::move(aEndpoint));
+          },
+          [aResolver](mozilla::ipc::LaunchError&& aError) {
+            static LazyLogModule sHWInferenceLog("HWInference");
+            MOZ_LOG(sHWInferenceLog, LogLevel::Debug,
+                    ("ContentParent::RecvRequestHWInferenceConnection - Failed "
+                     "to create direct connection"));
+            // Return an invalid endpoint to indicate failure
+            Endpoint<PHWInferenceManagerChild> invalidEndpoint;
+            aResolver(std::move(invalidEndpoint));
+          });
+
   return IPC_OK();
 }
 

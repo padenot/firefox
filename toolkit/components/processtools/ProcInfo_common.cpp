@@ -59,6 +59,8 @@ nsCString GetUtilityActorName(const UtilityActorName aActorName) {
       return "windows-utils"_ns;
     case UtilityActorName::WindowsFileDialog:
       return "windows-file-dialog"_ns;
+    case UtilityActorName::HwInference:
+      return "hw-inference"_ns;
     default:
       return "unknown"_ns;
   }

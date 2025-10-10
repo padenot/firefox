@@ -202,6 +202,11 @@ void UtilityProcessHost::InitAfterConnect(bool aSucceeded) {
           GetActor()->OtherPid());
       break;
 
+    case SandboxingKind::HW_INFERENCE:
+      policy = SandboxBrokerPolicyFactory::GetHWInferencePolicy(
+          GetActor()->OtherPid());
+      break;
+
     default:
       MOZ_ASSERT(false, "Invalid SandboxingKind");
       break;
