@@ -4,37 +4,53 @@
 
 #include "SpeechTrackListener.h"
 
-#include "SpeechRecognition.h"
-#include "nsProxyRelease.h"
+#include "SpeechRecognitionBackend.h"
 
 namespace mozilla::dom {
 
-SpeechTrackListener::SpeechTrackListener(SpeechRecognition* aRecognition)
-    : mRecognition(new nsMainThreadPtrHolder<SpeechRecognition>(
-          "SpeechTrackListener::SpeechTrackListener", aRecognition, false)),
+SpeechTrackListener::SpeechTrackListener(SpeechRecognitionBackend* aBackend)
+    : mBackend(aBackend),
       mRemovedPromise(
           mRemovedHolder.Ensure("SpeechTrackListener::mRemovedPromise")) {
   MOZ_ASSERT(NS_IsMainThread());
 }
 
 already_AddRefed<SpeechTrackListener> SpeechTrackListener::Create(
-    SpeechRecognition* aRecognition) {
+    SpeechRecognitionBackend* aBackend) {
   MOZ_ASSERT(NS_IsMainThread());
-  RefPtr<SpeechTrackListener> listener = new SpeechTrackListener(aRecognition);
+  RefPtr<SpeechTrackListener> listener = new SpeechTrackListener(aBackend);
 
   listener->mRemovedPromise->Then(
-      GetCurrentSerialEventTarget(), __func__,
-      [listener] { listener->mRecognition = nullptr; });
+      GetCurrentSerialEventTarget(), __func__, [listener]() {
+        // Safe to clear: NotifyRemoved was the last graph thread callback
+        listener->mBackend = nullptr;
+      });
 
   return listener.forget();
 }
 
 void SpeechTrackListener::NotifyQueuedChanges(
     MediaTrackGraph* aGraph, TrackTime aTrackOffset,
-    const MediaSegment& aQueuedMedia) {}
+    const MediaSegment& aQueuedMedia) {
+  if (!mBackend) {
+    return;
+  }
+
+  AudioSegment* audio = const_cast<AudioSegment*>(
+      static_cast<const AudioSegment*>(&aQueuedMedia));
+
+  TrackTime offsetForChunk = aTrackOffset;
+  AudioSegment::ChunkIterator chunk(*audio);
+  while (!chunk.IsEnded()) {
+    mBackend->DataCallback(offsetForChunk + chunk->mDuration, *chunk);
+    chunk.Next();
+  }
+}
 
 void SpeechTrackListener::NotifyEnded(MediaTrackGraph* aGraph) {
-  // TODO dispatch SpeechEnd event so services can be informed
+  if (mBackend) {
+    mBackend->NotifyTrackEnded();
+  }
 }
 
 void SpeechTrackListener::NotifyRemoved(MediaTrackGraph* aGraph) {
