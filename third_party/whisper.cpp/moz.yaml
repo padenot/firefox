@@ -1,0 +1,36 @@
+schema: 1
+
+bugzilla:
+  product: Core
+  component: "xul"
+
+origin:
+  name: whisper.cpp
+  description:  Speech Recognition in C/C++
+
+  url: https://github.com/ggml-org/whisper.cpp
+
+  release: edea8a9c3cf0eb7676dcdb604991eb2f95c3d984
+  revision: edea8a9c3cf0eb7676dcdb604991eb2f95c3d984
+
+  license: MIT
+
+vendoring:
+  url: https://github.com/ggml-org/whisper.cpp
+  source-hosting: github
+  tracking: commit
+
+  skip-vendoring-steps:
+    - update-moz-build
+
+  exclude:
+    - "**"
+
+  include:
+    - LICENSE
+    - src/whisper.cpp
+    - src/whisper-arch.h
+    - include/whisper.h
+
+  patches:
+     - whisper-fd-loading.patch # allow loading a model via FILE*
