@@ -5,3 +5,7 @@
 # D268400 - Bug 1940906 - Allow configuring the resampling quality in AudioConverter. r?#media-playback-reviewers
 
 N/A
+
+# D268401 - Bug 1940906 - Vendor and compile the Metal backend for libggml. r?#firefox-build-system-reviewers,atossou
+
+N/A
