@@ -21,6 +21,8 @@
 
 namespace mozilla::ipc {
 
+class SpeechRecognitionMetadataCallback;
+
 class SpeechRecognitionParent final : public PSpeechRecognitionParent {
  public:
   NS_INLINE_DECL_REFCOUNTING(SpeechRecognitionParent, override)
@@ -30,6 +32,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   mozilla::ipc::IPCResult RecvIsModelAvailable(
       const nsTArray<nsCString>& aLanguages,
       IsModelAvailableResolver&& aResolver);
+  mozilla::ipc::IPCResult RecvInstallModels(
+      const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver);
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   struct ModelIdentifier {

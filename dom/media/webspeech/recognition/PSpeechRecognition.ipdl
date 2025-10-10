@@ -21,6 +21,8 @@ async protocol PSpeechRecognition
 parent: // HWUtility
   // Check if speech recognition models are available for the given languages
   async IsModelAvailable(nsCString[] languages) returns (bool available);
+  // Install speech recognition models for the given languages
+  async InstallModels(nsCString[] languages) returns (bool success);
 child:
   async __delete__();
 };

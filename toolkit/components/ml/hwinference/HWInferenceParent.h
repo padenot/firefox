@@ -26,6 +26,14 @@ class HWInferenceParent final : public PHWInferenceParent {
   mozilla::ipc::IPCResult RecvIsModelAvailable(
       nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
       IsModelAvailableResolver&& aResolver);
+  // This implements the `install` method of the SpeechRecognition object, and
+  // initiates the (large) download of a model for a specific task.
+  mozilla::ipc::IPCResult RecvInstallModel(nsCString&& aTask,
+                                           nsCString&& aModel,
+                                           nsCString&& aRevision,
+                                           nsCString&& aFilename,
+                                           InstallModelResolver&& aResolver);
+
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
   nsresult BindToUtilityProcess(

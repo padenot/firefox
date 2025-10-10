@@ -44,9 +44,16 @@ class HWInferenceChild final : public PHWInferenceChild {
       Endpoint<PHWInferenceManagerParent>&& aEndpoint,
       const dom::ContentParentId& aContentId);
 
-  RefPtr<HWInferenceChild::IsModelAvailablePromise> SendIsModelAvailable(
+  // Send model availability check to parent process
+  RefPtr<IsModelAvailablePromise> SendIsModelAvailable(
       const nsCString& aModel, const nsCString& aRevision,
       const nsCString& aFilename);
+
+  // Send model install request to parent process
+  RefPtr<InstallModelPromise> SendInstallModel(const nsCString& aTask,
+                                               const nsCString& aModel,
+                                               const nsCString& aRevision,
+                                               const nsCString& aFilename);
 
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 

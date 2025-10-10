@@ -134,6 +134,58 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
 
   return IPC_OK();
 }
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
+    const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver) {
+  ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
+
+  LOGD("[{} Mapped to model: {}, revision: {}, filename: {}", __func__,
+       modelIdentifier.mModelName.get(), modelIdentifier.mRevision.get(),
+       modelIdentifier.mFileName.get());
+
+  RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
+      mozilla::ipc::UtilityProcessChild::GetSingleton();
+  if (!utilityChild) {
+    LOGE("{} No UtilityProcessChild available", __func__);
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  mozilla::ipc::HWInferenceChild* hwInferenceChild =
+      utilityChild->GetHWInferenceChild();
+  if (!hwInferenceChild) {
+    LOGE("{} No HWInferenceChild available", __func__);
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  LOGD(
+      "{} Sending model installation request to main process via "
+      "HWInference: model={}",
+      __func__, modelIdentifier.ToString().get());
+
+  hwInferenceChild
+      ->SendInstallModel("speech-recognition"_ns, modelIdentifier.mModelName,
+                         modelIdentifier.mRevision, modelIdentifier.mFileName)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr(this), aResolver](bool aSuccess) mutable {
+            LOGD(
+                "{} Received installation response from main process: "
+                "success={}",
+                __func__, aSuccess ? "true" : "false");
+            aResolver(aSuccess);
+          },
+          [self = RefPtr(this),
+           aResolver](ResponseRejectReason aReason) mutable {
+            LOGE("{} IPC call to main process failed: {}", __func__,
+                 static_cast<int>(aReason));
+            aResolver(false);
+          });
+
+  return IPC_OK();
+}
+
 SpeechRecognitionParent::SpeechRecognitionParent()
     : mLock("SpeechRecognitionLock") {}
 
