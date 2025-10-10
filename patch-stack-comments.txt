@@ -14,6 +14,10 @@ N/A
 
 - [tarek|general|DONE]: Fix lint issues
 
+# D268417 - Bug 1940906 - Architecture docs / review guide.
+
+N/A
+
 # D275657 - Bug 1940906 - Introduce SpeechRecognitionBackend - Part 2 - Audio side. r?pehrsons
 
 N/A
