@@ -30,6 +30,11 @@ class HWInferenceChild final : public PHWInferenceChild {
        const nsCString& aEngine, const nsCString& aModel,
        const nsCString& aRevision, const nsCString& aFilename);
 
+  RefPtr<InstallModelPromise> SendInstallModel(const nsCString& aTask,
+                                               const nsCString& aModel,
+                                               const nsCString& aRevision,
+                                               const nsCString& aFilename);
+
   ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
 
  private:

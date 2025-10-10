@@ -28,6 +28,13 @@ class HWInferenceParent final : public PHWInferenceParent {
       nsCString&& aEngine, nsCString&& aModel, nsCString&& aRevision,
       nsCString&& aFilename, IsModelAvailableResolver&& aResolver);
 
+  // Install (download) a model for a specific task
+  mozilla::ipc::IPCResult RecvInstallModel(nsCString&& aTask,
+                                           nsCString&& aModel,
+                                           nsCString&& aRevision,
+                                           nsCString&& aFilename,
+                                           InstallModelResolver&& aResolver);
+
   ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
 
   nsresult BindToUtilityProcess(

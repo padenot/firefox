@@ -15,11 +15,15 @@ namespace hwinference {
 protocol PHWInference
 {
   parent:
-    async IsModelAvailable(nsCString aEngine,
+    async IsModelAvailable(nsCString engine,
                            nsCString model,
                            nsCString revision,
                            nsCString filename) returns (bool available);
-
+    // Install (download) a model for a specific task
+    async InstallModel(nsCString task,
+                       nsCString model,
+                       nsCString revision,
+                       nsCString filename) returns (bool success);
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(Endpoint<PHWInferenceManagerParent> endpoint,

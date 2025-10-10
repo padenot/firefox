@@ -29,6 +29,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   ipc::IPCResult RecvIsModelAvailable(
       const nsTArray<nsCString>& aLanguages,
       IsModelAvailableResolver&& aResolver);
+  mozilla::ipc::IPCResult RecvInstallModels(
+      const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver);
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   struct ModelIdentifier {

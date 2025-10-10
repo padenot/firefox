@@ -56,6 +56,21 @@ HWInferenceChild::SendIsModelAvailable(const nsCString& aEngine,
   return PHWInferenceChild::SendIsModelAvailable(aEngine, aModel, aRevision,
                                                  aFilename);
 }
+
+RefPtr<HWInferenceChild::InstallModelPromise>
+HWInferenceChild::SendInstallModel(const nsCString& aTask,
+                                   const nsCString& aModel,
+                                   const nsCString& aRevision,
+                                   const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model installation request to parent process: "
+      "task={} model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aTask.get(), aModel.get(), aRevision.get(),
+      aFilename.get());
+
+  return PHWInferenceChild::SendInstallModel(aTask, aModel, aRevision,
+                                             aFilename);
+}
 }  // namespace mozilla::hwinference
 
 #undef LOG
