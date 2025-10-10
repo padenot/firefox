@@ -12174,6 +12174,11 @@
 
 -   name: media.webspeech.recognition.enable
     type: bool
+    value: true
+    mirror: always
+
+-   name: media.webspeech.recognition.service_uri_enable
+    type: bool
     value: false
     mirror: always
 
