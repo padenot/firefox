@@ -24,6 +24,9 @@ parent: // HWUtility
   async IsModelAvailable(nsCString[] languages) returns (bool available);
   // Install speech recognition models for the given languages
   async InstallModels(nsCString[] languages) returns (bool success);
+  // Initialize the speech recognition session with a language and a list of
+  // biasing phrases
+  async Init(nsCString engineId, nsCString language, nsString[] phrases) returns (bool success);
   async __delete__();
 };
 
