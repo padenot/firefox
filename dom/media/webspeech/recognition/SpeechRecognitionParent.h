@@ -8,7 +8,10 @@
 #define DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONPARENT_H_
 
 #include <atomic>
+#include <functional>
 
+#include "WavDumper.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/PSpeechRecognitionParent.h"
 #include "mozilla/SPSCQueue.h"
 #include "mozilla/ThreadSafety.h"
@@ -16,7 +19,10 @@
 #include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"
 #include "nsStringFwd.h"
-#include "WavDumper.h"
+
+namespace mozilla::hwinference {
+class HWInferenceChild;
+}
 
 namespace mozilla {
 
@@ -26,9 +32,10 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
   SpeechRecognitionParent();
 
-  ipc::IPCResult RecvIsModelAvailable(
-      const nsTArray<nsCString>& aLanguages,
-      IsModelAvailableResolver&& aResolver);
+  ipc::IPCResult RecvIsModelAvailable(const nsTArray<nsCString>& aLanguages,
+                                      IsModelAvailableResolver&& aResolver);
+  mozilla::ipc::IPCResult RecvInstallModels(
+      const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver);
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   struct ModelIdentifier {
@@ -43,8 +50,20 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
  private:
   ~SpeechRecognitionParent();
+
+  // Shared by RecvIsModelAvailable and RecvInstallModels, which otherwise
+  // only differ in the HWInferenceChild call they make. Resolves
+  // aResolver(false) if the utility process/HWInferenceChild isn't
+  // available; otherwise calls aSendFunc(hwInferenceChild) and resolves
+  // aResolver with the result (false on IPC rejection).
+  mozilla::ipc::IPCResult RunHWInferenceBoolQuery(
+      const char* aFuncName,
+      std::function<RefPtr<MozPromise<bool, ipc::ResponseRejectReason, true>>(
+          hwinference::HWInferenceChild*)>
+          aSendFunc,
+      std::function<void(const bool&)> aResolver);
 };
 
 }  // namespace mozilla
 
-#endif // DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONPARENT_H_
+#endif  // DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONPARENT_H_
