@@ -9,12 +9,17 @@ using mozilla::dom::ContentParentId from "mozilla/dom/ipc/IdType.h";
 [RefCounted] using class nsIInputStream from "mozilla/ipc/IPCStreamUtils.h";
 
 namespace mozilla {
-
 namespace hwinference {
 
 [ChildProc=Utility]
 protocol PHWInference
 {
+  parent:
+    async IsModelAvailable(nsCString aEngine,
+                           nsCString model,
+                           nsCString revision,
+                           nsCString filename) returns (bool available);
+
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(Endpoint<PHWInferenceManagerParent> endpoint,

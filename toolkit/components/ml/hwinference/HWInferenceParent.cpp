@@ -19,6 +19,7 @@
 #include "mozilla/ErrorResult.h"
 #include "nsString.h"
 #include "mozilla/Logging.h"
+#include "nsIMLModelHub.h"
 
 namespace mozilla::hwinference {
 
@@ -62,6 +63,48 @@ nsresult HWInferenceParent::BindToUtilityProcess(
   LOGD("StartHWInferenceService sent successfully, binding parent endpoint");
   MOZ_ALWAYS_TRUE(parentEnd.Bind(this));
   return NS_OK;
+}
+
+mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
+    nsCString&& aEngine, nsCString&& aModel, nsCString&& aRevision,
+    nsCString&& aFilename, IsModelAvailableResolver&& aResolver) {
+  LOGD("{}: engine={} model={} revision={} filename={}", __func__, aEngine,
+       aModel, aRevision, aFilename);
+
+  // ModelHub is the module that handles model management, and is implemented in
+  // JavaScript. We're already on the main thread, so we can call into it
+  // directly.
+  nsCOMPtr<nsIMLModelHub> modelHubService =
+      do_GetService("@mozilla.org/ml-modelhub;1");
+
+  if (!modelHubService) {
+    LOGE("{} - Failed to get ModelHub XPCOM service", __func__);
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  RefPtr<dom::Promise> promise;
+  nsresult rv = modelHubService->IsModelAvailable(
+      aEngine, aModel, aRevision, aFilename, getter_AddRefs(promise));
+
+  if (NS_FAILED(rv) || !promise) {
+    LOGE("{}  ERROR: ModelHub call failed with nsresult={:x}", __func__,
+         static_cast<uint32_t>(rv));
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  (void)promise->AddCallbacksWithCycleCollectedArgs(
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aArg,
+                  ErrorResult& aRv) {
+        aResolver(JS::ToBoolean(aArg));
+      },
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aArg,
+                  ErrorResult& aRv) {
+        aResolver(false);
+      });
+
+  return IPC_OK();
 }
 
 }  // namespace mozilla::hwinference

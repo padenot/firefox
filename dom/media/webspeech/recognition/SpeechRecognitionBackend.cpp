@@ -72,3 +72,7 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Install(
 }
 
 }  // namespace mozilla::dom
+
+#undef LOG
+#undef LOGV
+#undef LOGE

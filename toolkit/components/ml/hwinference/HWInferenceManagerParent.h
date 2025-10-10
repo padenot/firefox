@@ -10,16 +10,21 @@
 #include "mozilla/dom/ipc/IdType.h"
 #include "nsRefPtrHashtable.h"
 
-namespace mozilla::hwinference {
-
+namespace mozilla {
 class SpeechRecognitionParent;
+}
+
+namespace mozilla::hwinference {
 
 class HWInferenceManagerParent final : public PHWInferenceManagerParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerParent, override);
 
-  static bool CreateForContent(Endpoint<PHWInferenceManagerParent>&& aEndpoint,
+  static bool CreateForContent(ipc::Endpoint<PHWInferenceManagerParent>&& aEndpoint,
                                dom::ContentParentId aContentId);
+
+  already_AddRefed<PSpeechRecognitionParent> AllocPSpeechRecognitionParent();
+  bool DeallocPSpeechRecognitionParent(PSpeechRecognitionParent* aActor);
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 

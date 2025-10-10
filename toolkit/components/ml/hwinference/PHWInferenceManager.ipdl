@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 include "mozilla/ipc/UtilityProcessSandboxing.h";
+include protocol PSpeechRecognition;
 
 using mozilla::dom::ContentParentId from "mozilla/dom/ipc/IdType.h";
 
@@ -12,9 +13,16 @@ namespace hwinference {
 
 // This protocol manages hardware inference actors in the HWInference
 // utility process.
+// It can create and manage various inference actors, the first one
+// being to perform speech recognition.
 [ParentProc=Utility, ChildProc=Content]
 protocol PHWInferenceManager
 {
+  manages PSpeechRecognition;
+
+parent:
+  // Create a new speech recognition session
+  async PSpeechRecognition();
 };
 
 } // namespace hwinference
