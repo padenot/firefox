@@ -56,6 +56,13 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "browser.ml.minimumPhysicalMemory"
 );
 
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "ASR_TEST_MODE_ENABLED",
+  "browser.ml.asr.testMode.enabled",
+  false
+);
+
 const ONE_GiB = 1024 * 1024 * 1024;
 const RS_RUNTIME_COLLECTION = "ml-onnx-runtime";
 const RS_INFERENCE_OPTIONS_COLLECTION = "ml-inference-options";
@@ -779,6 +786,57 @@ export class MLEngineParent extends JSProcessActorParent {
    * @returns {RemoteSettingsClient}
    */
   static #getRemoteClient(collectionName) {
+    // Check if we should return a mock client for ASR testing
+    if (lazy.ASR_TEST_MODE_ENABLED && collectionName === RS_ALLOW_DENY_COLLECTION) {
+      lazy.console.info(`MLEngineParent: ASR test mode - mocking ${collectionName}`);
+
+      // Create a mock client that returns test data
+      const mockClient = {
+        get: async function(options = {}) {
+          lazy.console.info("MLEngineParent: Returning mock allow/deny list for ASR testing");
+          return [
+            {
+              filter: "ALLOW",
+              urlPrefix: "https://model-hub.mozilla.org/asr-test",
+              id: "asr-test-allow"
+            },
+            {
+              filter: "ALLOW",
+              urlPrefix: "http://localhost",
+              id: "localhost-allow"
+            },
+            {
+              filter: "ALLOW",
+              urlPrefix: "https://localhost",
+              id: "localhost-https-allow"
+            },
+            {
+              filter: "ALLOW",
+              urlPrefix: "chrome://",
+              id: "chrome-allow"
+            },
+            {
+              filter: "ALLOW",
+              urlPrefix: "resource://",
+              id: "resource-allow"
+            },
+            {
+              filter: "ALLOW",
+              urlPrefix: "https://model-hub.mozilla.org/",
+              id: "model-hub-allow"
+            }
+          ];
+        },
+        on: function() {},
+        attachments: {
+          deleteDownloaded: async function() {}
+        }
+      };
+
+      MLEngineParent.#remoteClients[collectionName] = mockClient;
+      return mockClient;
+    }
+
     if (MLEngineParent.#remoteClients[collectionName]) {
       return MLEngineParent.#remoteClients[collectionName];
     }

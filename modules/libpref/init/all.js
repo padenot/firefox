@@ -3675,6 +3675,8 @@ pref("browser.ml.logLevel", "Error");
 pref("browser.ml.modelHubRootUrl", "https://model-hub.mozilla.org/");
 // Model URL template
 pref("browser.ml.modelHubUrlTemplate", "{model}/{revision}");
+// ASR test mode - when enabled, allows mocked model availability for testing
+pref("browser.ml.asr.testMode.enabled", false);
 // Maximum disk size for ML model cache (in GiB)
 pref("browser.ml.modelCacheMaxSize", 4);
 // Model cache timeout in ms
