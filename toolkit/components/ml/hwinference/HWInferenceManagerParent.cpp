@@ -41,11 +41,6 @@ bool HWInferenceManagerParent::CreateForContent(
   return true;
 }
 
-void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
-  LOGD("[{}] HWInferenceManagerParent::ActorDestroy reason={}", (void*)this,
-       static_cast<int>(aReason));
-}
-
 already_AddRefed<PSpeechRecognitionParent>
 HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
   LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
@@ -65,6 +60,11 @@ bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
        "actor={:p}",
        (void*)this, (void*)aActor);
   return true;
+}
+
+void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
+  LOGD("[{}] HWInferenceManagerParent::ActorDestroy reason={}", (void*)this,
+       static_cast<int>(aReason));
 }
 
 }  // namespace mozilla::hwinference
