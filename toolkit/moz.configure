@@ -3425,6 +3425,10 @@ with only_when(target_is_osx):
         "MOZ_CHILD_PROCESS_BUNDLEID",
         depends("--with-distribution-id")(lambda v: f"{v[0]}.plugincontainer"),
     )
+    set_define(
+        "MOZ_CHILD_PROCESS_BUNDLEID",
+        depends("--with-distribution-id")(lambda v: f"\"{v[0]}.plugincontainer\""),
+    )
     set_config("MOZ_CHILD_PROCESS_BUNDLENAME", "plugin-container.app")
 
 
@@ -3802,6 +3806,7 @@ with only_when(target_is_osx):
         return f"{distribution_id[0]}.{gpu_process_bundle_id}-{gpu_process_name}"
 
     set_config("MOZ_GPU_PROCESS_BUNDLEID", moz_gpu_process_bundle_id)
+
 
 
 # JS Packaging
