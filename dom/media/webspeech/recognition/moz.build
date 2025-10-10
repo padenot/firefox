@@ -10,7 +10,6 @@ XPIDL_MODULE = "dom_webspeechrecognition"
 XPIDL_SOURCES = ["nsISpeechRecognitionService.idl"]
 
 EXPORTS.mozilla.dom += [
-    "OnlineSpeechRecognitionService.h",
     "SpeechGrammar.h",
     "SpeechGrammarList.h",
     "SpeechRecognition.h",
@@ -21,9 +20,6 @@ EXPORTS.mozilla.dom += [
 ]
 
 EXPORTS += [
-    "endpointer.h",
-    "energy_endpointer.h",
-    "energy_endpointer_params.h",
 ]
 
 if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
@@ -32,10 +28,6 @@ if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
     ]
 
 UNIFIED_SOURCES += [
-    "endpointer.cc",
-    "energy_endpointer.cc",
-    "energy_endpointer_params.cc",
-    "OnlineSpeechRecognitionService.cpp",
     "SpeechGrammar.cpp",
     "SpeechGrammarList.cpp",
     "SpeechRecognition.cpp",
@@ -51,12 +43,10 @@ if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
     ]
 
 USE_LIBS += [
-    "jsoncpp",
 ]
 
 LOCAL_INCLUDES += [
     "/dom/base",
-    "/toolkit/components/jsoncpp/include",
 ]
 
 DIRS += ["/third_party/whisper.cpp"]
