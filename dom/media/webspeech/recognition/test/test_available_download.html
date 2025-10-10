@@ -1,0 +1,79 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SpeechRecognition: available/download</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
+</head>
+<body>
+<pre id="test">
+<script type="text/javascript">
+  SimpleTest.waitForExplicitFinish();
+
+  function expectNoException(func) {
+    var threw = false;
+    try {
+      func();
+    } catch (ex) {
+      threw = true;
+    }
+    ok(!threw, "An exception was not thrown");
+  }
+
+  function expectRejectedPromise(func, exceptionName) {
+    var promise = func();
+
+    ok(promise instanceof Promise, "Expect a Promise");
+
+    promise
+      .then(function () {
+        ok(false, `Promise resolved when it should have been rejected (${func.toString()})`);
+      })
+      .catch(function (err) {
+        is(
+          err.name,
+          exceptionName,
+          "Promise correctly reject with " + exceptionName
+        );
+      });
+  }
+
+  SpecialPowers.pushPrefEnv({
+    set: [["media.webspeech.recognition.enable", true]]
+  }, async function() {
+
+    expectNoException(() => {
+      SpeechRecognition.available({langs: ["en-US"], processLocally: true});
+      SpeechRecognition.available({langs: ["en-US", "fr-FR", "de-DE"], processLocally: true});
+      SpeechRecognition.available({langs: ["zh-Hans-CN", "zh-Hant-TW"], processLocally: true});
+      SpeechRecognition.available({langs: ["sl-rozaj"], processLocally: true});
+      SpeechRecognition.available({langs: ["en"], processLocally: true});
+      SpeechRecognition.available({langs: ["ja-JP"], processLocally: true});
+      SpeechRecognition.install({langs: ["en-US"], processLocally: true});
+      SpeechRecognition.install({langs: ["fr-FR"], processLocally: true});
+      SpeechRecognition.install({langs: ["de-DE", "it-IT"], processLocally: true});
+    });
+
+    expectRejectedPromise(() => {
+      return SpeechRecognition.available({langs: [""], processLocally: true});
+    }, "SyntaxError");
+    expectRejectedPromise(() => {
+      return SpeechRecognition.available({langs: ["en-US", ""], processLocally: true});
+    }, "SyntaxError");
+    expectRejectedPromise(() => {
+      return SpeechRecognition.install({langs: [""], processLocally: true});
+    }, "SyntaxError");
+    expectRejectedPromise(() => {
+      return SpeechRecognition.install({langs: ["en-US", ""], processLocally: true});
+    }, "SyntaxError");
+    expectRejectedPromise(() => {
+      return SpeechRecognition.install({langs: ["qweqwe@"], processLocally: true});
+    }, "SyntaxError");
+
+    SimpleTest.finish();
+  });
+</script>
+</pre>
+</body>
+</html>
