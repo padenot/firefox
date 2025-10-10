@@ -22,6 +22,13 @@ parent: // HWUtility
   async IsModelAvailable(nsCString[] languages) returns (bool available);
   // Install speech recognition models for the given languages
   async InstallModels(nsCString[] languages) returns (bool success);
+  // Initialize the speech recognition session with a language and a list of
+  // biasing phrases
+  async Init(nsCString language, nsString[] phrases) returns (bool success);
+  // Send audio data for speech recognition (always 16kHz mono f32 samples)
+
+  async __delete__();
+
 };
 
 } // namespace ipc

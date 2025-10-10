@@ -58,6 +58,28 @@ static LazyLogModule gSpeechRecognitionParentLog("SpeechRecognitionParent");
   MOZ_LOG_FMT(gSpeechRecognitionParentLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) \
   MOZ_LOG_FMT(gSpeechRecognitionParentLog, LogLevel::Error, fmt, ##__VA_ARGS__)
+
+// Metadata callback for model blob file descriptor retrieval
+class SpeechRecognitionMetadataCallback final : public nsIFileMetadataCallback {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+  explicit SpeechRecognitionMetadataCallback(SpeechRecognitionParent* aParent)
+      : mParent(aParent) {}
+
+  NS_IMETHOD OnFileMetadataReady(nsIAsyncFileMetadata* aObject) override {
+    if (mParent) {
+      mParent->OnModelMetadataReceived();
+    }
+    return NS_OK;
+  }
+
+ private:
+  virtual ~SpeechRecognitionMetadataCallback() = default;
+  SpeechRecognitionParent* mParent = nullptr;
+};
+
+NS_IMPL_ISUPPORTS(SpeechRecognitionMetadataCallback, nsIFileMetadataCallback)
+
 SpeechRecognitionParent::ModelIdentifier
 SpeechRecognitionParent::LanguagesToModelIdentifier(
     const nsTArray<nsCString>& aLanguages) {
@@ -86,6 +108,22 @@ SpeechRecognitionParent::LanguagesToModelIdentifier(
 nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
   return nsFmtCString(FMT_STRING("{}/{}/{}"), mModelName.get(), mFileName.get(),
                       mRevision.get());
+}
+
+void SpeechRecognitionParent::ResolveOrRejectInitOnIPCThread(bool aSuccess) {
+  if (GetActorEventTarget()->IsOnCurrentThread()) {
+    LOGV("Resolving init on same thread {}", aSuccess);
+    mInitResolver(aSuccess);
+    mInitResolver = nullptr;
+  } else {
+    LOGV("Resolving init accross thread {}", aSuccess);
+    GetActorEventTarget()->Dispatch(NS_NewRunnableFunction(
+        "Speech recognition init runnable",
+        [resolver = std::move(mInitResolver), aSuccess]() {
+          LOGV("Resolving init accross thread {}", aSuccess);
+          resolver(aSuccess);
+        }));
+  }
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
@@ -198,6 +236,164 @@ SpeechRecognitionParent::SpeechRecognitionParent()
   // Load tunable parameters from preferences (can be overridden via
   // about:config)
 }
+
+void SpeechRecognitionParent::RetrieveModelBlob() {
+  MOZ_ASSERT(NS_IsMainThread());
+  RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
+      mozilla::ipc::UtilityProcessChild::GetSingleton();
+  if (!utilityChild) {
+    LOGE("{} ERROR: No UtilityProcessChild available", __func__);
+    ResolveOrRejectInitOnIPCThread(false);
+    return;
+  }
+  mozilla::ipc::HWInferenceChild* hwInferenceChild =
+      utilityChild->GetHWInferenceChild();
+  if (!hwInferenceChild) {
+    LOGE("{} No HWInferenceChild available for model blob retrieval", __func__);
+    ResolveOrRejectInitOnIPCThread(false);
+    return;
+  }
+
+  // MutexAutoLock lock(mLock);
+  ModelIdentifier modelIdentifier =
+      LanguagesToModelIdentifier(nsTArray{mLanguage});
+
+  LOGD("{} Requesting model blob: model={}", __func__,
+       modelIdentifier.ToString().get());
+
+  hwInferenceChild
+      ->SendGetModelBlob(modelIdentifier.mModelName, modelIdentifier.mRevision,
+                         modelIdentifier.mFileName)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr{this}](
+              const mozilla::ipc::GetModelBlobResult& aResult) mutable {
+            // MutexAutoLock lock(self->mLock);
+            if (aResult.type() ==
+                mozilla::ipc::GetModelBlobResult::TGetModelBlobError) {
+              LOGE("{} GetModelBlobError with nsresult={:x}", __func__,
+                   static_cast<uint32_t>(
+                       aResult.get_GetModelBlobError().errorCode()));
+              self->ResolveOrRejectInitOnIPCThread(false);
+              return;
+            }
+
+            const mozilla::dom::IPCBlob& blob =
+                aResult.get_GetModelBlobSuccess().blob();
+            RefPtr<mozilla::dom::BlobImpl> blobImpl =
+                mozilla::dom::IPCBlobUtils::Deserialize(blob);
+
+            if (!blobImpl) {
+              LOGE("{} Could not deserialize IPCBlob", __func__);
+              self->ResolveOrRejectInitOnIPCThread(false);
+              return;
+            }
+            mozilla::ErrorResult errorResult;
+            blobImpl->CreateInputStream(getter_AddRefs(self->mModelStream),
+                                        errorResult);
+            if (errorResult.Failed()) {
+              LOGE("{}: CreateInputStream failed", __func__);
+              self->ResolveOrRejectInitOnIPCThread(false);
+              return;
+            }
+
+            nsCOMPtr<nsIEventTarget> eventTarget =
+                mozilla::GetCurrentSerialEventTarget();
+            nsCOMPtr<nsIAsyncFileMetadata> asyncFileMetadata =
+                do_QueryInterface(self->mModelStream);
+            MOZ_ASSERT(asyncFileMetadata,
+                       "Programming error: Stream does not support "
+                       "nsIAsyncFileMetadata interface");
+
+            self->mMetadataCallback =
+                MakeAndAddRef<SpeechRecognitionMetadataCallback>(self);
+            nsresult rv = asyncFileMetadata->AsyncFileMetadataWait(
+                self->mMetadataCallback.get(), eventTarget);
+            if (NS_WARN_IF(NS_FAILED(rv))) {
+              LOGE("{} AsyncFileMetadataWait returned error 0x{:x}", __func__,
+                   static_cast<uint32_t>(rv));
+              self->ResolveOrRejectInitOnIPCThread(false);
+              return;
+            }
+            // In case of success, next steps in `OnModelMetadataReceived`
+            // just below
+          },
+          [self = RefPtr{this}](
+              mozilla::ipc::ResponseRejectReason aReason) mutable {
+            LOGE("{} Promise rejected with reason {}", __func__,
+                 static_cast<int>(aReason));
+            self->ResolveOrRejectInitOnIPCThread(false);
+          });
+}
+
+void SpeechRecognitionParent::OnModelMetadataReceived() {
+  // MutexAutoLock lock(mLock);
+  mMetadataCallback = nullptr;
+
+  const nsCOMPtr<nsIFileMetadata> fileMetadata =
+      do_QueryInterface(mModelStream);
+  MOZ_ASSERT(
+      fileMetadata,
+      "Programming error, mModelStream doesn't implement nsIFileMetadata");
+
+  // Get FILE* from mModelStream
+  PRFileDesc* fileDesc;
+  const nsresult rv = fileMetadata->GetFileDescriptor(&fileDesc);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    LOGE("{} GetFileDescriptor error, neresult=0x{:x}", __func__,
+         static_cast<uint32_t>(rv));
+    ResolveOrRejectInitOnIPCThread(false);
+    return;
+  }
+  MOZ_ASSERT(fileDesc);
+#ifdef XP_WIN
+  // Convert our file descriptor to FILE*
+  void* handle = mozilla::ipc::FileDescriptor::PlatformHandleType(
+      PR_FileDesc2NativeHandle(fileDesc));
+  int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_RDONLY);
+  if (fd == -1) {
+    LOGE("{} _open_osfhandle failed", __func__);
+    ResolveOrRejectOnIPCThread(false);
+    return;
+  }
+#else
+  PROsfd fd = PR_FileDesc2NativeHandle(fileDesc);
+#endif
+  FILE* fp = fdopen(fd, "rb");
+  if (!fp) {
+    LOGE("{} fdopen failed", __func__);
+    ResolveOrRejectInitOnIPCThread(false);
+    return;
+  }
+
+  mModelFile = fp;
+
+  struct whisper_context_params cparams =
+      mLib->whisper_context_default_params();
+#ifdef XP_MACOSX
+  cparams.use_gpu = true;
+#else
+  cparams.use_gpu = false;
+#endif
+  mWhisperCtx =
+      mLib->whisper_init_from_file_handle_with_params(mModelFile, cparams);
+  if (!mWhisperCtx) {
+    LOGE("{} whisper_init_from_file_handle_with_params failed", __func__);
+    fclose(mModelFile);
+    mModelFile = nullptr;
+    ResolveOrRejectInitOnIPCThread(false);
+    return;
+  }
+
+  ResolveOrRejectInitOnIPCThread(true);
+  LOGD("Whisper context ready, starting main recognition loop");
+
+  // MutexAutoUnlock unlock(mLock);
+  mRecognitionThread->Dispatch(NS_NewRunnableFunction(
+      "Whisper recognition loop",
+      [self = RefPtr{this}] { self->ProcessAudioOnBackgroundThread(); }));
+}
+
 SpeechRecognitionParent::~SpeechRecognitionParent() {
   LOGD("{}", __func__);
 
@@ -210,6 +406,79 @@ SpeechRecognitionParent::~SpeechRecognitionParent() {
     }
   }
 
+
+  // MutexAutoLock lock(mLock);
+  if (mModelFile) {
+    fclose(mModelFile);
+    mModelFile = nullptr;
+  }
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
+    const nsCString& aLanguage, const nsTArray<nsString>& aPhrases,
+    InitResolver&& aResolver) {
+  LOGD("{} language='{}'", __func__, aLanguage.get());
+
+  // Enforce single active session
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession) {
+      LOGE("Rejecting Init - another recognition session is already active");
+      aResolver(false);
+      return IPC_OK();
+    }
+    sActiveSession = this;
+    LOGD("Session registered as active");
+  }
+
+  // MutexAutoLock lock(mLock);
+  mLanguage = aLanguage;
+  mPhrases = aPhrases.Clone();
+
+  mPromptTokens.clear();
+  mProcessedAudioPos = 0;
+  mGroupTokens.clear();
+  mLastFinalTokens.clear();
+
+  // What follows is a long chain of asynchronous steps within and outside of
+  // this process. Stash the resolver here to properly call it when it's time.
+  mInitResolver = aResolver;
+
+  // We perform the initialization on the same thread we'll later use for the
+  // main recognition loop.
+  MOZ_ASSERT(!mThreadRunning.load());
+  mThreadRunning.store(true);
+
+  nsCOMPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
+      "Whisper init",
+      [self = RefPtr{this}]() { self->InitializeWhisperOnBackgroundThread(); });
+  nsresult rv = NS_NewNamedThread("Whisper", getter_AddRefs(mRecognitionThread),
+                                  runnable.forget());
+  if (NS_FAILED(rv)) {
+    LOGE("Failed to create recognition thread: {:x}",
+         static_cast<uint32_t>(rv));
+    mThreadRunning.store(false, std::memory_order_release);
+  }
+
+  return IPC_OK();
+}
+void SpeechRecognitionParent::InitializeWhisperOnBackgroundThread() {
+  if (!mLib) {
+    mLib = mozilla::llama::LlamaRuntimeLinker::Get();
+    if (!mLib) {
+      LOGE("{} Failed to get runtime linker", __func__);
+      ResolveOrRejectInitOnIPCThread(false);
+      return;
+    }
+  }
+
+  RefPtr<SpeechRecognitionParent> self = this;
+  NS_DispatchToMainThread(
+      NS_NewRunnableFunction("SpeechRecognitionParent::RetrieveModelBlob",
+                             [self]() { self->RetrieveModelBlob(); }));
+}
+void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
+}
 
 }  // namespace mozilla::ipc
 
