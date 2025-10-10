@@ -26,6 +26,10 @@ class HWInferenceChild final : public PHWInferenceChild {
       Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,
       const dom::ContentParentId& aContentId);
 
+  RefPtr<IsModelAvailablePromise> SendIsModelAvailable(
+       const nsCString& aEngine, const nsCString& aModel,
+       const nsCString& aRevision, const nsCString& aFilename);
+
   ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
 
  private:
@@ -35,4 +39,4 @@ class HWInferenceChild final : public PHWInferenceChild {
 
 }  // namespace mozilla::hwinference
 
-#endif // TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCECHILD_H_
+#endif  // TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCECHILD_H_

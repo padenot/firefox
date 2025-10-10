@@ -7,14 +7,11 @@
 #define TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEMANAGERCHILD_H_
 
 #include "mozilla/hwinference/PHWInferenceManagerChild.h"
+#include "mozilla/SpeechRecognitionChild.h"
 #include "nsRefPtrHashtable.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/EventTargetCapability.h"
-
-namespace mozilla {
-class SpeechRecognitionChild;
-}
 
 namespace mozilla::hwinference {
 
@@ -30,6 +27,9 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
   static RefPtr<HWInferenceManagerChild> GetSingleton();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
+
+  already_AddRefed<PSpeechRecognitionChild> AllocPSpeechRecognitionChild();
+  RefPtr<mozilla::SpeechRecognitionChild> CreateSpeechRecognitionSession();
 
  private:
   ~HWInferenceManagerChild() = default;

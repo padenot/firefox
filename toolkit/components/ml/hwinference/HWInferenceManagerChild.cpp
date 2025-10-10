@@ -3,10 +3,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "HWInferenceManagerChild.h"
+#include "mozilla/hwinference/HWInferenceManagerChild.h"
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/SpeechRecognitionChild.h"
 
 namespace mozilla::hwinference {
 
@@ -58,6 +59,38 @@ void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
 
   StaticMutexAutoLock lock(sSingletonMutex);
   sSingleton = nullptr;
+}
+
+already_AddRefed<PSpeechRecognitionChild>
+HWInferenceManagerChild::AllocPSpeechRecognitionChild() {
+  RefPtr<mozilla::SpeechRecognitionChild> actor =
+      new mozilla::SpeechRecognitionChild();
+  LOGD("Created SpeechRecognitionChild actor={:p}", fmt::ptr(actor.get()));
+  return actor.forget();
+}
+
+RefPtr<mozilla::SpeechRecognitionChild>
+HWInferenceManagerChild::CreateSpeechRecognitionSession() {
+  LOGD("{}", __func__);
+
+  if (!CanSend()) {
+    LOGE("{} - Cannot send", __func__);
+    return nullptr;
+  }
+
+  RefPtr<PSpeechRecognitionChild> child = AllocPSpeechRecognitionChild();
+  RefPtr<mozilla::SpeechRecognitionChild> actor =
+      static_cast<mozilla::SpeechRecognitionChild*>(
+          SendPSpeechRecognitionConstructor(child.get()));
+
+  if (actor) {
+    LOGD("Successfully created SpeechRecognitionChild actor={:p}",
+         fmt::ptr(actor.get()));
+  } else {
+    LOGE("Failed to create SpeechRecognitionChild");
+  }
+
+  return actor;
 }
 
 }  // namespace mozilla::hwinference

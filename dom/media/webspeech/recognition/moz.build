@@ -16,7 +16,9 @@ EXPORTS.mozilla.dom += [
     "SpeechTrackListener.h",
 ]
 
-EXPORTS += [
+EXPORTS.mozilla += [
+    "SpeechRecognitionChild.h",
+    "SpeechRecognitionParent.h",
 ]
 
 UNIFIED_SOURCES += [
@@ -25,17 +27,24 @@ UNIFIED_SOURCES += [
     "SpeechRecognition.cpp",
     "SpeechRecognitionAlternative.cpp",
     "SpeechRecognitionBackend.cpp",
+    "SpeechRecognitionChild.cpp",
+    "SpeechRecognitionParent.cpp",
     "SpeechRecognitionPhrase.cpp",
     "SpeechRecognitionResult.cpp",
     "SpeechRecognitionResultList.cpp",
     "SpeechTrackListener.cpp",
 ]
 
-USE_LIBS += [
+IPDL_SOURCES = [
+    "PSpeechRecognition.ipdl",
 ]
 
 LOCAL_INCLUDES += [
     "/dom/base",
+    "/dom/file/ipc",
+    "/ipc/glue",
+    "/toolkit/components/ml",
+    "/toolkit/components/ml/hwinference",
 ]
 
 DIRS += ["/third_party/whisper.cpp"]

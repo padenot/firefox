@@ -6,6 +6,7 @@
 #ifndef TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEPARENT_H_
 #define TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEPARENT_H_
 
+#include "mozilla/ProcInfo.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/hwinference/PHWInferenceParent.h"
@@ -21,6 +22,11 @@ class HWInferenceParent final : public PHWInferenceParent {
   explicit HWInferenceParent() = default;
 
   void ActorDestroy(ActorDestroyReason aReason) override;
+
+  // This implements the `available` method of the SpeechRecognition object.
+  mozilla::ipc::IPCResult RecvIsModelAvailable(
+      nsCString&& aEngine, nsCString&& aModel, nsCString&& aRevision,
+      nsCString&& aFilename, IsModelAvailableResolver&& aResolver);
 
   ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
 
