@@ -6,10 +6,25 @@
 include protocol PHWInferenceManager;
 
 using mozilla::dom::ContentParentId from "mozilla/dom/ipc/IdType.h";
-[RefCounted] using class nsIInputStream from "mozilla/ipc/IPCStreamUtils.h";
 
 namespace mozilla {
 namespace hwinference {
+
+struct GetModelFileSuccess
+{
+  FileDescriptor fd;
+};
+
+struct GetModelError
+{
+  nsresult errorCode;
+};
+
+union GetModelFileResult
+{
+  GetModelFileSuccess;
+  GetModelError;
+};
 
 [ChildProc=Utility]
 protocol PHWInference
@@ -19,11 +34,22 @@ protocol PHWInference
                            nsCString model,
                            nsCString revision,
                            nsCString filename) returns (bool available);
+
     // Install (download) a model for a specific task
     async InstallModel(nsCString task,
                        nsCString model,
                        nsCString revision,
                        nsCString filename) returns (bool success);
+
+    // Get the model as a file descriptor. This provides direct access to the
+    // model file from the HWInference process for use with libraries that
+    // require a FILE* handle.
+    async GetModelFile(nsCString engineId,
+                       nsCString task,
+                       nsCString model,
+                       nsCString revision,
+                       nsCString filename) returns (GetModelFileResult result);
+
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(Endpoint<PHWInferenceManagerParent> endpoint,

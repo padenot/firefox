@@ -71,6 +71,23 @@ HWInferenceChild::SendInstallModel(const nsCString& aTask,
   return PHWInferenceChild::SendInstallModel(aTask, aModel, aRevision,
                                              aFilename);
 }
+
+RefPtr<HWInferenceChild::GetModelFilePromise>
+HWInferenceChild::SendGetModelFile(const nsACString& aEngineId,
+                                   const nsACString& aTask,
+                                   const nsACString& aModel,
+                                   const nsACString& aRevision,
+                                   const nsACString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model file request to parent process: engineId={} "
+      "task={} model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aEngineId, aTask, aModel,
+      aRevision, aFilename);
+
+  return PHWInferenceChild::SendGetModelFile(aEngineId, aTask, aModel,
+                                             aRevision, aFilename);
+}
+
 }  // namespace mozilla::hwinference
 
 #undef LOG
