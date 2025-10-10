@@ -11,6 +11,7 @@
 #include "mozilla/Types.h"
 #include "llama/llama.h"
 #include "ggml.h"
+#include "whisper.h"
 
 struct PRLibrary;
 
@@ -79,7 +80,33 @@ namespace mozilla::llama {
      const struct ggml_threadpool_params* p1))                              \
   X(ggml_threadpool_t, ggml_threadpool_new,                                 \
     (struct ggml_threadpool_params * params))                               \
-  X(void, ggml_threadpool_free, (ggml_threadpool_t threadpool))
+  X(void, ggml_threadpool_free, (ggml_threadpool_t threadpool))             \
+  X(struct whisper_context_params, whisper_context_default_params, (void)) \
+  X(struct whisper_context*, whisper_init_from_file_with_params,            \
+    (const char* path_model, struct whisper_context_params params))         \
+  X(struct whisper_context*, whisper_init_from_file_handle_with_params,     \
+    (FILE * file, struct whisper_context_params params))                    \
+  X(struct whisper_full_params, whisper_full_default_params,                \
+    (enum whisper_sampling_strategy strategy))                              \
+  X(int, whisper_full,                                                      \
+    (struct whisper_context* ctx, struct whisper_full_params params,        \
+     const float* samples, int n_samples))                                  \
+  X(int, whisper_full_n_segments, (struct whisper_context* ctx))            \
+  X(const char*, whisper_full_get_segment_text,                             \
+    (struct whisper_context* ctx, int i_segment))                           \
+  X(int, whisper_full_n_tokens,                                             \
+    (struct whisper_context* ctx, int i_segment))                           \
+  X(whisper_token, whisper_full_get_token_id,                               \
+    (struct whisper_context* ctx, int i_segment, int i_token))              \
+  X(const char*, whisper_full_get_token_text,                               \
+    (struct whisper_context* ctx, int i_segment, int i_token))              \
+  X(const char*, whisper_token_to_str,                                      \
+    (struct whisper_context* ctx, whisper_token token))                     \
+  X(whisper_token, whisper_token_eot,                                       \
+    (struct whisper_context* ctx))                                          \
+  X(whisper_token, whisper_token_beg,                                       \
+    (struct whisper_context* ctx))                                          \
+  X(void, whisper_free, (struct whisper_context* ctx))
 
 struct LlamaLibWrapper {
   LlamaLibWrapper() = default;
