@@ -64,6 +64,70 @@ class PromiseHandler final : public dom::PromiseNativeHandler {
 };
 
 NS_IMPL_ISUPPORTS(PromiseHandler, dom::PromiseNativeHandler)
+
+class ModelDownloadProgressCallback final
+    : public nsIMLModelDownloadProgressCallback {
+ public:
+  NS_DECL_ISUPPORTS
+
+  explicit ModelDownloadProgressCallback(const nsCString& aModel)
+      : mModel(aModel) {}
+
+  NS_IMETHOD OnProgress(int32_t aProgress, int64_t aCurrentLoaded,
+                        int64_t aTotalLoaded, int64_t aTotal) override {
+    LOGV("{} - model={} progress={}% current={} total loaded={} total={}",
+         __func__, mModel.get(), aProgress, aCurrentLoaded, aTotalLoaded,
+         aTotal);
+    return NS_OK;
+  }
+
+ private:
+  ~ModelDownloadProgressCallback() = default;
+  nsCString mModel;
+};
+
+NS_IMPL_ISUPPORTS(ModelDownloadProgressCallback,
+                  nsIMLModelDownloadProgressCallback)
+
+class ModelDownloadCompletionCallback final
+    : public nsIMLModelDownloadCompletionCallback {
+ public:
+  NS_DECL_ISUPPORTS
+
+  explicit ModelDownloadCompletionCallback(
+      HWInferenceParent::InstallModelResolver&& aResolver)
+      : mResolver(std::move(aResolver)) {}
+
+  NS_IMETHOD OnSuccess(const nsAString& aModel,
+                       const nsAString& aRevision) override {
+    LOGD("{} - model={} revision={}", __func__,
+         NS_ConvertUTF16toUTF8(aModel).get(),
+         NS_ConvertUTF16toUTF8(aRevision).get());
+    mResolver(true);
+    return NS_OK;
+  }
+
+  NS_IMETHOD OnError(const nsAString& aError) override {
+    LOGE("{} - Error when downloading {}", __func__,
+         NS_ConvertUTF16toUTF8(aError).get());
+    mResolver(false);
+    return NS_OK;
+  }
+
+ private:
+  ~ModelDownloadCompletionCallback() = default;
+  HWInferenceParent::InstallModelResolver mResolver;
+};
+
+NS_IMPL_ISUPPORTS(ModelDownloadCompletionCallback,
+                  nsIMLModelDownloadCompletionCallback)
+
+static StaticRefPtr<HWInferenceParent> sSingleton;
+
+void HWInferenceParent::ActorDestroy(ActorDestroyReason aReason) {
+  sSingleton = nullptr;
+}
+
 /* static */
 RefPtr<HWInferenceParent> HWInferenceParent::GetSingleton() {
   if (!sSingleton) {
@@ -152,6 +216,151 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
   return IPC_OK();
 }
 
+IPCResult HWInferenceParent::RecvInstallModel(
+    nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
+    InstallModelResolver&& aResolver) {
+  LOGD("{} model=%s revision=%s filename=%s", __func__, aModel.get(),
+       aRevision.get(), aFilename.get());
+
+  // ModelHub is the module that handles model management, and is implemented in
+  // JavaScript. We call into it using a thin XPCOM layer, and XPCOM is main
+  // thread only.
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "HWInferenceParent::RecvInstallModel",
+      [self = RefPtr(this), model = std::move(aModel),
+       revision = std::move(aRevision), filename = std::move(aFilename),
+       resolver = std::move(aResolver)]() mutable {
+        nsCOMPtr<nsIMLModelHub> modelHubService =
+            do_GetService("@mozilla.org/ml-modelhub;1");
+
+        if (!modelHubService) {
+          LOGE("{} - Failed to get ModelHub XPCOM service", __func__);
+          resolver(false);
+          return;
+        }
+
+        nsTArray<nsString> files;
+        files.AppendElement(NS_ConvertUTF8toUTF16(filename));
+
+        RefPtr<ModelDownloadProgressCallback> progressCallback =
+            new ModelDownloadProgressCallback(model);
+        RefPtr<ModelDownloadCompletionCallback> completionCallback =
+            new ModelDownloadCompletionCallback(std::move(resolver));
+
+        nsString downloadSessionId;
+        nsresult rv = modelHubService->DownloadModel(
+            u"speech-recognition"_ns, NS_ConvertUTF8toUTF16(model),
+            NS_ConvertUTF8toUTF16(revision), files, progressCallback,
+            completionCallback, downloadSessionId);
+
+        // The completion callback will call the resolver, both in the error and
+        // success cases.
+        if (NS_FAILED(rv) || downloadSessionId.IsEmpty()) {
+          LOGE(
+              "{} - ERROR: ModelHub DownloadModel call failed with "
+              "nsresult={:x}",
+              __func__, static_cast<uint32_t>(rv));
+          completionCallback->OnError(u"Failed to start download"_ns);
+          return;
+        }
+        LOGD("{} download started successfully with session ID: {}", __func__,
+             NS_ConvertUTF16toUTF8(downloadSessionId).get());
+      }));
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult HWInferenceParent::RecvGetModelBlob(
+    nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
+    GetModelBlobResolver&& aResolver) {
+  LOGD("{}, dispatching to main thread", __func__);
+
+  // ModelHub is the module that handles model management, and is implemented in
+  // JavaScript. We call into it using a thin XPCOM layer, and XPCOM is main
+  // thread only.
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "HWInferenceParent::RecvGetModelBlob",
+      [self = RefPtr(this), model = std::move(aModel),
+       revision = std::move(aRevision), filename = std::move(aFilename),
+       resolver = std::move(aResolver)]() mutable {
+        nsCOMPtr<nsIMLModelHub> modelHubService =
+            do_GetService("@mozilla.org/ml-modelhub;1");
+
+        if (!modelHubService) {
+          LOGE("{} - ERROR: Failed to get ModelHub XPCOM service", __func__);
+          GetModelBlobError error;
+          error.errorCode() = NS_ERROR_FAILURE;
+          resolver(GetModelBlobResult(error));
+          return;
+        }
+
+        RefPtr<dom::Promise> promise;
+        nsresult rv = modelHubService->GetModelBlob(
+            NS_ConvertUTF8toUTF16(model), NS_ConvertUTF8toUTF16(revision),
+            NS_ConvertUTF8toUTF16(filename), getter_AddRefs(promise));
+
+        if (NS_FAILED(rv)) {
+          LOGE("{} - ERROR: GetModelBlob call failed with rv={:x}", __func__,
+               static_cast<uint32_t>(rv));
+          GetModelBlobError error;
+          error.errorCode() = rv;
+          resolver(GetModelBlobResult(error));
+          return;
+        }
+
+        MOZ_ASSERT(promise);
+
+        promise->AppendNativeHandler(new PromiseHandler(
+            [resolver, self](JSContext* aCx, JS::Handle<JS::Value> aValue) {
+              // This comes from chrome js, we can assert
+              MOZ_ASSERT(aValue.isObject());
+
+              // Extract the Blob and serialize it for IPC
+              RefPtr<dom::Blob> blob;
+              nsresult rv = UNWRAP_OBJECT(Blob, &aValue.toObject(), blob);
+              MOZ_ASSERT(NS_SUCCESS(rv));
+
+              RefPtr<dom::BlobImpl> blobImpl = blob->Impl();
+              dom::IPCBlob ipcBlob;
+              rv = dom::IPCBlobUtils::Serialize(blobImpl, ipcBlob);
+              if (NS_FAILED(rv)) {
+                LOGE("ERROR: Failed to serialize blob");
+                GetModelBlobError error;
+                error.errorCode() = rv;
+                resolver(GetModelBlobResult(error));
+                return;
+              }
+
+              LOGE("Successfully retrieved and serialized blob for model file");
+              GetModelBlobSuccess success;
+              success.blob() = ipcBlob;
+              resolver(GetModelBlobResult(success));
+            },
+            [resolver, self](JSContext* aCx, JS::Handle<JS::Value> aValue) {
+              LOGE("{} - ERROR: promise rejected", __func__);
+
+              if (aValue.isObject()) {
+                JS::Rooted<JSObject*> obj(aCx, &aValue.toObject());
+                JS::Rooted<JS::Value> msgVal(aCx);
+                if (JS_GetProperty(aCx, obj, "message", &msgVal) &&
+                    msgVal.isString()) {
+                  JS::Rooted<JSString*> str(aCx, msgVal.toString());
+                  nsAutoJSString autoStr;
+                  if (autoStr.init(aCx, str)) {
+                    LOGE("{} - Rejection message: {}", __func__,
+                         NS_ConvertUTF16toUTF8(autoStr).get());
+                  }
+                }
+              }
+
+              GetModelBlobError error;
+              error.errorCode() = NS_ERROR_FAILURE;
+              resolver(GetModelBlobResult(error));
+            }));
+      }));
+
+  return IPC_OK();
+}
 
 }  // namespace mozilla::ipc
 

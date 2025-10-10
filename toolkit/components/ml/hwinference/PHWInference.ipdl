@@ -23,6 +23,11 @@ protocol PHWInference
     async IsModelAvailable(nsCString model,
                            nsCString revision,
                            nsCString filename) returns (bool available);
+
+    // Install (download) a model for speech recognition
+    async InstallModel(nsCString model,
+                       nsCString revision,
+                       nsCString filename) returns (bool success);
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(

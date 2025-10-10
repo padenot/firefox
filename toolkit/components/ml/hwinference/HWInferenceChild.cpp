@@ -58,6 +58,18 @@ HWInferenceChild::SendIsModelAvailable(const nsCString& aModel,
 
   return PHWInferenceChild::SendIsModelAvailable(aModel, aRevision, aFilename);
 }
+
+RefPtr<HWInferenceChild::InstallModelPromise>
+HWInferenceChild::SendInstallModel(const nsCString& aModel,
+                                   const nsCString& aRevision,
+                                   const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model installation request to parent process: "
+      "model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aModel.get(), aRevision.get(), aFilename.get());
+
+  return PHWInferenceChild::SendInstallModel(aModel, aRevision, aFilename);
+}
 }  // namespace mozilla::ipc
 
 #undef LOG

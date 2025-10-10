@@ -31,6 +31,10 @@ class HWInferenceChild final : public PHWInferenceChild {
   // Send model availability check to parent process
   RefPtr<IsModelAvailablePromise> SendIsModelAvailable(const nsCString& aModel,
   const nsCString& aRevision, const nsCString& aFilename);
+
+  // Send model installation request to parent process
+  RefPtr<InstallModelPromise> SendInstallModel(const nsCString& aModel, const
+  nsCString& aRevision, const nsCString& aFilename);
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
  private:
