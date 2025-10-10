@@ -1,0 +1,36 @@
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
+# vim: set filetype=python:
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+with Files('**'):
+    BUG_COMPONENT = ('Core', 'Machine Learning')
+
+SOURCES = [
+  "src/whisper.cpp"
+]
+
+EXPORTS += [
+  "include/whisper.h",
+]
+
+DEFINES["WHISPER_VERSION"] = "\"WHISPER_VERSION\""
+# Control symbol visibility
+DEFINES['WHISPER_SHARED'] = '1'
+DEFINES['WHISPER_BUILD'] = '1'
+
+CXXFLAGS += [
+    '-Wno-unreachable-code',
+    '-Wno-unused-function',
+]
+
+LOCAL_INCLUDES += [
+  '/third_party/llama.cpp/',
+  '/third_party/llama.cpp/ggml/',
+  '/third_party/llama.cpp/ggml/include/',
+  '/third_party/llama.cpp/ggml/src/',
+  '/third_party/llama.cpp/ggml/src/ggml-cpu/',
+]
+
+FINAL_LIBRARY = 'mozinference'

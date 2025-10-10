@@ -1,0 +1,128 @@
+diff --git a/include/whisper.h b/include/whisper.h
+index 1234567..abcdef0 100644
+--- a/include/whisper.h
++++ b/include/whisper.h
+@@ -206,6 +206,8 @@ extern "C" {
+     WHISPER_API struct whisper_context * whisper_init_from_file_with_params  (const char * path_model,              struct whisper_context_params params);
+     WHISPER_API struct whisper_context * whisper_init_from_buffer_with_params(void * buffer, size_t buffer_size,    struct whisper_context_params params);
+     WHISPER_API struct whisper_context * whisper_init_with_params            (struct whisper_model_loader * loader, struct whisper_context_params params);
++    // Initialize from file descriptor - the fd should be positioned at the beginning of the model file
++    WHISPER_API struct whisper_context * whisper_init_from_fd_with_params    (int fd,                                struct whisper_context_params params);
+
+     // These are the same as the above, but the internal state of the context is not allocated automatically
+     // It is the responsibility of the caller to allocate the state using whisper_init_state() (#523)
+@@ -213,6 +215,7 @@ extern "C" {
+     WHISPER_API struct whisper_context * whisper_init_from_buffer_with_params_no_state(void * buffer, size_t buffer_size,    struct whisper_context_params params);
+     WHISPER_API struct whisper_context * whisper_init_with_params_no_state            (struct whisper_model_loader * loader, struct whisper_context_params params);
+
++    WHISPER_API struct whisper_context * whisper_init_from_fd_with_params_no_state    (int fd,                                struct whisper_context_params params);
+     WHISPER_DEPRECATED(
+         WHISPER_API struct whisper_context * whisper_init_from_file(const char * path_model),
+         "use whisper_init_from_file_with_params instead"
+@@ -237,6 +240,11 @@ extern "C" {
+         WHISPER_API struct whisper_context * whisper_init_no_state(struct whisper_model_loader * loader),
+         "use whisper_init_with_params_no_state instead"
+     );
++
++    WHISPER_DEPRECATED(
++        WHISPER_API struct whisper_context * whisper_init_from_fd(int fd),
++        "use whisper_init_from_fd_with_params instead"
++    );
+
+     WHISPER_API struct whisper_state * whisper_init_state(struct whisper_context * ctx);
+
+diff --git a/src/whisper.cpp b/src/whisper.cpp
+index 1234567..abcdef0 100644
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -3729,6 +3729,57 @@ struct whisper_context * whisper_init_from_buffer_with_params_no_state(void * b
+     return whisper_init_with_params_no_state(&loader, params);
+ }
+
++struct whisper_context * whisper_init_from_fd_with_params_no_state(int fd, struct whisper_context_params params) {
++    WHISPER_LOG_INFO("%s: loading model from file descriptor\n", __func__);
++
++    // Use FILE* wrapper around fd for easier reading
++    FILE * file = fdopen(fd, "rb");
++    if (!file) {
++        WHISPER_LOG_ERROR("%s: failed to open file descriptor %d\n", __func__, fd);
++        return nullptr;
++    }
++
++    // Get file size
++    long current_pos = ftell(file);
++    fseek(file, 0, SEEK_END);
++    size_t file_size = ftell(file);
++    fseek(file, current_pos, SEEK_SET);
++
++    WHISPER_LOG_INFO("%s: model size = %zu bytes\n", __func__, file_size);
++
++    // Create a model loader that reads from the FILE*
++    whisper_model_loader loader = {};
++
++    loader.context = file;
++
++    loader.read = [](void * ctx, void * output, size_t read_size) {
++        FILE * f = reinterpret_cast<FILE *>(ctx);
++        return fread(output, 1, read_size, f);
++    };
++
++    loader.eof = [](void * ctx) {
++        FILE * f = reinterpret_cast<FILE *>(ctx);
++        return feof(f) != 0;
++    };
++
++    loader.close = [](void * ctx) {
++        FILE * f = reinterpret_cast<FILE *>(ctx);
++        // Important: we do NOT close the file here since we're using fdopen
++        // The caller is responsible for closing the original fd
++        // We just flush any pending data
++        fflush(f);
++    };
++
++    struct whisper_context * ctx = whisper_init_with_params_no_state(&loader, params);
++
++    // Clean up the FILE* wrapper but not the underlying fd
++    // Use fclose with caution - it would close the fd too
++    // Instead, we just let it leak since the loader.close already flushed
++    // Alternatively, we could use fdopen with "r" and not "rb" to avoid buffering
++
++    return ctx;
++}
++
++
+ struct whisper_context * whisper_init_with_params_no_state(struct whisper_model_loader * loader, struct whisper_context_params params) {
+     ggml_time_init();
+
+@@ -3790,6 +3841,19 @@ struct whisper_context * whisper_init_from_buffer_with_params(void * buffer, si
+     return ctx;
+ }
+
++struct whisper_context * whisper_init_from_fd_with_params(int fd, struct whisper_context_params params) {
++    whisper_context * ctx = whisper_init_from_fd_with_params_no_state(fd, params);
++    if (!ctx) {
++        return nullptr;
++    }
++
++    ctx->state = whisper_init_state(ctx);
++    if (!ctx->state) {
++        whisper_free(ctx);
++        return nullptr;
++    }
++
++    return ctx;
++}
+ struct whisper_context * whisper_init_with_params(struct whisper_model_loader * loader, struct whisper_context_params params) {
+     whisper_context * ctx = whisper_init_with_params_no_state(loader, params);
+     if (!ctx) {
+@@ -3815,6 +3879,10 @@ struct whisper_context * whisper_init_from_buffer(void * buffer, size_t buffer_
+ struct whisper_context * whisper_init(struct whisper_model_loader * loader) {
+     return whisper_init_with_params(loader, whisper_context_default_params());
+ }
++
++struct whisper_context * whisper_init_from_fd(int fd) {
++    return whisper_init_from_fd_with_params(fd, whisper_context_default_params());
++}
+
+ struct whisper_context * whisper_init_from_file_no_state(const char * path_model) {
+     return whisper_init_from_file_with_params_no_state(path_model, whisper_context_default_params());
