@@ -55,6 +55,12 @@ class HWInferenceChild final : public PHWInferenceChild {
                                                const nsCString& aRevision,
                                                const nsCString& aFilename);
 
+  // Send model file request to parent process
+  RefPtr<GetModelFilePromise> SendGetModelFile(const nsCString& aTask,
+                                               const nsCString& aModel,
+                                               const nsCString& aRevision,
+                                               const nsCString& aFilename);
+
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
  private:
