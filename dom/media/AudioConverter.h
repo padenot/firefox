@@ -195,36 +195,30 @@ class AudioConverter {
     return frames;
   }
 
-  template <typename Value>
-  size_t Process(AlignedBuffer<Value>& aOutBuffer, const Value* aInBuffer,
+  template <typename Value, typename ArrayT = AlignedBuffer<Value>>
+  size_t Process(ArrayT& aOutBuffer, const Value* aInBuffer,
                  size_t aFrames) {
     MOZ_DIAGNOSTIC_ASSERT(mIn.Format() == mOut.Format());
     MOZ_ASSERT((aFrames && aInBuffer) || !aFrames);
     // Up/down mixing first
-    if (!aOutBuffer.SetLength(FramesOutToSamples(aFrames))) {
-      MOZ_ALWAYS_TRUE(aOutBuffer.SetLength(0));
-      return 0;
-    }
-    size_t frames = ProcessInternal(aOutBuffer.Data(), aInBuffer, aFrames);
+    aOutBuffer.SetLength(FramesOutToSamples(aFrames));
+    size_t frames = ProcessInternal(aOutBuffer.Elements(), aInBuffer, aFrames);
     MOZ_ASSERT(frames == aFrames);
     // Check if resampling is needed
     if (mIn.Rate() == mOut.Rate()) {
       return frames;
     }
     // Prepare output in cases of drain or up-sampling
-    if ((!frames || mOut.Rate() > mIn.Rate()) &&
-        !aOutBuffer.SetLength(
-            FramesOutToSamples(ResampleRecipientFrames(frames)))) {
-      MOZ_ALWAYS_TRUE(aOutBuffer.SetLength(0));
-      return 0;
+    if ((!frames || mOut.Rate() > mIn.Rate())) {
+        aOutBuffer.SetLength(FramesOutToSamples(ResampleRecipientFrames(frames)));
     }
     if (!frames) {
-      frames = DrainResampler(aOutBuffer.Data());
+      frames = DrainResampler(aOutBuffer.Elements());
     } else {
-      frames = ResampleAudio(aOutBuffer.Data(), aInBuffer, frames);
+      frames = ResampleAudio(aOutBuffer.Elements(), aInBuffer, frames);
     }
     // Update with the actual buffer length
-    MOZ_ALWAYS_TRUE(aOutBuffer.SetLength(FramesOutToSamples(frames)));
+    aOutBuffer.SetLength(FramesOutToSamples(frames));
     return frames;
   }
 
