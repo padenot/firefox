@@ -34,6 +34,13 @@ class HWInferenceParent final : public PHWInferenceParent {
                                            nsCString&& aRevision,
                                            nsCString&& aFilename,
                                            InstallModelResolver&& aResolver);
+  // Get a model file as a file descriptor for use by inference engines
+  mozilla::ipc::IPCResult RecvGetModelFile(nsCString&& aEngineId,
+                                           nsCString&& aTask,
+                                           nsCString&& aModel,
+                                           nsCString&& aRevision,
+                                           nsCString&& aFilename,
+                                           GetModelFileResolver&& aResolver);
 
   ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
 
