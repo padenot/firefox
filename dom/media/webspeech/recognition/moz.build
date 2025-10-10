@@ -58,6 +58,8 @@ LOCAL_INCLUDES += [
     "/toolkit/components/jsoncpp/include",
 ]
 
+DIRS += ["/third_party/parakeet.cpp"]
+
 include("/ipc/chromium/chromium-config.mozbuild")
 
 FINAL_LIBRARY = "xul"
