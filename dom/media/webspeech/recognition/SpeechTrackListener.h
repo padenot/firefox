@@ -32,16 +32,10 @@ class SpeechTrackListener : public MediaTrackListener {
 
   void NotifyQueuedChanges(MediaTrackGraph* aGraph, TrackTime aTrackOffset,
                            const MediaSegment& aQueuedMedia) override;
-
   void NotifyEnded(MediaTrackGraph* aGraph) override;
-
   void NotifyRemoved(MediaTrackGraph* aGraph) override;
 
  private:
-  template <typename SampleFormatType>
-  void ConvertAndDispatchAudioChunk(int aDuration, float aVolume,
-                                    SampleFormatType* aData,
-                                    TrackRate aTrackRate);
   nsMainThreadPtrHandle<SpeechRecognition> mRecognition;
   MozPromiseHolder<GenericNonExclusivePromise> mRemovedHolder;
 
