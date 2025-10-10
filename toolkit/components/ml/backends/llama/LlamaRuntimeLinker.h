@@ -7,6 +7,7 @@
 
 #include "llama/llama.h"
 #include "ggml.h"
+#include "parakeet.h"
 #include "whisper.h"
 
 struct PRLibrary;
@@ -87,8 +88,8 @@ namespace mozilla::llama {
   X(struct whisper_context_params, whisper_context_default_params, (void))     \
   X(struct whisper_context*, whisper_init_from_file_with_params,               \
     (const char* path_model, struct whisper_context_params params))            \
-  X(struct whisper_context*, whisper_init_from_file_handle_with_params,        \
-    (FILE * file, struct whisper_context_params params))                       \
+  X(struct whisper_context*, whisper_init_from_fd_with_params,                 \
+    (int fd, struct whisper_context_params params))                            \
   X(struct whisper_full_params, whisper_full_default_params,                   \
     (enum whisper_sampling_strategy strategy))                                 \
   X(int, whisper_full,                                                         \
@@ -106,7 +107,29 @@ namespace mozilla::llama {
     (struct whisper_context * ctx, whisper_token token))                       \
   X(whisper_token, whisper_token_eot, (struct whisper_context * ctx))          \
   X(whisper_token, whisper_token_beg, (struct whisper_context * ctx))          \
-  X(void, whisper_free, (struct whisper_context * ctx))
+  X(void, whisper_free, (struct whisper_context * ctx))                        \
+  X(struct parakeet_context_params, parakeet_context_default_params, (void))   \
+  X(struct parakeet_context*, parakeet_init_from_fd_with_params,               \
+    (int fd, struct parakeet_context_params params))                           \
+  X(struct parakeet_full_params, parakeet_full_default_params,                 \
+    (enum parakeet_sampling_strategy strategy))                                \
+  X(int, parakeet_full,                                                        \
+    (struct parakeet_context * ctx, struct parakeet_full_params params,        \
+     const float* samples, int n_samples))                                     \
+  X(int, parakeet_full_n_segments, (struct parakeet_context * ctx))            \
+  X(const char*, parakeet_full_get_segment_text,                               \
+    (struct parakeet_context * ctx, int i_segment))                            \
+  X(int, parakeet_full_n_tokens,                                               \
+    (struct parakeet_context * ctx, int i_segment))                            \
+  X(parakeet_token, parakeet_full_get_token_id,                                \
+    (struct parakeet_context * ctx, int i_segment, int i_token))               \
+  X(struct parakeet_token_data, parakeet_full_get_token_data,                  \
+    (struct parakeet_context * ctx, int i_segment, int i_token))               \
+  X(const char*, parakeet_token_to_str,                                        \
+    (struct parakeet_context * ctx, parakeet_token token))                     \
+  X(int, parakeet_token_to_text,                                               \
+    (const char* token_str, bool is_first, char* output, int max_len))         \
+  X(void, parakeet_free, (struct parakeet_context * ctx))
 
 struct LlamaLibWrapper {
   LlamaLibWrapper() = default;
