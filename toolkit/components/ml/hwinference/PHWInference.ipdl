@@ -12,6 +12,22 @@ namespace mozilla {
 
 namespace ipc {
 
+struct GetModelBlobSuccess
+{
+  IPCBlob blob;
+};
+
+struct GetModelBlobError
+{
+  nsresult errorCode;
+};
+
+union GetModelBlobResult
+{
+  GetModelBlobSuccess;
+  GetModelBlobError;
+};
+
 [ChildProc=Utility]
 protocol PHWInference
 {
@@ -28,6 +44,14 @@ protocol PHWInference
     async InstallModel(nsCString model,
                        nsCString revision,
                        nsCString filename) returns (bool success);
+
+    // Get the model as a blob. This doesn't perfom a copy, and instead passes
+    // a Blob accross process, from which it is possible to get a FILE*,
+    // allowing to the perfrom IO or mmap the model
+    async GetModelBlob(nsCString model,
+                       nsCString revision,
+                       nsCString filename) returns (GetModelBlobResult result);
+
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(

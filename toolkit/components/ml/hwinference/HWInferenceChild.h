@@ -35,6 +35,11 @@ class HWInferenceChild final : public PHWInferenceChild {
   // Send model installation request to parent process
   RefPtr<InstallModelPromise> SendInstallModel(const nsCString& aModel, const
   nsCString& aRevision, const nsCString& aFilename);
+
+  // Send model blob request to parent process
+  RefPtr<GetModelBlobPromise> SendGetModelBlob(const nsCString& aModel,
+  const nsCString& aRevision, const nsCString& aFilename);
+
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
  private:

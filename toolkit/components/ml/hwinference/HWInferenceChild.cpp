@@ -70,6 +70,19 @@ HWInferenceChild::SendInstallModel(const nsCString& aModel,
 
   return PHWInferenceChild::SendInstallModel(aModel, aRevision, aFilename);
 }
+
+RefPtr<HWInferenceChild::GetModelBlobPromise>
+HWInferenceChild::SendGetModelBlob(const nsCString& aModel,
+                                   const nsCString& aRevision,
+                                   const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model blob request to parent process: model={} "
+      "revision={} filename={}",
+      fmt::ptr(this), __func__, aModel.get(), aRevision.get(), aFilename.get());
+
+  return PHWInferenceChild::SendGetModelBlob(aModel, aRevision, aFilename);
+}
+
 }  // namespace mozilla::ipc
 
 #undef LOG

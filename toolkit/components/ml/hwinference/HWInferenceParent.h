@@ -31,6 +31,12 @@ class HWInferenceParent final : public PHWInferenceParent {
   mozilla::ipc::IPCResult RecvInstallModel(
       nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
       InstallModelResolver&& aResolver);
+  // This allows receiving a model file file descriptor from the parent process,
+  // to use in the HWInference utility process
+  mozilla::ipc::IPCResult RecvGetModelBlob(
+      nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
+      GetModelBlobResolver&& aResolver);
+
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
   nsresult BindToUtilityProcess(
