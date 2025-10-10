@@ -946,11 +946,6 @@ partial namespace ChromeUtils {
   [Throws]
   Promise<imgIContainer> fetchDecodedImage(URI uri, MozChannel channel);
 
-  // Returns the stack trace captured from the most recent out-of-memory exception,
-  // or null if no OOM stack trace is available. The stack trace shows the JavaScript
-  // call stack at the time the out-of-memory condition occurred
-  DOMString getLastOOMStackTrace();
-
   /**
    * Given a URI to be loaded, predict a remote type which is reasonable to
    * start the load within. A null `uri` argument is treated as about:blank.
@@ -1060,6 +1055,7 @@ enum WebIDLUtilityActorName {
   "windowsUtils",
   "windowsFileDialog",
   "pkcs11Module",
+  "hwInference",
 };
 
 dictionary UtilityActorsDictionary {
