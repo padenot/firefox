@@ -5,29 +5,29 @@
 #ifndef mozilla_dom_SpeechRecognition_h
 #define mozilla_dom_SpeechRecognition_h
 
-#include "AudioSegment.h"
 #include "DOMMediaStream.h"
-#include "MediaTrackGraph.h"
 #include "SpeechGrammarList.h"
 #include "SpeechRecognitionResultList.h"
 #include "js/TypeDecls.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/SpeechRecognitionError.h"
+#include "mozilla/dom/SpeechRecognitionBinding.h"
+#include "mozilla/dom/SpeechRecognitionErrorBinding.h"
 #include "nsCOMPtr.h"
 #include "nsProxyRelease.h"
 #include "nsString.h"
 #include "nsTArray.h"
+#include "nsTHashSet.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
 
-namespace media {
-class ShutdownBlocker;
-}
-
 namespace dom {
+
+class Promise;
+class SpeechRecognitionBackend;
+class SpeechRecognitionPhrase;
 
 #define SPEECH_RECOGNITION_TEST_EVENT_REQUEST_TOPIC \
   "SpeechRecognitionTest:RequestEvent"
@@ -41,6 +41,8 @@ class SpeechTrackListener;
 class SpeechRecognition final : public DOMEventTargetHelper,
                                 public SupportsWeakPtr {
  public:
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(SpeechRecognition)
+
   explicit SpeechRecognition(nsPIDOMWindowInner* aOwnerWindow);
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -49,6 +51,8 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
+
+  void DisconnectFromOwner() override;
 
   static already_AddRefed<SpeechRecognition> Constructor(
       const GlobalObject& aGlobal, ErrorResult& aRv);
@@ -76,15 +80,29 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   uint32_t MaxAlternatives() const;
 
-  TaskQueue* GetTaskQueueForEncoding() const;
-
   void SetMaxAlternatives(uint32_t aArg);
 
-  void GetServiceURI(nsString& aRetVal, ErrorResult& aRv) const;
+  // New attributes from current spec
+  bool ProcessLocally() const;
+  void SetProcessLocally(bool aProcessLocally);
 
-  void SetServiceURI(const nsAString& aArg, ErrorResult& aRv);
+  // ObservableArray callbacks for phrases
+  void OnSetPhrases(SpeechRecognitionPhrase& aPhrase, uint32_t aIndex,
+                    ErrorResult& aRv);
+  void OnDeletePhrases(SpeechRecognitionPhrase& aPhrase, uint32_t aIndex,
+                       ErrorResult& aRv);
 
-  void Start(const Optional<NonNull<DOMMediaStream>>& aStream,
+  // Static methods from current spec
+  static already_AddRefed<Promise> Available(
+      const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
+      ErrorResult& aRv);
+  static already_AddRefed<Promise> Install(
+      const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
+      ErrorResult& aRv);
+
+  static void RemoveDownloadingLanguage(const nsCString& aLanguage);
+
+  void Start(const Optional<NonNull<MediaStreamTrack>>& aTrack,
              CallerType aCallerType, ErrorResult& aRv);
 
   void Stop();
@@ -130,14 +148,16 @@ class SpeechRecognition final : public DOMEventTargetHelper,
                      const char (&aMessage)[N]) {
     DispatchError(aErrorCode, nsLiteralCString(aMessage));
   }
+  // Backend methods
+  void HandleRecognitionResultFromBackend(const nsCString& aTranscript,
+                                          bool aIsFinal);
+  void HandleRecognitionErrorFromBackend(const nsCString& aError);
 
  private:
   virtual ~SpeechRecognition();
 
   NS_IMETHOD StartRecording(RefPtr<AudioStreamTrack>& aDOMStream);
   RefPtr<GenericNonExclusivePromise> StopRecording();
-
-  uint32_t ProcessAudioSegment(AudioSegment* aSegment, TrackRate aTrackRate);
 
   void Reset();
   void ResetAndEnd();
@@ -147,9 +167,9 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   bool mTrackIsOwned = false;
   RefPtr<GenericNonExclusivePromise> mStopRecordingPromise;
   RefPtr<SpeechTrackListener> mSpeechListener;
-  RefPtr<media::ShutdownBlocker> mShutdownBlocker;
 
-  bool mAborted;
+  // Tracks if recognition has been started (spec's [[started]] internal slot)
+  bool mStarted;
 
   nsString mLang;
 
@@ -157,21 +177,16 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   bool mContinuous;
   bool mInterimResults;
-
-  // WebSpeechAPI (http://bit.ly/1JAiqeo) states:
-  //
-  // 1. Default value is 1
-  // 2. Subsequent value is the "maximum number of SpeechRecognitionAlternatives
-  // per result"
-  //
-  // Pocketsphinx can only return at maximum a single
-  // SpeechRecognitionAlternative per SpeechRecognitionResult. So defaulting
-  // mMaxAlternatives to 1, for all non zero values ignoring mMaxAlternatives
-  // while for a 0 value returning no SpeechRecognitionAlternative per result is
-  // a conforming implementation.
   uint32_t mMaxAlternatives;
-
+  // The backend gets these at Start() time; spec is unclear on dynamic updates
+  // Probably better as a SimpleMap or something so it's sparse
+  // https://github.com/WebAudio/web-speech-api/issues/172
+  nsTArray<RefPtr<SpeechRecognitionPhrase>> mPhrases;
   RefPtr<TrackListener> mListener;
+  // Backend instance for handling audio processing
+  RefPtr<SpeechRecognitionBackend> mBackend;
+
+  static nsTHashSet<nsCString> sDownloadingLanguages;
 };
 
 }  // namespace dom
