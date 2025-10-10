@@ -30,6 +30,33 @@ SpeechRecognitionChild::~SpeechRecognitionChild() {
   SRCHILD_LOG(LogLevel::Debug, "Destructor called");
 }
 
+mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionResult(
+    const nsCString& aTranscript, const bool& aIsFinal) {
+  SRCHILD_LOG(LogLevel::Info, "RecvOnRecognitionResult: '%s' (final=%s)",
+              aTranscript.get(), aIsFinal ? "true" : "false");
+
+  if (mResultCallback) {
+    SRCHILD_LOG(LogLevel::Debug, "Invoking result callback");
+    mResultCallback(aTranscript, aIsFinal);
+  } else {
+    SRCHILD_LOG(LogLevel::Warning, "Received result but no callback set");
+  }
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionError(
+    const nsCString& aError) {
+  SRCHILD_LOG(LogLevel::Warning, "RecvOnRecognitionError: '%s'", aError.get());
+
+  if (mErrorCallback) {
+    SRCHILD_LOG(LogLevel::Debug, "Invoking error callback");
+    mErrorCallback(aError);
+  } else {
+    SRCHILD_LOG(LogLevel::Warning, "Received error but no callback set");
+  }
+  return IPC_OK();
+}
+
 void SpeechRecognitionChild::ActorDestroy(ActorDestroyReason aReason) {
   SRCHILD_LOG(LogLevel::Info, "ActorDestroy called, reason=%d",
               static_cast<int>(aReason));
@@ -62,6 +89,20 @@ void SpeechRecognitionChild::SetSpeechChangeCallback(
     SpeechChangeCallback&& aCallback) {
   SRCHILD_LOG(LogLevel::Debug, "SetSpeechChangeCallback called");
   mSpeechChangeCallback = std::move(aCallback);
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnSpeechChange(
+    const bool& aSpeechDetected) {
+  SRCHILD_LOG(LogLevel::Info, "RecvOnSpeechChange: speechDetected=%s",
+              aSpeechDetected ? "true" : "false");
+
+  if (mSpeechChangeCallback) {
+    SRCHILD_LOG(LogLevel::Debug, "Invoking speech change callback");
+    mSpeechChangeCallback(aSpeechDetected);
+  } else {
+    SRCHILD_LOG(LogLevel::Warning, "Received speech change but no callback set");
+  }
+  return IPC_OK();
 }
 
 }  // namespace mozilla::ipc
