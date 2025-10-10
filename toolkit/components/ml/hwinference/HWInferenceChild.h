@@ -27,13 +27,19 @@ class HWInferenceChild final : public PHWInferenceChild {
       const dom::ContentParentId& aContentId);
 
   RefPtr<IsModelAvailablePromise> SendIsModelAvailable(
-       const nsCString& aEngine, const nsCString& aModel,
-       const nsCString& aRevision, const nsCString& aFilename);
+      const nsCString& aEngine, const nsCString& aModel,
+      const nsCString& aRevision, const nsCString& aFilename);
 
   RefPtr<InstallModelPromise> SendInstallModel(const nsCString& aTask,
                                                const nsCString& aModel,
                                                const nsCString& aRevision,
                                                const nsCString& aFilename);
+
+  RefPtr<GetModelFilePromise> SendGetModelFile(const nsACString& aEngineId,
+                                               const nsACString& aTask,
+                                               const nsACString& aModel,
+                                               const nsACString& aRevision,
+                                               const nsACString& aFilename);
 
   ipc::UtilityActorName GetActorName() {
     return ipc::UtilityActorName::HwInference;
