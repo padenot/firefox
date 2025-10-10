@@ -38,10 +38,6 @@ class SpeechTrackListener : public MediaTrackListener {
   void NotifyRemoved(MediaTrackGraph* aGraph) override;
 
  private:
-  template <typename SampleFormatType>
-  void ConvertAndDispatchAudioChunk(int aDuration, float aVolume,
-                                    SampleFormatType* aData,
-                                    TrackRate aTrackRate);
   nsMainThreadPtrHandle<SpeechRecognition> mRecognition;
   MozPromiseHolder<GenericNonExclusivePromise> mRemovedHolder;
 

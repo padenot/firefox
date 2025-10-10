@@ -12,6 +12,7 @@
 #include "SpeechRecognitionResultList.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/dom/SpeechRecognitionEvent.h"
 #include "nsIObserverService.h"
 #include "nsThreadUtils.h"
 
@@ -81,16 +82,24 @@ FakeSpeechRecognitionService::Observe(nsISupports* aSubject, const char* aTopic,
 
   if (eventName.EqualsLiteral("EVENT_RECOGNITIONSERVICE_ERROR")) {
     mRecognition->DispatchError(
-        SpeechRecognition::EVENT_RECOGNITIONSERVICE_ERROR,
         SpeechRecognitionErrorCode::Network,  // TODO different codes?
         "RECOGNITIONSERVICE_ERROR test event");
 
   } else if (eventName.EqualsLiteral("EVENT_RECOGNITIONSERVICE_FINAL_RESULT")) {
-    RefPtr<SpeechEvent> event = new SpeechEvent(
-        mRecognition, SpeechRecognition::EVENT_RECOGNITIONSERVICE_FINAL_RESULT);
+    // Create and dispatch a result event directly
+    RefPtr<SpeechRecognitionResultList> resultList = BuildMockResultList();
 
-    event->mRecognitionResultList = BuildMockResultList();
-    NS_DispatchToMainThread(event);
+    RootedDictionary<SpeechRecognitionEventInit> init(RootingCx());
+    init.mBubbles = true;
+    init.mCancelable = false;
+    init.mResults = resultList;
+    init.mInterpretation = JS::NullValue();
+
+    RefPtr<SpeechRecognitionEvent> event =
+        SpeechRecognitionEvent::Constructor(mRecognition, u"result"_ns, init);
+    event->SetTrusted(true);
+
+    mRecognition->DispatchEvent(*event);
   }
   return NS_OK;
 }
