@@ -3,12 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "HWInferenceManagerChild.h"
+#include "mozilla/hwinference/HWInferenceManagerChild.h"
 #include "mozilla/Logging.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/StaticPtr.h"
 #include "nsThreadUtils.h"
+#include "mozilla/hwinference/SpeechRecognitionChild.h"
 
 namespace mozilla::hwinference {
 
@@ -99,6 +100,28 @@ void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
 
   // Outside the lock: this dispatches to the main thread.
   ReleaseConnectionReference();
+}
+
+RefPtr<SpeechRecognitionChild>
+HWInferenceManagerChild::CreateSpeechRecognitionSession() {
+  LOGD("{}", __func__);
+
+  if (!CanSend()) {
+    LOGE("{} - Cannot send", __func__);
+    return nullptr;
+  }
+
+  RefPtr<SpeechRecognitionChild> actor = new SpeechRecognitionChild();
+
+  if (SendPSpeechRecognitionConstructor(actor)) {
+    LOGD("Successfully created SpeechRecognitionChild actor={:p}",
+         fmt::ptr(actor.get()));
+  } else {
+    LOGE("Failed to create SpeechRecognitionChild");
+    actor = nullptr;
+  }
+
+  return actor;
 }
 
 }  // namespace mozilla::hwinference

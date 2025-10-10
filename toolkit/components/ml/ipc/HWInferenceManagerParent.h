@@ -12,12 +12,19 @@
 
 namespace mozilla::hwinference {
 
+#ifndef ANDROID
+class SpeechRecognitionParent;
+#endif
+
 class HWInferenceManagerParent final : public PHWInferenceManagerParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerParent, override);
 
-  static bool CreateForContent(Endpoint<PHWInferenceManagerParent>&& aEndpoint,
-                               dom::ContentParentId aContentId);
+  static bool CreateForContent(
+      ipc::Endpoint<PHWInferenceManagerParent>&& aEndpoint,
+      dom::ContentParentId aContentId);
+
+  already_AddRefed<PSpeechRecognitionParent> AllocPSpeechRecognitionParent();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 

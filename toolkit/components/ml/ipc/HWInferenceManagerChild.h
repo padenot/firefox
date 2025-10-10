@@ -7,6 +7,7 @@
 #define TOOLKIT_COMPONENTS_ML_IPC_HWINFERENCEMANAGERCHILD_H_
 
 #include "mozilla/hwinference/PHWInferenceManagerChild.h"
+#include "mozilla/hwinference/SpeechRecognitionChild.h"
 #include "nsRefPtrHashtable.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/StaticMutex.h"
@@ -29,6 +30,8 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
   static RefPtr<HWInferenceManagerChild> GetSingleton();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
+
+  RefPtr<SpeechRecognitionChild> CreateSpeechRecognitionSession();
 
  private:
   ~HWInferenceManagerChild() = default;

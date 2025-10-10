@@ -5,6 +5,9 @@
 
 #include "HWInferenceManagerParent.h"
 #include "mozilla/Logging.h"
+#ifndef ANDROID
+#  include "mozilla/hwinference/SpeechRecognitionParent.h"
+#endif
 #include "mozilla/ipc/Endpoint.h"
 
 namespace mozilla::hwinference {
@@ -38,6 +41,18 @@ bool HWInferenceManagerParent::CreateForContent(
   }
 
   return true;
+}
+
+already_AddRefed<PSpeechRecognitionParent>
+HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
+  LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
+       (void*)this);
+
+  RefPtr<SpeechRecognitionParent> actor = new SpeechRecognitionParent();
+  LOGD("[{}] Created SpeechRecognitionParent actor={:p}", (void*)this,
+       (void*)actor.get());
+
+  return actor.forget();
 }
 
 void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
