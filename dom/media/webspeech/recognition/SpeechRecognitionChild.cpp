@@ -15,7 +15,7 @@
 static
 mozilla::LazyLogModule gSpeechRecognitionChildLog("SpeechRecognitionChild");
 #define LOG(level, ...) \
-  MOZ_LOG_FMT(gSpeechRecognitionChildLog, level, __VA_ARGS__)
+  MOZ_LOG_FMT(gSpeechRecognitionChildLog, level, ##__VA_ARGS__)
 
 namespace mozilla {
 

@@ -114,5 +114,6 @@ Worker Launcher
 speechd init
 thread
 thread shutdown
+Whisper
 wifi tickler
 WMFCDMThread

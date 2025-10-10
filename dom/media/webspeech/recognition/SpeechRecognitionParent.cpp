@@ -14,30 +14,45 @@
 #include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticMutex.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessChild.h"
 #include "mozilla/llama/LlamaRuntimeLinker.h"
 #include "nsDebug.h"
 #include "nsGkAtoms.h"
-#include "nsIFileStreams.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
 #include "prio.h"
 #include "private/pprio.h"
-#include "whisper.h"
 
 #ifdef XP_WIN
 #  include <fcntl.h>
 #endif
 
 namespace mozilla {
+void WhisperContextDeleter::operator()(whisper_context* ctx) {
+  if (ctx) {
+    mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+    if (lib) {
+      lib->whisper_free(ctx);
+    }
+  }
+}
+}  // namespace mozilla
+
+namespace mozilla {
+
+// Static initialization
+StaticRefPtr<SpeechRecognitionParent> SpeechRecognitionParent::sActiveSession;
+StaticMutex SpeechRecognitionParent::sSessionMutex;
 
 static LazyLogModule gSpeechRecognitionParentLog("SpeechRecognitionParent");
-
 #define LOGV(fmt, ...)                                             \
   MOZ_LOG_FMT(gSpeechRecognitionParentLog, LogLevel::Verbose, fmt, \
               ##__VA_ARGS__)
@@ -45,14 +60,6 @@ static LazyLogModule gSpeechRecognitionParentLog("SpeechRecognitionParent");
   MOZ_LOG_FMT(gSpeechRecognitionParentLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) \
   MOZ_LOG_FMT(gSpeechRecognitionParentLog, LogLevel::Error, fmt, ##__VA_ARGS__)
-
-SpeechRecognitionParent::SpeechRecognitionParent() {
-  LOGD("{}", __func__);
-}
-
-SpeechRecognitionParent::~SpeechRecognitionParent() {
-  LOGD("{}", __func__);
-}
 
 SpeechRecognitionParent::ModelIdentifier
 SpeechRecognitionParent::LanguagesToModelIdentifier(
@@ -82,6 +89,22 @@ SpeechRecognitionParent::LanguagesToModelIdentifier(
 nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
   return nsFmtCString("{}/{}/{}", mModelName.get(), mFileName.get(),
                       mRevision.get());
+}
+
+void SpeechRecognitionParent::ResolveOrRejectInitOnIPCThread(
+    InitResolver&& aResolver, bool aSuccess) {
+  if (GetActorEventTarget()->IsOnCurrentThread()) {
+    LOGV("Resolving init on same thread {}", aSuccess);
+    aResolver(aSuccess);
+  } else {
+    LOGV("Resolving init accross thread {}", aSuccess);
+    GetActorEventTarget()->Dispatch(NS_NewRunnableFunction(
+        "Speech recognition init runnable",
+        [resolver = std::move(aResolver), aSuccess]() {
+          LOGV("Resolving init accross thread {}", aSuccess);
+          resolver(aSuccess);
+        }));
+  }
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
@@ -186,8 +209,196 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
   return IPC_OK();
 }
 
+SpeechRecognitionParent::SpeechRecognitionParent()
+    : mLock("SpeechRecognitionLock") {
+}
+
+void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
+  MOZ_ASSERT(NS_IsMainThread());
+  RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
+      mozilla::ipc::UtilityProcessChild::GetSingleton();
+  if (!utilityChild) {
+    LOGE("{} ERROR: No UtilityProcessChild available", __func__);
+    ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
+    return;
+  }
+  mozilla::hwinference::HWInferenceChild* hwInferenceChild =
+      utilityChild->GetHWInferenceChild();
+  if (!hwInferenceChild) {
+    LOGE("{} No HWInferenceChild available for model retrieval", __func__);
+    ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
+    return;
+  }
+
+  ModelIdentifier modelIdentifier;
+  {
+    MutexAutoLock lock(mLock);
+    modelIdentifier =
+        LanguagesToModelIdentifier(nsTArray{mLanguage});
+  }
+
+  LOGD("{} Requesting model: model={}", __func__,
+       modelIdentifier.ToString().get());
+
+  hwInferenceChild
+      ->SendGetModelFile(
+        "whisper-cpp"_ns,
+        "speech-recognition"_ns,
+        modelIdentifier.mModelName, modelIdentifier.mRevision,
+        modelIdentifier.mFileName)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr{this}, resolver = std::move(aResolver)](
+              const mozilla::hwinference::GetModelFileResult& aResult) mutable {
+            if (aResult.type() ==
+                mozilla::hwinference::GetModelFileResult::TGetModelError) {
+              LOGE("{} GetModelError with nsresult={:x}", __func__,
+                   static_cast<uint32_t>(
+                       aResult.get_GetModelError().errorCode()));
+              self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+              return;
+            }
+
+            // Convert FileDescriptor to FILE* using the helper function
+            mozilla::ipc::FileDescriptor fd =
+                aResult.get_GetModelFileSuccess().fd();
+
+            FILE* file = FileDescriptorToFILE(fd, "rb");
+            if (!file) {
+              LOGE("{} Failed to convert FileDescriptor to FILE*", __func__);
+              self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+              return;
+            }
+            // Store the file handle on the main thread
+            {
+              MutexAutoLock lock(self->mLock);
+              self->mModelFile.reset(file);
+            }
+
+            // Signal the recognition thread that the model is ready
+            LOGD("Model file ready, starting recognition thread");
+            nsresult rv = NS_NewNamedThread(
+                "Whisper", getter_AddRefs(self->mRecognitionThread),
+                NS_NewRunnableFunction(
+                    "Initialize whisper context",
+                    [self, resolver = std::move(resolver)]() mutable {
+                      self->InitializeWhisperContext(std::move(resolver));
+                    }));
+            if (NS_FAILED(rv)) {
+              LOGE("Failed to create recognition thread: {:x}",
+                   static_cast<uint32_t>(rv));
+              self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+            }
+          },
+          [self = RefPtr{this}, resolver = std::move(aResolver)](
+              mozilla::ipc::ResponseRejectReason aReason) mutable {
+            LOGE("{} Promise rejected with reason {}", __func__,
+                 static_cast<int>(aReason));
+            self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+          });
+}
+
+void SpeechRecognitionParent::InitializeWhisperContext(
+    InitResolver&& aResolver) {
+  // This runs on the recognition thread
+  MOZ_ASSERT(!NS_IsMainThread());
+
+  mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+  if (!lib) {
+    LOGE("{} Failed to get runtime linker", __func__);
+    ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
+    return;
+  }
+
+  struct whisper_context_params cparams =
+      lib->whisper_context_default_params();
+#ifdef XP_MACOSX
+  cparams.use_gpu = true;
+#else
+  cparams.use_gpu = false;
+#endif
+
+  FILE* modelFile = nullptr;
+  {
+    MutexAutoLock lock(mLock);
+    modelFile = mModelFile.get();
+  }
+
+  mWhisperCtx.reset(
+      lib->whisper_init_from_file_handle_with_params(modelFile, cparams));
+  if (!mWhisperCtx) {
+    LOGE("{} whisper_init_from_file_handle_with_params failed", __func__);
+    ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
+    return;
+  }
+
+  ResolveOrRejectInitOnIPCThread(std::move(aResolver), true);
+  LOGD("Whisper context ready, starting main recognition loop");
+
+  mRecognitionThread->Dispatch(NS_NewRunnableFunction(
+      "Whisper recognition loop",
+      [self = RefPtr{this}] { self->ProcessAudioOnBackgroundThread(); }));
+}
+
+SpeechRecognitionParent::~SpeechRecognitionParent() {
+  LOGD("{}", __func__);
+
+  // Clear active session if this was it
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession == this) {
+      LOGD("Clearing active session in destructor");
+      sActiveSession = nullptr;
+    }
+  }
+}
+
 void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("{} ActorDestroy called", __func__);
+
+  MutexAutoLock lock(mLock);
+  if (mModelFile) {
+    mModelFile = nullptr;
+  }
+
+  if (mRecognitionThread) {
+    mRecognitionThread->Shutdown();
+    mRecognitionThread = nullptr;
+  }
+
+  mWhisperCtx.reset();
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
+    const nsCString& aEngineId, const nsCString& aLanguage,
+    const nsTArray<nsString>& aPhrases, InitResolver&& aResolver) {
+  LOGD("{} engineId='{}' language='{}'", __func__, aEngineId.get(),
+       aLanguage.get());
+
+  // Enforce single active session
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession) {
+      LOGE("Rejecting Init - another recognition session is already active");
+      aResolver(false);
+      return IPC_OK();
+    }
+    sActiveSession = this;
+    LOGD("Session registered as active");
+  }
+
+  {
+    MutexAutoLock lock(mLock);
+    mLanguage = aLanguage;
+    mPhrases = aPhrases.Clone();
+  }
+
+  RetrieveModel(std::move(aResolver));
+
+  return IPC_OK();
+}
+
+void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
 }
 
 }  // namespace mozilla
