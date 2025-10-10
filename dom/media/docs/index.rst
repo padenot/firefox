@@ -5,3 +5,4 @@ Media Playback
    :maxdepth: 1
 
    MediaFormatReader
+   SpeechRecognition
