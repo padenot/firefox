@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <algorithm>
+
 #include "SpeechRecognitionParent.h"
 #include "mozilla/Logging.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
@@ -47,58 +49,86 @@ nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
                       mRevision.get());
 }
 
-mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
-    const nsTArray<nsCString>& aLanguages,
-    IsModelAvailableResolver&& aResolver) {
-  LOGD("{} RecvIsModelAvailable called for languages: {}", __func__,
-       fmt::join(aLanguages, ", "));
-
-  if (aLanguages.IsEmpty()) {
-    return IPC_FAIL(this,
-                    "RecvIsModelAvailable requires at least one language");
-  }
-
-  ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
-
+mozilla::ipc::IPCResult SpeechRecognitionParent::RunHWInferenceBoolQuery(
+    const char* aFuncName,
+    std::function<RefPtr<MozPromise<bool, ResponseRejectReason, true>>(
+        hwinference::HWInferenceChild*)>
+        aSendFunc,
+    std::function<void(const bool&)> aResolver) {
   RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
       mozilla::ipc::UtilityProcessChild::GetSingleton();
   if (!utilityChild) {
-    LOGE("{} No UtilityProcessChild available", __func__);
+    LOGE("{} No UtilityProcessChild available", aFuncName);
     aResolver(false);
     return IPC_OK();
   }
 
   HWInferenceChild* hwInferenceChild = utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
-    LOGE("{} No HWInferenceChild available", __func__);
+    LOGE("{} No HWInferenceChild available", aFuncName);
     aResolver(false);
     return IPC_OK();
   }
 
-  LOGD(
-      "{} Sending model availability request to main process, {} "
-      "mapped to model={}",
-      __func__, fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
-
-  hwInferenceChild
-      ->SendIsModelAvailable("parakeet-gguf"_ns, modelIdentifier.mModelName,
-                             modelIdentifier.mRevision,
-                             modelIdentifier.mFileName)
-      ->Then(
-          GetCurrentSerialEventTarget(), __func__,
-          [self = RefPtr{this}, aResolver](bool aAvailable) mutable {
-            LOGD("Sending response back to content process: available={}",
-                 aAvailable ? "true" : "false");
-            aResolver(aAvailable);
-          },
-          [self = RefPtr{this},
-           aResolver](ResponseRejectReason aReason) mutable {
-            LOGE("{} IPC call to main process failed: {}", __func__,
-                 static_cast<int>(aReason));
-            aResolver(false);
-          });
+  aSendFunc(hwInferenceChild)
+      ->Then(GetCurrentSerialEventTarget(), __func__,
+             [self = RefPtr{this}, aResolver = std::move(aResolver), aFuncName](
+                 MozPromise<bool, ResponseRejectReason,
+                            true>::ResolveOrRejectValue&& aValue) mutable {
+               if (aValue.IsResolve()) {
+                 LOGD("{} Sending response back to content process: {}",
+                      aFuncName, aValue.ResolveValue() ? "true" : "false");
+                 aResolver(aValue.ResolveValue());
+               } else {
+                 LOGE("{} IPC call to main process failed: {}", aFuncName,
+                      static_cast<int>(aValue.RejectValue()));
+                 aResolver(false);
+               }
+             });
 
   return IPC_OK();
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
+    const nsTArray<nsCString>& aLanguages,
+    IsModelAvailableResolver&& aResolver) {
+  if (aLanguages.IsEmpty()) {
+    return IPC_FAIL(this,
+                    "RecvIsModelAvailable requires at least one language");
+  }
+
+  nsCString modelId = dom::LanguagesToSpeechModelId(aLanguages);
+  LOGD("{} languages: {} mapped to id={}", __func__,
+       fmt::join(aLanguages, ", "), modelId.get());
+
+  return RunHWInferenceBoolQuery(
+      __func__,
+      [modelId](hwinference::HWInferenceChild* aChild) {
+        return aChild->SendIsModelAvailable(
+            nsCString(dom::kSpeechRecognitionTask), modelId);
+      },
+      std::move(aResolver));
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
+    const nsTArray<nsCString>& aLanguages, uint64_t aInnerWindowId,
+    InstallModelsResolver&& aResolver) {
+  if (aLanguages.IsEmpty()) {
+    return IPC_FAIL(this, "RecvInstallModels requires at least one language");
+  }
+
+  ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
+  LOGD("{} languages: {} mapped to model={}", __func__,
+       fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
+
+  return RunHWInferenceBoolQuery(
+      __func__,
+      [modelIdentifier](hwinference::HWInferenceChild* aChild) {
+        return aChild->SendInstallModel(
+            "speech-recognition"_ns, modelIdentifier.mModelName,
+            modelIdentifier.mRevision, modelIdentifier.mFileName);
+      },
+      std::move(aResolver));
 }
 
 void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
