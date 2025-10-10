@@ -29,6 +29,11 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
   void SetErrorCallback(RecognitionErrorCallback&& aCallback);
   void SetSpeechChangeCallback(SpeechChangeCallback&& aCallback);
 
+  mozilla::ipc::IPCResult RecvOnRecognitionResult(const nsCString& aTranscript,
+                                                  const bool& aIsFinal);
+  mozilla::ipc::IPCResult RecvOnRecognitionError(const nsCString& aError);
+  mozilla::ipc::IPCResult RecvOnSpeechChange(const bool& aSpeechDetected);
+
   void ActorDestroy(ActorDestroyReason aReason) override;
 
  private:
