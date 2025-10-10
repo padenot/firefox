@@ -7,6 +7,7 @@
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/ipc/SpeechRecognitionChild.h"
 
 namespace mozilla::ipc {
 
@@ -52,7 +53,52 @@ RefPtr<HWInferenceManagerChild> HWInferenceManagerChild::GetSingleton() {
 void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("{} reason={}, clearing singleton", __func__, static_cast<int>(aReason));
 
+  mSpeechSessions.Clear();
   sSingleton = nullptr;
+}
+
+PSpeechRecognitionChild*
+HWInferenceManagerChild::AllocPSpeechRecognitionChild() {
+  RefPtr<SpeechRecognitionChild> actor = new SpeechRecognitionChild();
+
+  mSpeechSessions.AppendElement(actor);
+  LOGD("Created SpeechRecognitionChild actor={:p}, total={}",
+       fmt::ptr(actor.get()), mSpeechSessions.Length());
+
+  return actor.get();
+}
+
+bool HWInferenceManagerChild::DeallocPSpeechRecognitionChild(
+    PSpeechRecognitionChild* aActor) {
+  RefPtr<SpeechRecognitionChild> actor =
+      static_cast<SpeechRecognitionChild*>(aActor);
+
+  LOGD("Dealloc SpeechRecognitionChild actor={:p}", fmt::ptr(aActor));
+
+  mSpeechSessions.RemoveElement(actor);
+  return true;
+}
+
+RefPtr<SpeechRecognitionChild>
+HWInferenceManagerChild::CreateSpeechRecognitionSession() {
+  LOGD("{}", __func__);
+
+  if (!CanSend()) {
+    LOGE("{} - Cannot send", __func__);
+    return nullptr;
+  }
+
+  RefPtr<SpeechRecognitionChild> actor = static_cast<SpeechRecognitionChild*>(
+      SendPSpeechRecognitionConstructor(AllocPSpeechRecognitionChild()));
+
+  if (actor) {
+    LOGD("Successfully created SpeechRecognitionChild actor={:p}",
+         fmt::ptr(actor.get()));
+  } else {
+    LOGE("Failed to create SpeechRecognitionChild");
+  }
+
+  return actor;
 }
 
 }  // namespace mozilla::ipc

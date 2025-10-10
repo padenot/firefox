@@ -27,10 +27,16 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
+  PSpeechRecognitionChild* AllocPSpeechRecognitionChild();
+  bool DeallocPSpeechRecognitionChild(PSpeechRecognitionChild* aActor);
+  RefPtr<SpeechRecognitionChild> CreateSpeechRecognitionSession();
+
  private:
   ~HWInferenceManagerChild() = default;
 
   static StaticRefPtr<HWInferenceManagerChild> sSingleton;
+  // Speech recognition actors
+  nsTArray<RefPtr<SpeechRecognitionChild>> mSpeechSessions;
 };
 
 }  // namespace mozilla::ipc

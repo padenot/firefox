@@ -44,6 +44,10 @@ class HWInferenceChild final : public PHWInferenceChild {
       Endpoint<PHWInferenceManagerParent>&& aEndpoint,
       const dom::ContentParentId& aContentId);
 
+  RefPtr<HWInferenceChild::IsModelAvailablePromise> SendIsModelAvailable(
+      const nsCString& aModel, const nsCString& aRevision,
+      const nsCString& aFilename);
+
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
  private:

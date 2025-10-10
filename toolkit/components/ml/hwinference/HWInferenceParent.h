@@ -22,6 +22,10 @@ class HWInferenceParent final : public PHWInferenceParent {
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
+  // This implements the `available` method of the SpeechRecognition object.
+  mozilla::ipc::IPCResult RecvIsModelAvailable(
+      nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
+      IsModelAvailableResolver&& aResolver);
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
   nsresult BindToUtilityProcess(

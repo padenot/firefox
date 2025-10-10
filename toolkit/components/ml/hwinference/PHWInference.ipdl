@@ -15,6 +15,11 @@ namespace ipc {
 [ChildProc=Utility]
 protocol PHWInference
 {
+  parent:
+    // Check if a model is available for speech recognition
+    async IsModelAvailable(nsCString model,
+                           nsCString revision,
+                           nsCString filename) returns (bool available);
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(Endpoint<PHWInferenceManagerParent> endpoint,

@@ -6,6 +6,7 @@
 #include "HWInferenceManagerParent.h"
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
+#include "mozilla/ipc/SpeechRecognitionParent.h"
 
 namespace mozilla::ipc {
 
@@ -44,6 +45,37 @@ bool HWInferenceManagerParent::CreateForContent(
 void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("[{}] HWInferenceManagerParent::ActorDestroy reason={}", (void*)this,
        static_cast<int>(aReason));
+}
+
+PSpeechRecognitionParent*
+HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
+  LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
+       (void*)this);
+
+  RefPtr<SpeechRecognitionParent> actor = new SpeechRecognitionParent();
+
+  mSpeechSessions.AppendElement(actor);
+  LOGD("[{}] Created SpeechRecognitionParent actor={:p}, total sessions={}",
+       (void*)this, (void*)actor.get(), mSpeechSessions.Length());
+
+  return actor.get();
+}
+
+bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
+    PSpeechRecognitionParent* aActor) {
+  RefPtr<SpeechRecognitionParent> actor =
+      static_cast<SpeechRecognitionParent*>(aActor);
+
+  LOGD(
+      "[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
+      "actor={:p}",
+      (void*)this, (void*)aActor);
+
+  mSpeechSessions.RemoveElement(actor);
+  LOGD("[{}] Removed actor from array, remaining sessions={}", (void*)this,
+       mSpeechSessions.Length());
+
+  return true;
 }
 
 }  // namespace mozilla::ipc
