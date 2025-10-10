@@ -116,3 +116,6 @@ thread
 thread shutdown
 wifi tickler
 WMFCDMThread
+SpeechResampler
+SpeechIPC
+Whisper

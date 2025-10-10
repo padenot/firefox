@@ -637,3 +637,7 @@ void SpeechRecognition::HandleRecognitionErrorFromBackend(
 }
 
 }  // namespace mozilla::dom
+
+#undef LOG
+#undef LOGV
+#undef LOGE

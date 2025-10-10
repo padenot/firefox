@@ -15,6 +15,9 @@
 static
 mozilla::LazyLogModule gSpeechRecognitionChildLog("SpeechRecognitionChild");
 
+#define LOG(level, fmt, ...) \
+  MOZ_LOG_FMT(gSpeechRecognitionChildLog, level, fmt, ##__VA_ARGS__)
+
 namespace mozilla::ipc {
 
 SpeechRecognitionChild::SpeechRecognitionChild() {
@@ -23,33 +26,6 @@ SpeechRecognitionChild::SpeechRecognitionChild() {
 
 SpeechRecognitionChild::~SpeechRecognitionChild() {
   LOG(LogLevel::Debug, "Destructor called");
-}
-
-mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionResult(
-    const nsCString& aTranscript, const bool& aIsFinal) {
- LOG(LogLevel::Info, "RecvOnRecognitionResult: '{}' (final={})",
-     aTranscript.get(), aIsFinal);
-
-  if (mResultCallback) {
-    LOG(LogLevel::Debug, "Invoking result callback");
-    mResultCallback(aTranscript, aIsFinal);
-  } else {
-    LOG(LogLevel::Warning, "Received result but no callback set");
-  }
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionError(
-    const nsCString& aError) {
-  LOG(LogLevel::Warning, "RecvOnRecognitionError: '{}'", aError.get());
-
-  if (mErrorCallback) {
-    LOG(LogLevel::Debug, "Invoking error callback");
-    mErrorCallback(aError);
-  } else {
-    LOG(LogLevel::Warning, "Received error but no callback set");
-  }
-  return IPC_OK();
 }
 
 void SpeechRecognitionChild::ActorDestroy(ActorDestroyReason aReason) {
@@ -83,19 +59,6 @@ void SpeechRecognitionChild::SetSpeechChangeCallback(
     SpeechChangeCallback&& aCallback) {
   LOG(LogLevel::Debug, "SetSpeechChangeCallback called");
   mSpeechChangeCallback = std::move(aCallback);
-}
-
-mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnSpeechChange(
-    const bool& aSpeechDetected) {
-  LOG(LogLevel::Info, "RecvOnSpeechChange: speechDetected={}", aSpeechDetected);
-
-  if (mSpeechChangeCallback) {
-    LOG(LogLevel::Debug, "Invoking speech change callback");
-    mSpeechChangeCallback(aSpeechDetected);
-  } else {
-    LOG(LogLevel::Warning, "Received speech change but no callback set");
-  }
-  return IPC_OK();
 }
 
 }  // namespace mozilla::ipc
