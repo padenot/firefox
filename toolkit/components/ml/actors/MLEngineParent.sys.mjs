@@ -29,6 +29,25 @@ const lazy = XPCOMUtils.declareLazy({
   MINIMUM_PHYSICAL_MEMORY: { pref: "browser.ml.minimumPhysicalMemory" },
 });
 
+XPCOMUtils.defineLazyServiceGetter(
+  lazy,
+  "mlUtils",
+  "@mozilla.org/ml-utils;1",
+  "nsIMLUtils"
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "CHECK_FOR_MEMORY",
+  "browser.ml.checkForMemory"
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "MINIMUM_PHYSICAL_MEMORY",
+  "browser.ml.minimumPhysicalMemory"
+);
+
 const ONE_GiB = 1024 * 1024 * 1024;
 const RS_RUNTIME_COLLECTION = "ml-onnx-runtime";
 const RS_INFERENCE_OPTIONS_COLLECTION = "ml-inference-options";

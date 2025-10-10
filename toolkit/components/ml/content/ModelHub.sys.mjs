@@ -1,6 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
 /**
@@ -1684,6 +1685,8 @@ export class ModelHub {
    * @param {string} config.modelHubRootUrl - root url of the model hub
    * @param {string} config.modelHubUrlTemplate - url template of the model hub
    * @param {?function(ProgressAndStatusCallbackParams):void} config.progressCallback A function to call to indicate progress status.
+   * @param {string} config.featureId
+   * @param {string} config.sessionId
    * @returns {Promise<[Blob, object]>} The file content
    */
   async getModelFileAsBlob({
@@ -1695,6 +1698,8 @@ export class ModelHub {
     modelHubRootUrl,
     modelHubUrlTemplate,
     progressCallback,
+    featureId,
+    sessionId,
   }) {
     const [filePath, headers] = await this.getModelDataAsFile({
       engineId,
@@ -1705,6 +1710,8 @@ export class ModelHub {
       modelHubRootUrl,
       modelHubUrlTemplate,
       progressCallback,
+      featureId: featureId || engineId,
+      sessionId: sessionId || `${engineId}-${Date.now()}`,
     });
 
     const fileObject = await (
@@ -2198,5 +2205,43 @@ export class ModelHub {
     await this.#initCache();
     const owner = ModelOwner.fromModel(model);
     return owner.getIcon();
+  }
+
+  /**
+   * Check if a model is available by attempting to verify a config file exists.
+   * This does a lightweight HEAD request to check model availability without downloading.
+   *
+   * @param {string} model - The model name (organization/name)
+   * @param {string} revision - The model revision
+   * @param {object} options - Additional options
+   * @param {string} [options.file="config.json"] - The file to check for availability
+   * @param {string} [options.modelHubRootUrl] - Root URL of the model hub
+   * @param {string} [options.modelHubUrlTemplate] - URL template of the model hub
+   * @returns {Promise<boolean>} True if the model appears to be available
+   */
+  async isModelAvailable(
+    model,
+    revision,
+    { file = "config.json", modelHubRootUrl, modelHubUrlTemplate } = {}
+  ) {
+    // First validate the input format
+    const checkError = ModelHub.checkInput(model, revision, file);
+    if (checkError) {
+      lazy.console.error(
+        `ModelHub: Invalid input for ${model}@${revision}: ${checkError.message}`
+      );
+      return false;
+    }
+
+    const url = this.#fileUrl({
+      model,
+      revision,
+      file,
+      modelHubRootUrl: modelHubRootUrl || this.rootUrl,
+      modelHubUrlTemplate: modelHubUrlTemplate || this.urlTemplate,
+    });
+
+    const response = await this.#fetch(url, { method: "HEAD" });
+    return response.ok;
   }
 }
