@@ -7,6 +7,8 @@
 #ifndef mozilla_dom_SpeechRecognition_h
 #define mozilla_dom_SpeechRecognition_h
 
+#include <atomic>
+
 #include "AudioSegment.h"
 #include "DOMMediaStream.h"
 #include "MediaTrackGraph.h"
@@ -17,7 +19,10 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/SpeechRecognitionBinding.h"
 #include "mozilla/dom/SpeechRecognitionError.h"
+#include "mozilla/dom/SpeechRecognitionPhrase.h"
 #include "nsCOMPtr.h"
 #include "nsISpeechRecognitionService.h"
 #include "nsITimer.h"
@@ -33,6 +38,8 @@ class ShutdownBlocker;
 }
 
 namespace dom {
+
+class SpeechRecognitionBackend;
 
 #define SPEECH_RECOGNITION_TEST_EVENT_REQUEST_TOPIC \
   "SpeechRecognitionTest:RequestEvent"
@@ -89,11 +96,29 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   void SetMaxAlternatives(uint32_t aArg);
 
-  void GetServiceURI(nsString& aRetVal, ErrorResult& aRv) const;
+  // New attributes from current spec
+  bool ProcessLocally() const;
+  void SetProcessLocally(bool aProcessLocally);
 
+  // ObservableArray callbacks for phrases
+  void OnSetPhrases(SpeechRecognitionPhrase& aPhrase, uint32_t aIndex,
+                     ErrorResult& aRv);
+  void OnDeletePhrases(SpeechRecognitionPhrase& aPhrase, uint32_t aIndex,
+                        ErrorResult& aRv);
+
+  // Static methods from current spec
+  static already_AddRefed<Promise> Available(
+      const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
+      ErrorResult& aRv);
+  static already_AddRefed<Promise> Install(
+      const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
+      ErrorResult& aRv);
+
+  // Deprecated but kept for compatibility
+  void GetServiceURI(nsString& aRetVal, ErrorResult& aRv) const;
   void SetServiceURI(const nsAString& aArg, ErrorResult& aRv);
 
-  void Start(const Optional<NonNull<DOMMediaStream>>& aStream,
+  void Start(const Optional<NonNull<MediaStreamTrack>>& aAudioTrack,
              CallerType aCallerType, ErrorResult& aRv);
 
   void Stop();
@@ -133,15 +158,17 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 
   // aMessage should be valid UTF-8, but invalid UTF-8 byte sequences are
   // replaced with the REPLACEMENT CHARACTER on conversion to UTF-16.
-  void DispatchError(EventType aErrorType,
-                     SpeechRecognitionErrorCode aErrorCode,
+  void DispatchError(SpeechRecognitionErrorCode aErrorCode,
                      const nsACString& aMessage);
   template <int N>
-  void DispatchError(EventType aErrorType,
-                     SpeechRecognitionErrorCode aErrorCode,
+  void DispatchError(SpeechRecognitionErrorCode aErrorCode,
                      const char (&aMessage)[N]) {
-    DispatchError(aErrorType, aErrorCode, nsLiteralCString(aMessage));
+    DispatchError(aErrorCode, nsLiteralCString(aMessage));
   }
+  // Backend methods
+  void DataCallback(TrackTime aTime, const AudioChunk& aChunk);
+  void HandleRecognitionResultFromBackend(const nsCString& aTranscript, bool aIsFinal);
+  void HandleRecognitionErrorFromBackend(const nsCString& aError);
 
  private:
   virtual ~SpeechRecognition();
@@ -166,7 +193,8 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   uint8_t mStreamGeneration = 0;
 
   nsCOMPtr<nsITimer> mSpeechDetectionTimer;
-  bool mAborted;
+  // Tracks if recognition has been started (spec's [[started]] internal slot)
+  bool mStarted;
 
   nsString mLang;
 
@@ -188,8 +216,16 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   // a conforming implementation.
   uint32_t mMaxAlternatives;
 
+  // New attributes from current spec
+  bool mProcessLocally;
+  // The backend gets these at Start() time; spec is unclear on dynamic updates
+  // Probably better as a SimpleMap or something so it's sparse
+  nsTArray<RefPtr<SpeechRecognitionPhrase>> mPhrases;
+
   RefPtr<TrackListener> mListener;
 
+  // Backend instance for handling audio processing
+  RefPtr<SpeechRecognitionBackend> mBackend;
 };
 
 }  // namespace dom
