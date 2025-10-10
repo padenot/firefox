@@ -343,10 +343,11 @@ void SpeechRecognitionParent::RetrieveModel() {
 
             // Signal the recognition thread that the model is ready
             LOGD("Model file ready, starting recognition thread");
-            nsresult rv = NS_NewNamedThread("Whisper", getter_AddRefs(self->mRecognitionThread),
-              NS_NewRunnableFunction(
-                              "Initialize whisper context",
-                              [self]() { self->InitializeWhisperContext(); }));
+            nsresult rv = NS_NewNamedThread(
+                "Whisper", getter_AddRefs(self->mRecognitionThread),
+                NS_NewRunnableFunction("Initialize whisper context", [self]() {
+                  self->InitializeWhisperContext();
+                }));
             if (NS_FAILED(rv)) {
               LOGE("Failed to create recognition thread: {:x}",
                    static_cast<uint32_t>(rv));
@@ -366,15 +367,15 @@ void SpeechRecognitionParent::InitializeWhisperContext() {
   // This runs on the recognition thread
   MOZ_ASSERT(!NS_IsMainThread());
 
-  mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
   if (!lib) {
     LOGE("{} Failed to get runtime linker", __func__);
     ResolveOrRejectInitOnIPCThread(false);
     return;
   }
 
-  struct whisper_context_params cparams =
-      lib->whisper_context_default_params();
+  struct whisper_context_params cparams = lib->whisper_context_default_params();
 #ifdef XP_MACOSX
   cparams.use_gpu = true;
 #else
@@ -432,7 +433,8 @@ void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   }
 
   if (mWhisperCtx) {
-    mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+    mozilla::llama::LlamaLibWrapper* lib =
+        mozilla::llama::LlamaRuntimeLinker::Get();
     if (lib) {
       lib->whisper_free(mWhisperCtx);
     }
@@ -481,7 +483,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvProcessAudioData(
   LOGV("{} {} samples", __func__, aAudioData.Length());
 
   if (!mAudioQueue.Enqueue(aAudioData.Elements(),
-                          static_cast<int>(aAudioData.Length()))) {
+                           static_cast<int>(aAudioData.Length()))) {
     LOGD("Audio queue full, dropping sample");
   }
 
@@ -510,7 +512,8 @@ whisper_full_params SpeechRecognitionParent::GetWhisperParams() {
           (mParams.mBeamSize > 1) ? WHISPER_SAMPLING_BEAM_SEARCH
                                   : WHISPER_SAMPLING_GREEDY);
 
-  mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
   whisper_full_params wparams = lib->whisper_full_default_params(strat);
   wparams.print_progress = false;
   wparams.print_special = false;
@@ -678,9 +681,9 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
     wparams.prompt_n_tokens = static_cast<int>(promptTokens.size());
 
     mozilla::llama::LlamaLibWrapper* lib =
-      mozilla::llama::LlamaRuntimeLinker::Get();
+        mozilla::llama::LlamaRuntimeLinker::Get();
     if (lib->whisper_full(mWhisperCtx, wparams, pcmf32.data(),
-                           static_cast<int>(pcmf32.size()))) {
+                          static_cast<int>(pcmf32.size()))) {
       SignalError("whisper_full failed"_ns);
       return;
     }

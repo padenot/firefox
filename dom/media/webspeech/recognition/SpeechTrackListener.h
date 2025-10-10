@@ -32,9 +32,7 @@ class SpeechTrackListener : public MediaTrackListener {
 
   void NotifyQueuedChanges(MediaTrackGraph* aGraph, TrackTime aTrackOffset,
                            const MediaSegment& aQueuedMedia) override;
-
   void NotifyEnded(MediaTrackGraph* aGraph) override;
-
   void NotifyRemoved(MediaTrackGraph* aGraph) override;
 
  private:

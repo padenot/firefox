@@ -33,7 +33,17 @@ already_AddRefed<SpeechTrackListener> SpeechTrackListener::Create(
 
 void SpeechTrackListener::NotifyQueuedChanges(
     MediaTrackGraph* aGraph, TrackTime aTrackOffset,
-    const MediaSegment& aQueuedMedia) {}
+    const MediaSegment& aQueuedMedia) {
+  AudioSegment* audio = const_cast<AudioSegment*>(
+      static_cast<const AudioSegment*>(&aQueuedMedia));
+
+  TrackTime offsetForChunk = aTrackOffset;
+  AudioSegment::ChunkIterator chunk(*audio);
+  while (!chunk.IsEnded()) {
+    mRecognition->DataCallback(offsetForChunk + chunk->mDuration, *chunk);
+    chunk.Next();
+  }
+}
 
 void SpeechTrackListener::NotifyEnded(MediaTrackGraph* aGraph) {
   // TODO dispatch SpeechEnd event so services can be informed

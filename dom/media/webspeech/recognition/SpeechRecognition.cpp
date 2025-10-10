@@ -10,6 +10,7 @@
 
 #include "AudioSegment.h"
 #include "CubebUtils.h"
+#include "MainThreadUtils.h"
 #include "MediaEnginePrefs.h"
 #include "SpeechRecognitionAlternative.h"
 #include "SpeechRecognitionBackend.h"
@@ -52,19 +53,14 @@
 #endif
 
 namespace mozilla::dom {
-using mozilla::CubebUtils::PreferredSampleRate;
-
 static LazyLogModule gSpeechRecognitionLog("SpeechRecognition");
 
-#define LOG(fmt, ...)                                               \
-  MOZ_LOG_FMT(gSpeechRecognitionLog, mozilla::LogLevel::Debug, fmt, \
-              ##__VA_ARGS__)
-#define LOGV(fmt, ...)                                                \
-  MOZ_LOG_FMT(gSpeechRecognitionLog, mozilla::LogLevel::Verbose, fmt, \
-              ##__VA_ARGS__)
-#define LOGE(fmt, ...)                                              \
-  MOZ_LOG_FMT(gSpeechRecognitionLog, mozilla::LogLevel::Error, fmt, \
-              ##__VA_ARGS__)
+#define LOG(...) \
+  MOZ_LOG_FMT(gSpeechRecognitionLog, LogLevel::Debug, __VA_ARGS__)
+#define LOGV(...) \
+  MOZ_LOG_FMT(gSpeechRecognitionLog, LogLevel::Verbose, __VA_ARGS__)
+#define LOGE(...) \
+  MOZ_LOG_FMT(gSpeechRecognitionLog, LogLevel::Error, __VA_ARGS__)
 
 NS_IMPL_CYCLE_COLLECTION_WEAK_PTR_INHERITED(SpeechRecognition,
                                             DOMEventTargetHelper, mTrack,
@@ -210,7 +206,7 @@ void SpeechRecognition::SetMaxAlternatives(uint32_t aArg) {
 
 static bool ValidateBCP47Language(const nsAString& aLang, ErrorResult& aRv) {
   NS_ConvertUTF16toUTF8 utf8Lang(aLang);
-  mozilla::Span<const char> langSpan(utf8Lang.get(), utf8Lang.Length());
+  Span<const char> langSpan(utf8Lang.get(), utf8Lang.Length());
 
   // Empty strings are not valid BCP47 language tags
   if (langSpan.IsEmpty()) {
@@ -218,8 +214,8 @@ static bool ValidateBCP47Language(const nsAString& aLang, ErrorResult& aRv) {
     return false;
   }
 
-  mozilla::intl::Locale locale;
-  auto result = mozilla::intl::LocaleParser::TryParse(langSpan, locale);
+  intl::Locale locale;
+  auto result = intl::LocaleParser::TryParse(langSpan, locale);
 
   if (result.isErr()) {
     aRv.ThrowSyntaxError("Invalid BCP47 language tag");
@@ -260,6 +256,7 @@ void SpeechRecognition::OnDeletePhrases(SpeechRecognitionPhrase& aPhrase,
 already_AddRefed<Promise> SpeechRecognition::Available(
     const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
     ErrorResult& aRv) {
+  AssertIsOnMainThread();
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
   if (!global) {
     aRv.Throw(NS_ERROR_FAILURE);
@@ -297,6 +294,7 @@ already_AddRefed<Promise> SpeechRecognition::Available(
 already_AddRefed<Promise> SpeechRecognition::Install(
     const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
     ErrorResult& aRv) {
+  AssertIsOnMainThread();
   nsCOMPtr<nsPIDOMWindowInner> window =
       do_QueryInterface(aGlobal.GetAsSupports());
   if (!window) {
@@ -352,6 +350,7 @@ already_AddRefed<Promise> SpeechRecognition::Install(
 void SpeechRecognition::Start(
     const Optional<NonNull<MediaStreamTrack>>& aAudioTrack,
     CallerType aCallerType, ErrorResult& aRv) {
+  AssertIsOnMainThread();
   LOG("SpeechRecognition::Start called");
 
   // Check if already started (spec's [[started]] internal slot)
@@ -394,8 +393,9 @@ void SpeechRecognition::Start(
       phrasesForBackend.AppendElement(phraseStr);
     }
   }
-  mBackend = MakeRefPtr<SpeechRecognitionBackend>(this, graphRate, mLang,
-                                                  phrasesForBackend);
+  AssertIsOnMainThread();
+  mBackend = RefPtr<SpeechRecognitionBackend>(
+      new SpeechRecognitionBackend(this, graphRate, mLang, phrasesForBackend));
   nsresult rv = mBackend->Start();
   if (NS_FAILED(rv)) {
     LOGE("Failed to start backend: {:x}", static_cast<uint32_t>(rv));
@@ -478,6 +478,7 @@ void SpeechRecognition::Start(
 }
 
 void SpeechRecognition::Stop() {
+  AssertIsOnMainThread();
   // If not started, ignore, per spec
   if (!mStarted) {
     return;
@@ -501,6 +502,7 @@ void SpeechRecognition::Stop() {
 }
 
 void SpeechRecognition::Abort() {
+  AssertIsOnMainThread();
   // If not started, ignore per spec
   if (!mStarted) {
     return;
