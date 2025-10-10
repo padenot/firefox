@@ -917,6 +917,10 @@ var View = {
         fluentName = "about-processes-utility-actor-windows-file-dialog";
         break;
 
+      case "hwInference":
+        fluentName = "about-processes-utility-actor-hw-inference";
+        break;
+
       default:
         fluentName = "about-processes-utility-actor-unknown";
         break;

@@ -28,6 +28,7 @@
 #endif
 
 #include "mozilla/GeckoArgs.h"
+#include "mozilla/ipc/PHWInferenceChild.h"
 
 namespace mozilla::ipc {
 
@@ -289,6 +290,8 @@ UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
         if (!aActor->CanSend()) {
           nsresult rv = aActor->BindToUtilityProcess(utilityParent);
           if (NS_FAILED(rv)) {
+            LOGD("BindToUtilityProcess failed with rv=%x",
+                 static_cast<uint32_t>(rv));
             MOZ_ASSERT(false, "Protocol endpoints failure");
             return RetPromise::CreateAndReject(
                 LaunchError("BindToUtilityProcess", rv), __func__);
@@ -514,6 +517,38 @@ UtilityProcessManager::CreateWinFileDialogActor() {
 
 #endif  // XP_WIN
 
+RefPtr<UtilityProcessManager::HWInferencePromise>
+UtilityProcessManager::StartHWInference() {
+  LOGD("[%p] StartHWInference called", this);
+  RefPtr<UtilityProcessManager> self = this;
+  using RetPromise = HWInferencePromise;
+  RefPtr<HWInferenceParent> hwip = HWInferenceParent::GetSingleton();
+  MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
+  LOGD("[%p] Starting HWInference utility process with HW_INFERENCE sandboxing",
+       this);
+  return StartUtility(hwip, SandboxingKind::HW_INFERENCE)
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [self, hwip]() {
+            LOGD("StartHWInference: Utility process started successfully");
+            if (!hwip->CanSend()) {
+              MOZ_ASSERT(false, "HWInferenceParent lost in the middle");
+              LOGD("StartHWInference: HWInferenceParent cannot send!");
+              return RetPromise::CreateAndReject(
+                  LaunchError("StartHWInference: !hwip->CanSend()"),
+                  __PRETTY_FUNCTION__);
+            }
+            LOGD("StartHWInference: HWInferenceParent ready, CanSend=true");
+            return RetPromise::CreateAndResolve(std::move(hwip), __func__);
+          },
+          [](LaunchError&& aError) {
+            LOGD("StartHWInference: Failed to start utility process: %s",
+                 aError.FunctionName().get());
+            MOZ_ASSERT_UNREACHABLE("PHWInference: failure when starting actor");
+            return RetPromise::CreateAndReject(std::move(aError), __func__);
+          });
+}
+
 bool UtilityProcessManager::IsProcessLaunching(SandboxingKind aSandbox) {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -676,6 +711,29 @@ class UtilityMemoryReporter : public MemoryReportingProcess {
 RefPtr<MemoryReportingProcess> UtilityProcessManager::GetProcessMemoryReporter(
     UtilityProcessParent* parent) {
   return new UtilityMemoryReporter(parent);
+}
+
+void UtilityProcessManager::StartContentHWInferenceManager(
+    Endpoint<PHWInferenceManagerParent>&& aEndpoint,
+    dom::ContentParentId aChildId) {
+  LOGD(
+      "[%p] UtilityProcessManager::StartContentHWInferenceManager for content "
+      "%d",
+      this, static_cast<int>(aChildId));
+
+  StartHWInference()->Then(
+      GetMainThreadSerialEventTarget(), __func__,
+      [endpoint = std::move(aEndpoint),
+       aChildId](RefPtr<HWInferenceParent> hwip) mutable {
+        // Send parent endpoint to utility process
+        if (!hwip->SendNewContentHWInferenceManager(std::move(endpoint),
+                                                    aChildId)) {
+          LOGD("Failed to send endpoint to utility process");
+        }
+      },
+      [](LaunchError&& aError) {
+        LOGD("Failed to start HWInference: %s", aError.FunctionName().get());
+      });
 }
 
 }  // namespace mozilla::ipc

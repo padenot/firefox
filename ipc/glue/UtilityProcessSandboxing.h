@@ -31,9 +31,8 @@ enum SandboxingKind : uint64_t {
   WINDOWS_UTILS,
   WINDOWS_FILE_DIALOG,
 #endif
-
+  HW_INFERENCE,
   COUNT,
-
 };
 
 bool IsUtilitySandboxEnabled(const char* envVar, SandboxingKind aKind);
