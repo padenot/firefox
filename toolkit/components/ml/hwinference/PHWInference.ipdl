@@ -15,6 +15,14 @@ namespace ipc {
 [ChildProc=Utility]
 protocol PHWInference
 {
+  parent:
+    // Those three methods allow using ModelHub via IPC, from the HWInference
+    // utility process.
+
+    // Check if a model is available for speech recognition
+    async IsModelAvailable(nsCString model,
+                           nsCString revision,
+                           nsCString filename) returns (bool available);
   child:
     // Allow content processes to create direct connections to utility
     async NewContentHWInferenceManager(

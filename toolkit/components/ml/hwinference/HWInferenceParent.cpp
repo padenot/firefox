@@ -29,6 +29,41 @@ extern LazyLogModule gHWInferenceLog;
 #define LOGD(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, __VA_ARGS__)
 #define LOGV(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Verbose, __VA_ARGS__)
 
+// Promise handler for async model availability checking
+class PromiseHandler final : public dom::PromiseNativeHandler {
+ public:
+  NS_DECL_ISUPPORTS
+
+  explicit PromiseHandler(
+      std::function<void(JSContext*, JS::Handle<JS::Value>)> aResolvedCallback,
+      std::function<void(JSContext*, JS::Handle<JS::Value>)> aRejectedCallback)
+      : mResolvedCallback(std::move(aResolvedCallback)),
+        mRejectedCallback(std::move(aRejectedCallback)) {}
+
+  MOZ_CAN_RUN_SCRIPT
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
+    if (mResolvedCallback) {
+      mResolvedCallback(aCx, aValue);
+    }
+  }
+
+  MOZ_CAN_RUN_SCRIPT
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
+    if (mRejectedCallback) {
+      mRejectedCallback(aCx, aValue);
+    }
+  }
+
+ private:
+  ~PromiseHandler() = default;
+
+  std::function<void(JSContext*, JS::Handle<JS::Value>)> mResolvedCallback;
+  std::function<void(JSContext*, JS::Handle<JS::Value>)> mRejectedCallback;
+};
+
+NS_IMPL_ISUPPORTS(PromiseHandler, dom::PromiseNativeHandler)
 /* static */
 RefPtr<HWInferenceParent> HWInferenceParent::GetSingleton() {
   if (!sSingleton) {
@@ -64,6 +99,57 @@ nsresult HWInferenceParent::BindToUtilityProcess(
   DebugOnly<bool> ok = parentEnd.Bind(this);
   MOZ_ASSERT(ok);
   return NS_OK;
+}
+
+mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
+    nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
+    IsModelAvailableResolver&& aResolver) {
+  LOGD("{}: model={} revision={} filename={}", __func__, aModel.get(),
+       aRevision.get(), aFilename.get());
+
+  // ModelHub is the module that handles model management, and is implemented in
+  // JavaScript. We call into it using a thin XPCOM layer, and XPCOM is main
+  // thread only.
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "HWInferenceParent::RecvIsModelAvailable",
+      [self = RefPtr(this), model = std::move(aModel),
+       revision = std::move(aRevision), filename = std::move(aFilename),
+       resolver = std::move(aResolver)]() mutable {
+        nsCOMPtr<nsIMLModelHub> modelHubService =
+            do_GetService("@mozilla.org/ml-modelhub;1");
+
+        if (!modelHubService) {
+          LOGE("{} - Failed to get ModelHub XPCOM service", __func__);
+          resolver(false);
+          return;
+        }
+
+        RefPtr<dom::Promise> promise;
+        nsresult rv = modelHubService->IsModelAvailable(
+            NS_ConvertUTF8toUTF16(model), NS_ConvertUTF8toUTF16(revision),
+            NS_ConvertUTF8toUTF16(filename), getter_AddRefs(promise));
+
+        if (NS_FAILED(rv) || !promise) {
+          LOGE("{}  ERROR: ModelHub call failed with nsresult={:x}", __func__,
+               static_cast<uint32_t>(rv));
+          resolver(false);
+          return;
+        }
+
+        promise->AppendNativeHandler(new PromiseHandler(
+            [resolver, self](JSContext* aCx, JS::Handle<JS::Value> aValue) {
+              bool available = aValue.toBoolean();
+              LOGD("{} Promise resolved, available={}", __func__,
+                   available ? "true" : "false");
+              resolver(available);
+            },
+            [resolver, self](JSContext* aCx, JS::Handle<JS::Value> aValue) {
+              LOGE("{} - ERROR: Promise rejected", __func__);
+              resolver(false);
+            }));
+      }));
+
+  return IPC_OK();
 }
 
 

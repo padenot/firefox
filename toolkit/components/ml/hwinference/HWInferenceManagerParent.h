@@ -22,6 +22,8 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
   static bool CreateForContent(Endpoint<PHWInferenceManagerParent>&& aEndpoint,
                                dom::ContentParentId aContentId);
 
+  PSpeechRecognitionParent* AllocPSpeechRecognitionParent();
+  bool DeallocPSpeechRecognitionParent(PSpeechRecognitionParent* aActor);
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
@@ -30,6 +32,9 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
   ~HWInferenceManagerParent() = default;
 
   const dom::ContentParentId mContentId;
+
+  // Speech recognition actors (multiple allowed for Available/Install/Start)
+  nsTArray<RefPtr<SpeechRecognitionParent>> mSpeechSessions;
 
 };
 

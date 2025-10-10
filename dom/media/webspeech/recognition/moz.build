@@ -21,7 +21,9 @@ EXPORTS.mozilla.dom += [
     "SpeechTrackListener.h",
 ]
 
-EXPORTS += [
+EXPORTS.mozilla.ipc += [
+    "SpeechRecognitionChild.h",
+    "SpeechRecognitionParent.h",
 ]
 
 if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
@@ -35,6 +37,8 @@ UNIFIED_SOURCES += [
     "SpeechRecognition.cpp",
     "SpeechRecognitionAlternative.cpp",
     "SpeechRecognitionBackend.cpp",
+    "SpeechRecognitionChild.cpp",
+    "SpeechRecognitionParent.cpp",
     "SpeechRecognitionPhrase.cpp",
     "SpeechRecognitionResult.cpp",
     "SpeechRecognitionResultList.cpp",
@@ -46,11 +50,16 @@ if CONFIG["MOZ_WEBSPEECH_TEST_BACKEND"]:
         "test/FakeSpeechRecognitionService.cpp",
     ]
 
-USE_LIBS += [
+IPDL_SOURCES = [
+    "PSpeechRecognition.ipdl",
 ]
 
 LOCAL_INCLUDES += [
     "/dom/base",
+    "/dom/file/ipc",
+    "/ipc/glue",
+    "/toolkit/components/ml",
+    "/toolkit/components/ml/hwinference",
 ]
 
 DIRS += ["/third_party/whisper.cpp"]

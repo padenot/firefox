@@ -46,6 +46,18 @@ IPCResult HWInferenceChild::RecvNewContentHWInferenceManager(
        fmt::ptr(this), __func__, static_cast<uint64_t>(aContentId));
   return IPC_OK();
 }
+
+RefPtr<HWInferenceChild::IsModelAvailablePromise>
+HWInferenceChild::SendIsModelAvailable(const nsCString& aModel,
+                                       const nsCString& aRevision,
+                                       const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model availability request to parent process: "
+      "model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aModel.get(), aRevision.get(), aFilename.get());
+
+  return PHWInferenceChild::SendIsModelAvailable(aModel, aRevision, aFilename);
+}
 }  // namespace mozilla::ipc
 
 #undef LOG

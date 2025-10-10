@@ -28,6 +28,9 @@ class HWInferenceChild final : public PHWInferenceChild {
       Endpoint<PHWInferenceManagerParent>&& aEndpoint,
       const dom::ContentParentId& aContentId);
 
+  // Send model availability check to parent process
+  RefPtr<IsModelAvailablePromise> SendIsModelAvailable(const nsCString& aModel,
+  const nsCString& aRevision, const nsCString& aFilename);
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
  private:
