@@ -20,7 +20,6 @@ namespace mozilla::hwinference {
 
 namespace mozilla {
   class AudibilityMonitor;
-  class SpeechRecognitionChild;
   namespace dom {
     class AudioStreamTrack;
     class SpeechRecognition;

@@ -6,8 +6,9 @@
 #include "HWInferenceManagerParent.h"
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
+#include "mozilla/SpeechRecognitionParent.h"
 
-namespace mozilla::hwinference{
+namespace mozilla::hwinference {
 
 extern LazyLogModule gHWInferenceLog;
 #define LOGD(fmt, ...) \
@@ -43,6 +44,27 @@ bool HWInferenceManagerParent::CreateForContent(
 void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("[{}] HWInferenceManagerParent::ActorDestroy reason={}", (void*)this,
        static_cast<int>(aReason));
+}
+
+already_AddRefed<PSpeechRecognitionParent>
+HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
+  LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
+       (void*)this);
+
+  RefPtr<mozilla::SpeechRecognitionParent> actor =
+      new mozilla::SpeechRecognitionParent();
+  LOGD("[{}] Created SpeechRecognitionParent actor={:p}", (void*)this,
+       (void*)actor.get());
+
+  return actor.forget();
+}
+
+bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
+    PSpeechRecognitionParent* aActor) {
+  LOGD("[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
+       "actor={:p}",
+       (void*)this, (void*)aActor);
+  return true;
 }
 
 }  // namespace mozilla::hwinference
