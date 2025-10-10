@@ -96,6 +96,10 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // thread has been joined on another thread.
   mozilla::UniquePtr<parakeet_context, mozilla::ParakeetContextDeleter> mParakeetCtx;
 
+  // Lock-free queue to convey audio from the IPC thread to the processing
+  // thread. Producer is the IPC thread, consumer is the processing thread.
+  mozilla::SPSCQueue<float> mAudioQueue;
+
   // Started in RecvInit, then stopped and join on actor destroyed, recognitions
   // stopped, etc.
   nsCOMPtr<nsIThread> mRecognitionThread;
@@ -148,6 +152,15 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // audio, representing the audio sent to whisper.
   // MOZ_DISABLE_UTILITY_SANDBOX=1 MOZ_DUMP_AUDIO=1 to activate
   WavDumper mWhisperAudioDumper;
+
+  // Flag to signal the recognition thread to stop processing. Set to true when
+  // starting, false when we want to stop. Checked periodically by the recognition
+  // thread during audio processing.
+  std::atomic<bool> mShouldContinueProcessing;
+
+  // Position in the audio stream that has been processed in samples
+  // This provides a rather crude timing estimate, but will be improved.
+  size_t mProcessedAudioPos;
 };
 
 }  // namespace mozilla

@@ -13078,10 +13078,10 @@
   value: false
   mirror: always
 
--   name: media.webspeech.synth.enabled
-    type: bool
-    value: true
-    mirror: always
+- name: media.webspeech.synth.enabled
+  type: bool
+  value: true
+  mirror: always
 #endif  # MOZ_WEBSPEECH
 
 - name: media.encoder.webm.enabled
