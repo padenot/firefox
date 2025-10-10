@@ -115,6 +115,10 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   parakeet_ctx* mCapiCtx = nullptr;
   parakeet_stream* mCapiStream = nullptr;
 
+  // Lock-free queue to convey audio from the IPC thread to the processing
+  // thread. Producer is the IPC thread, consumer is the processing thread.
+  mozilla::SPSCQueue<float> mAudioQueue;
+
   // Started in RecvInit, then stopped and join on actor destroyed, recognitions
   // stopped, etc.
   nsCOMPtr<nsIThread> mRecognitionThread;
@@ -155,6 +159,10 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // resurrecting mShouldContinueProcessing and starting a streaming loop
   // nobody will ever stop.
   std::atomic<bool> mActorDestroyed{false};
+
+  // Position in the audio stream that has been processed in samples
+  // This provides a rather crude timing estimate, but will be improved.
+  size_t mProcessedAudioPos;
 
   // Outstanding requests to the utility process, disconnected in
   // ActorDestroy() so their callbacks never run (and resolve a dead IPDL
