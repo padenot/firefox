@@ -6,23 +6,16 @@
 
 #include "SpeechRecognition.h"
 
-#include <algorithm>
 
 #include "AudioSegment.h"
 #include "CubebUtils.h"
 #include "MainThreadUtils.h"
-#include "MediaEnginePrefs.h"
+#include "mozilla/MediaManager.h"
 #include "SpeechRecognitionAlternative.h"
 #include "SpeechRecognitionBackend.h"
 #include "SpeechRecognitionResult.h"
 #include "SpeechRecognitionResultList.h"
 #include "SpeechTrackListener.h"
-#include "mozilla/AbstractThread.h"
-#include "mozilla/MediaManager.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/ResultVariant.h"
-#include "mozilla/Services.h"
-#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Document.h"
@@ -35,16 +28,10 @@
 #include "mozilla/dom/SpeechRecognitionEvent.h"
 #include "mozilla/intl/Locale.h"
 #include "nsCOMPtr.h"
-#include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsGlobalWindowInner.h"
-#include "nsIContent.h"
-#include "nsIPermissionManager.h"
-#include "nsIPrincipal.h"
 #include "nsPIDOMWindow.h"
-#include "nsQueryObject.h"
-#include "nsServiceManagerUtils.h"
 #include "nsString.h"
 
 // Undo the windows.h damage

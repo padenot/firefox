@@ -22,18 +22,19 @@
 #include "nsISupports.h"
 #include "nsTArray.h"
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
 class HWInferenceManagerChild;
-class SpeechRecognitionChild;
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
 
 namespace mozilla {
 class AudibilityMonitor;
+class SpeechRecognitionChild;
+namespace dom {
+  class SpeechRecognition;
+}
 }
 
 namespace mozilla::dom {
-
-class SpeechRecognition;
 
 class SpeechRecognitionBackend
     : public nsISupports,
@@ -134,7 +135,7 @@ class SpeechRecognitionBackend
   static mozilla::EventTargetCapability<nsIThread>* sIPCCapability;
 
   // Shared IPC channel to HWInference process
-  static StaticRefPtr<mozilla::ipc::HWInferenceManagerChild> sHWInferenceChild;
+  static StaticRefPtr<mozilla::hwinference::HWInferenceManagerChild> sHWInferenceChild;
 
   // Number of users of the IPC thread. Incremented when available/install/start
   // is called, decremented when available/install are settled, or on abort.
@@ -176,7 +177,7 @@ class SpeechRecognitionBackend
   // Audibility monitor for detecting sound (500ms silence duration)
   UniquePtr<mozilla::AudibilityMonitor> mAudibilityMonitor;
   // Per-instance IPC channel for speech recognition sessions
-  RefPtr<mozilla::ipc::SpeechRecognitionChild> mSpeechRecognitionChild;
+  RefPtr<mozilla::SpeechRecognitionChild> mSpeechRecognitionChild;
   // Converts from graph rate to ASR model rate (16kHz)
   UniquePtr<AudioConverter> mAudioConverter;
 };

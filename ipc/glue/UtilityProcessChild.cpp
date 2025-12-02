@@ -301,7 +301,7 @@ mozilla::ipc::IPCResult UtilityProcessChild::RecvStartHWInferenceService(
       "UtilityProcessChild::RecvStartHWInferenceService", OTHER,
       MarkerOptions(MarkerTiming::IntervalUntilNowFrom(mChildStartTime)));
 
-  mHWInferenceInstance = MakeRefPtr<HWInferenceChild>();
+  mHWInferenceInstance = MakeRefPtr<hwinference::HWInferenceChild>();
   if (!aEndpoint.Bind(mHWInferenceInstance)) {
     return IPC_FAIL(this, "Invalid endpoint");
   }

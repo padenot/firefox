@@ -8,11 +8,15 @@
 
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/PHWInferenceChild.h"
+#include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
 #include "mozilla/ipc/UtilityMediaService.h"
 #include "mozilla/dom/ipc/IdType.h"
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
+
+using ipc::IPCResult;
+using ipc::UtilityActorName;
 
 /**
  * HWInferenceChild manages hardware inference services in the utility process.
@@ -31,13 +35,12 @@ namespace mozilla::ipc {
  * Content Process -> HWInferenceManagerChild -> HWInferenceManagerParent (main)
  *   -> HWInferenceParent (main) -> HWInferenceChild (utility process)
  */
-class HWInferenceChild final : public PHWInferenceChild {
+class HWInferenceChild final : public ipc::PHWInferenceChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceChild, override);
 
   HWInferenceChild();
 
-  void Bind(Endpoint<PHWInferenceChild>&& aEndpoint);
   void Shutdown();
 
   mozilla::ipc::IPCResult RecvNewContentHWInferenceManager(
@@ -64,10 +67,14 @@ class HWInferenceChild final : public PHWInferenceChild {
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
  private:
-  friend PHWInferenceChild;
+  friend ipc::PHWInferenceChild;
   ~HWInferenceChild() = default;
 };
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
+
+namespace mozilla::ipc {
+using mozilla::hwinference::HWInferenceChild;
+}
 
 #endif  // __include_ipc_glue_HWInferenceChild_h_

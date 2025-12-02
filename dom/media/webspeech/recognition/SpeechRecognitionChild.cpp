@@ -7,18 +7,15 @@
 #include "SpeechRecognitionChild.h"
 
 #include "mozilla/Logging.h"
-#include "mozilla/MozPromise.h"
-#include "mozilla/ipc/HWInferenceManagerChild.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "nsDebug.h"
 
-static mozilla::LazyLogModule gSpeechRecognitionChildLog(
-    "SpeechRecognitionChild");
+
+namespace mozilla {
 
 #define LOG(level, fmt, ...) \
   MOZ_LOG_FMT(gSpeechRecognitionChildLog, level, fmt, ##__VA_ARGS__)
-
-namespace mozilla::ipc {
+static LazyLogModule gSpeechRecognitionChildLog("SpeechRecognitionChild");
 
 SpeechRecognitionChild::SpeechRecognitionChild() {
   LOG(LogLevel::Debug, "Constructor called");
@@ -102,6 +99,6 @@ mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnSpeechChange(
   return IPC_OK();
 }
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla
 
 #undef LOG

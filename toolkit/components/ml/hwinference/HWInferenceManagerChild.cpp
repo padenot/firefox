@@ -8,14 +8,15 @@
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/ipc/SpeechRecognitionChild.h"
+#include "mozilla/ipc/PSpeechRecognitionChild.h"
 
-namespace mozilla::ipc {
-
-extern LazyLogModule gHWInferenceLog;
+extern mozilla::LazyLogModule gHWInferenceLog;
 #define LOGD(fmt, ...) \
   MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) \
   MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
+
+namespace mozilla::hwinference {
 
 StaticRefPtr<HWInferenceManagerChild> HWInferenceManagerChild::sSingleton;
 
@@ -57,7 +58,7 @@ void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   sSingleton = nullptr;
 }
 
-PSpeechRecognitionChild*
+ipc::PSpeechRecognitionChild*
 HWInferenceManagerChild::AllocPSpeechRecognitionChild() {
   RefPtr<SpeechRecognitionChild> actor = new SpeechRecognitionChild();
 
@@ -101,7 +102,7 @@ HWInferenceManagerChild::CreateSpeechRecognitionSession() {
   return actor;
 }
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
 
 #undef LOGD
 #undef LOGE

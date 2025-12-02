@@ -18,8 +18,8 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/SpeechRecognitionBinding.h"
-#include "mozilla/ipc/HWInferenceManagerChild.h"
 #include "mozilla/ipc/SpeechRecognitionChild.h"
+#include "mozilla/ipc/HWInferenceManagerChild.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 
@@ -31,7 +31,7 @@ StaticRefPtr<nsIThread> SpeechRecognitionBackend::sIPCThread;
 mozilla::EventTargetCapability<nsIThread>*
     SpeechRecognitionBackend::sIPCCapability = nullptr;
 int SpeechRecognitionBackend::sIPCThreadUsers = 0;
-StaticRefPtr<HWInferenceManagerChild>
+StaticRefPtr<mozilla::hwinference::HWInferenceManagerChild>
     SpeechRecognitionBackend::sHWInferenceChild;
 
 NS_IMPL_ISUPPORTS0(SpeechRecognitionBackend)
@@ -650,9 +650,9 @@ RefPtr<GenericPromise> SpeechRecognitionBackend::EnsureIPC() {
                    std::move(childEp)]() mutable -> RefPtr<GenericPromise> {
                 AssertOnIPCThread();
                 // Open the connection on the IPC thread
-                HWInferenceManagerChild::OpenForProcess(std::move(endpoint));
+                hwinference::HWInferenceManagerChild::OpenForProcess(std::move(endpoint));
 
-                sHWInferenceChild = HWInferenceManagerChild::GetSingleton();
+                sHWInferenceChild = hwinference::HWInferenceManagerChild::GetSingleton();
 
                 if (sHWInferenceChild && sHWInferenceChild->CanSend()) {
                   LOG("EnsureIPC - Connection established");
@@ -719,7 +719,7 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Install(
               "model installation");
 
           // Create a temporary speech recognition session to install models
-          RefPtr<SpeechRecognitionChild> speechChild =
+          RefPtr<mozilla::SpeechRecognitionChild> speechChild =
               sHWInferenceChild->CreateSpeechRecognitionSession();
 
           if (!speechChild) {

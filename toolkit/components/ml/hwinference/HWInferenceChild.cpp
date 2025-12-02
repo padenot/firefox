@@ -6,11 +6,12 @@
 #include "HWInferenceChild.h"
 #include "HWInferenceManagerParent.h"
 #include "mozilla/Logging.h"
+#include "mozilla/ipc/ProtocolUtils.h"
 #include "nsDebugImpl.h"
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
 
-LazyLogModule gHWInferenceLog("HWInference");
+mozilla::LazyLogModule gHWInferenceLog("HWInference");
 #define LOGD(fmt, ...) \
   MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) \
@@ -18,11 +19,6 @@ LazyLogModule gHWInferenceLog("HWInference");
 
 HWInferenceChild::HWInferenceChild() {
   nsDebugImpl::SetMultiprocessMode("HWInference");
-}
-
-void HWInferenceChild::Bind(Endpoint<PHWInferenceChild>&& aEndpoint) {
-  DebugOnly<bool> ok = aEndpoint.Bind(this);
-  MOZ_ASSERT(ok, "HWInferenceChild::Bind: error");
 }
 
 void HWInferenceChild::Shutdown() { PHWInferenceChild::Close(); }
@@ -39,7 +35,7 @@ IPCResult HWInferenceChild::RecvNewContentHWInferenceManager(
         "[{} - {}]"
         "Error: Failed to create HWInferenceManagerParent, content id: {}",
         fmt::ptr(this), __func__, static_cast<uint64_t>(aContentId));
-    return IPC_FAIL_NO_REASON(this);
+    return IPC_FAIL(this, "Failed to create HWInferenceManagerParent");
   }
 
   LOGD("[{} - {}] Successfully created HWInferenceManagerParent for content {}",
@@ -90,6 +86,6 @@ HWInferenceChild::SendGetModelFile(const nsCString& aTask,
                                              aFilename);
 }
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
 
 #undef LOG

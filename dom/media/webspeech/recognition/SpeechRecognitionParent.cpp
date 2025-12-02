@@ -39,7 +39,9 @@
 #  include <fcntl.h>
 #endif
 
-namespace mozilla::ipc {
+namespace mozilla {
+
+using namespace ipc;
 
 // Static initialization
 StaticRefPtr<SpeechRecognitionParent> SpeechRecognitionParent::sActiveSession;
@@ -121,7 +123,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
     return IPC_OK();
   }
 
-  mozilla::ipc::HWInferenceChild* hwInferenceChild =
+  mozilla::hwinference::HWInferenceChild* hwInferenceChild =
       utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
     LOGE("{} No HWInferenceChild available", __func__);
@@ -171,7 +173,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
     return IPC_OK();
   }
 
-  mozilla::ipc::HWInferenceChild* hwInferenceChild =
+  mozilla::hwinference::HWInferenceChild* hwInferenceChild =
       utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
     LOGE("{} No HWInferenceChild available", __func__);
@@ -293,7 +295,7 @@ void SpeechRecognitionParent::RetrieveModel() {
     ResolveOrRejectInitOnIPCThread(false);
     return;
   }
-  mozilla::ipc::HWInferenceChild* hwInferenceChild =
+  mozilla::hwinference::HWInferenceChild* hwInferenceChild =
       utilityChild->GetHWInferenceChild();
   if (!hwInferenceChild) {
     LOGE("{} No HWInferenceChild available for model retrieval", __func__);
@@ -786,7 +788,7 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
   LOGD("Recognition loop exiting");
 }
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla
 
 #undef LOGV
 #undef LOGD

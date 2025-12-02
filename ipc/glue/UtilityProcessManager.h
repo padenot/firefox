@@ -55,7 +55,7 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   using WinFileDialogPromise = LaunchPromise<widget::filedialog::ProcessProxy>;
 #endif
 
-  using HWInferencePromise = LaunchPromise<RefPtr<HWInferenceParent>>;
+  using HWInferencePromise = LaunchPromise<RefPtr<hwinference::HWInferenceParent>>;
 
   static RefPtr<UtilityProcessManager> GetSingleton();
 

@@ -29,6 +29,7 @@ struct LlamaLibWrapper;
 }
 
 namespace mozilla {
+
 struct FCloseDeleter {
   void operator()(FILE* p) {
     if (p) {
@@ -36,11 +37,8 @@ struct FCloseDeleter {
     }
   }
 };
-}  // namespace mozilla
 
-namespace mozilla::ipc {
-
-class SpeechRecognitionParent final : public PSpeechRecognitionParent {
+class SpeechRecognitionParent final : public ipc::PSpeechRecognitionParent {
  public:
   NS_INLINE_DECL_REFCOUNTING(SpeechRecognitionParent, override)
 
@@ -167,6 +165,6 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   size_t mProcessedAudioPos;
 };
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla
 
 #endif  // mozilla_ipc_SpeechRecognitionParent_h

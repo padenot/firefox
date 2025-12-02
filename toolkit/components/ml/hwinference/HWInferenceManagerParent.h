@@ -8,13 +8,14 @@
 
 #include "mozilla/ipc/PHWInferenceManagerParent.h"
 #include "mozilla/dom/ipc/IdType.h"
-#include "nsRefPtrHashtable.h"
+#include "mozilla/ipc/ProtocolUtils.h"
+#include "mozilla/ipc/SpeechRecognitionParent.h"
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
 
-class SpeechRecognitionParent;
+using ipc::IPCResult;
 
-class HWInferenceManagerParent final : public PHWInferenceManagerParent {
+class HWInferenceManagerParent final : public ipc::PHWInferenceManagerParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerParent, override);
 
@@ -33,9 +34,13 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
   const dom::ContentParentId mContentId;
 
   // Speech recognition actors (multiple allowed for Available/Install/Start)
-  nsTArray<RefPtr<SpeechRecognitionParent>> mSpeechSessions;
+  nsTArray<RefPtr<mozilla::SpeechRecognitionParent>> mSpeechSessions = {};
 };
 
-}  // namespace mozilla::ipc
+};  // namespace mozilla::hwinference
+
+namespace mozilla::ipc {
+using mozilla::hwinference::HWInferenceManagerParent;
+}
 
 #endif  // mozilla_ipc_HWInferenceManagerParent_h

@@ -10,7 +10,6 @@
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/ipc/UtilityProcessParent.h"
-#include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/Promise-inl.h"
 #include "nsIFileStreams.h"
@@ -28,12 +27,14 @@
 #  include <windows.h>
 #endif
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
 
 extern LazyLogModule gHWInferenceLog;
 #define LOGE(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, __VA_ARGS__)
 #define LOGD(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, __VA_ARGS__)
 #define LOGV(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Verbose, __VA_ARGS__)
+
+using namespace mozilla::ipc;
 
 StaticRefPtr<HWInferenceParent> HWInferenceParent::sSingleton;
 
@@ -129,7 +130,7 @@ nsresult HWInferenceParent::BindToUtilityProcess(
   return NS_OK;
 }
 
-mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
+IPCResult HWInferenceParent::RecvIsModelAvailable(
     nsCString&& aModel, nsCString&& aRevision, nsCString&& aFilename,
     IsModelAvailableResolver&& aResolver) {
   LOGD("{}: model={} revision={} filename={}", __func__, aModel.get(),
@@ -372,7 +373,7 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvGetModelFile(
   return IPC_OK();
 }
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
 
 #undef LOGD
 #undef LOGV

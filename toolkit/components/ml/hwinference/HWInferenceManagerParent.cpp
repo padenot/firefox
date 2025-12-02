@@ -8,13 +8,15 @@
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/SpeechRecognitionParent.h"
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
 
 extern LazyLogModule gHWInferenceLog;
 #define LOGD(fmt, ...) \
   MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) \
   MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
+
+using namespace mozilla::ipc;
 
 HWInferenceManagerParent::HWInferenceManagerParent(
     dom::ContentParentId aContentId)
@@ -47,7 +49,7 @@ void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {
        static_cast<int>(aReason));
 }
 
-PSpeechRecognitionParent*
+ipc::PSpeechRecognitionParent*
 HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
   LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
        (void*)this);
@@ -78,7 +80,7 @@ bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
   return true;
 }
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
 
 #undef LOGD
 #undef LOGE

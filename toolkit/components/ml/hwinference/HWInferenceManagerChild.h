@@ -10,12 +10,14 @@
 #include "nsRefPtrHashtable.h"
 #include "mozilla/StaticPtr.h"
 
-namespace mozilla::ipc {
-
+namespace mozilla {
 class SpeechRecognitionChild;
+}
+
+namespace mozilla::hwinference {
 
 // Content process side
-class HWInferenceManagerChild final : public PHWInferenceManagerChild {
+class HWInferenceManagerChild final : public ipc::PHWInferenceManagerChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerChild, override);
 
@@ -27,8 +29,8 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
-  PSpeechRecognitionChild* AllocPSpeechRecognitionChild();
-  bool DeallocPSpeechRecognitionChild(PSpeechRecognitionChild* aActor);
+  ipc::PSpeechRecognitionChild* AllocPSpeechRecognitionChild();
+  bool DeallocPSpeechRecognitionChild(ipc::PSpeechRecognitionChild* aActor);
   RefPtr<SpeechRecognitionChild> CreateSpeechRecognitionSession();
 
  private:
@@ -39,6 +41,6 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
   nsTArray<RefPtr<SpeechRecognitionChild>> mSpeechSessions;
 };
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
 
 #endif  // mozilla_ipc_HWInferenceManagerChild_h

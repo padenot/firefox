@@ -11,10 +11,12 @@
 #include "mozilla/ipc/PHWInferenceParent.h"
 #include "mozilla/ipc/UtilityMediaService.h"
 
-namespace mozilla::ipc {
+namespace mozilla::hwinference {
+
+using mozilla::ipc::UtilityActorName;
 
 // HWInference parent process side
-class HWInferenceParent final : public PHWInferenceParent {
+class HWInferenceParent final : public ipc::PHWInferenceParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceParent, override);
 
@@ -44,16 +46,20 @@ class HWInferenceParent final : public PHWInferenceParent {
   UtilityActorName GetActorName() { return UtilityActorName::HwInference; }
 
   nsresult BindToUtilityProcess(
-      const RefPtr<UtilityProcessParent>& aUtilityParent);
+      const RefPtr<ipc::UtilityProcessParent>& aUtilityParent);
 
   static RefPtr<HWInferenceParent> GetSingleton();
 
  private:
-  friend PHWInferenceParent;
+  friend ipc::PHWInferenceParent;
   static StaticRefPtr<HWInferenceParent> sSingleton;
   ~HWInferenceParent() = default;
 };
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla::hwinference
+
+namespace mozilla::ipc {
+using mozilla::hwinference::HWInferenceParent;
+}
 
 #endif  // __include_ipc_glue_HWInferenceParent_h_

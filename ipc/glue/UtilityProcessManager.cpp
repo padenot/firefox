@@ -522,7 +522,8 @@ UtilityProcessManager::StartHWInference() {
   LOGD("[%p] StartHWInference called", this);
   RefPtr<UtilityProcessManager> self = this;
   using RetPromise = HWInferencePromise;
-  RefPtr<HWInferenceParent> hwip = HWInferenceParent::GetSingleton();
+  RefPtr<hwinference::HWInferenceParent> hwip =
+      hwinference::HWInferenceParent::GetSingleton();
   MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
   LOGD("[%p] Starting HWInference utility process with HW_INFERENCE sandboxing",
        this);
@@ -724,7 +725,7 @@ void UtilityProcessManager::StartContentHWInferenceManager(
   StartHWInference()->Then(
       GetMainThreadSerialEventTarget(), __func__,
       [endpoint = std::move(aEndpoint),
-       aChildId](RefPtr<HWInferenceParent> hwip) mutable {
+       aChildId](RefPtr<hwinference::HWInferenceParent> hwip) mutable {
         // Send parent endpoint to utility process
         if (!hwip->SendNewContentHWInferenceManager(std::move(endpoint),
                                                     aChildId)) {

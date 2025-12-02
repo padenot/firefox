@@ -97,7 +97,9 @@ class UtilityProcessChild final : public PUtilityProcessChild {
     return mUtilityMediaServiceInstance;
   }
 
-  HWInferenceChild* GetHWInferenceChild() const { return mHWInferenceInstance; }
+  hwinference::HWInferenceChild* GetHWInferenceChild() const {
+    return mHWInferenceInstance;
+  }
 
  protected:
   friend class UtilityProcessImpl;
@@ -108,7 +110,7 @@ class UtilityProcessChild final : public PUtilityProcessChild {
   RefPtr<ChildProfilerController> mProfilerController;
   RefPtr<UtilityMediaServiceParent> mUtilityMediaServiceInstance{};
   RefPtr<dom::JSOracleChild> mJSOracleInstance{};
-  RefPtr<HWInferenceChild> mHWInferenceInstance{};
+  RefPtr<hwinference::HWInferenceChild> mHWInferenceInstance{};
 #ifdef XP_WIN
   RefPtr<PWindowsUtilsChild> mWindowsUtilsInstance;
 #endif

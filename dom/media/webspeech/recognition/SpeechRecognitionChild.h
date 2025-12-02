@@ -12,11 +12,9 @@
 #include "mozilla/ipc/PSpeechRecognitionChild.h"
 #include "nsISupportsImpl.h"
 
-namespace mozilla::ipc {
+namespace mozilla {
 
-class HWInferenceManagerChild;
-
-class SpeechRecognitionChild final : public PSpeechRecognitionChild {
+class SpeechRecognitionChild final : public ipc::PSpeechRecognitionChild {
  public:
   NS_INLINE_DECL_REFCOUNTING(SpeechRecognitionChild, override)
   using RecognitionResultCallback = std::function<void(const nsCString&, bool)>;
@@ -43,6 +41,6 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
   SpeechChangeCallback mSpeechChangeCallback;
 };
 
-}  // namespace mozilla::ipc
+}  // namespace mozilla
 
 #endif  // mozilla_ipc_SpeechRecognitionChild_h
