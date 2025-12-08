@@ -21,3 +21,12 @@ N/A
 # D275657 - Bug 1940906 - Introduce SpeechRecognitionBackend - Part 2 - Audio side. r?pehrsons
 
 N/A
+
+# D275661 - Bug 1940906 - Fix include guards in dom/media/webspeech. r?pehrsons
+
+- [pehrsons|general|NOT DONE]: Please fold into D275656
+
+# D275787 - Bug 2005222 - DO NOT LAND - Fuzzbug fix slash command for claude code.
+
+- [suhaib|.claude/commands/fuzz-bug.md:3|DONE]: The MCP expects a bug number
+- [suhaib|.claude/commands/fuzz-bug.md:8|DONE]: This would be more consistent with the existing resource URI (i.e., `@moz:bugzilla://bug/{bug_id}`)
