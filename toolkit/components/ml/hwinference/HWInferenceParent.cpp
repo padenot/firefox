@@ -26,6 +26,7 @@
 #  include <windows.h>
 #endif
 
+
 namespace mozilla::hwinference {
 
 extern LazyLogModule gHWInferenceLog;
