@@ -8,31 +8,63 @@
 #define mozilla_dom_SpeechRecognitionBackend_h
 
 #include "AudioSegment.h"
+#include "mozilla/EventTargetCapability.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/ThreadSafeWeakPtr.h"
+#include "mozilla/ThreadSafety.h"
 #include "mozilla/WeakPtr.h"
 #include "nsIThread.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
 namespace mozilla::hwinference {
-  class HWInferenceManagerChild;
-} // namespace mozilla::hwinference
+class HWInferenceManagerChild;
+}  // namespace mozilla::hwinference
 
 namespace mozilla {
-  class AudibilityMonitor;
-  namespace dom {
-    class AudioStreamTrack;
-    class SpeechRecognition;
-    class SpeechTrackListener;
-  }  // namespace dom
+class AudibilityMonitor;
+class SpeechRecognitionChild;
+namespace dom {
+class AudioStreamTrack;
+class SpeechRecognition;
+class SpeechTrackListener;
+}  // namespace dom
 }  // namespace mozilla
 
 namespace mozilla::dom {
 
 class Promise;
 
+class IPCThreadUserCounter {
+ public:
+  void Increment() MOZ_REQUIRES(sMainThreadCapability);
+  void Decrement() MOZ_REQUIRES(sMainThreadCapability);
+  bool IsZero() const MOZ_REQUIRES(sMainThreadCapability);
+
+ private:
+  int mCount = 0;
+};
+
+class SpeechRecognitionBackend;
+
+class TransientSpeechRecognitionSession {
+ public:
+  TransientSpeechRecognitionSession();
+  ~TransientSpeechRecognitionSession();
+
+  SpeechRecognitionChild* get() const { return mChild; }
+  SpeechRecognitionChild* operator->() const { return mChild; }
+
+ private:
+  RefPtr<SpeechRecognitionChild> mChild;
+};
+
 class SpeechRecognitionBackend
     : public SupportsThreadSafeWeakPtr<SpeechRecognitionBackend> {
+  friend class IPCThreadUserCounter;
+  friend class TransientSpeechRecognitionSession;
+
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(
       SpeechRecognitionBackend)
@@ -40,19 +72,19 @@ class SpeechRecognitionBackend
   SpeechRecognitionBackend(SpeechRecognition* aParent, uint32_t aGraphRate,
                            const nsString& aLanguage,
                            const nsTArray<nsString>& aPhrases)
-       MOZ_REQUIRES(sMainThreadCapability);
-   // Called when SpeechRecognition.start() is called from JS.
-   // Starts the background thread and IPC session.
-   // Creates background thread and establishes IPC connection.
-   nsresult Start() MOZ_REQUIRES(sMainThreadCapability);
-   // Called when SpeechRecognition.stop() is called from JS.
-   // Stops the background thread and IPC session.
-   // Gracefully shuts down background thread and closes IPC.
-   void Stop() MOZ_REQUIRES(sMainThreadCapability);
-   // Called when SpeechRecognition.abort() is called from js.
-   // Aborts the recognition session.
-   // Immediately terminates background thread and IPC.
-   void Abort() MOZ_REQUIRES(sMainThreadCapability);
+      MOZ_REQUIRES(sMainThreadCapability);
+  // Called when SpeechRecognition.start() is called from JS.
+  // Starts the background thread and IPC session.
+  // Creates background thread and establishes IPC connection.
+  nsresult Start() MOZ_REQUIRES(sMainThreadCapability);
+  // Called when SpeechRecognition.stop() is called from JS.
+  // Stops the background thread and IPC session.
+  // Gracefully shuts down background thread and closes IPC.
+  void Stop() MOZ_REQUIRES(sMainThreadCapability);
+  // Called when SpeechRecognition.abort() is called from js.
+  // Aborts the recognition session.
+  // Immediately terminates background thread and IPC.
+  void Abort() MOZ_REQUIRES(sMainThreadCapability);
 
   // Attach to an audio track to start receiving audio data.
   // Creates a SpeechTrackListener and attaches it to the track.
@@ -76,9 +108,33 @@ class SpeechRecognitionBackend
  private:
   virtual ~SpeechRecognitionBackend();
 
+  static RefPtr<GenericPromise> EnsureIPC() MOZ_REQUIRES(sMainThreadCapability);
+
+  static nsCOMPtr<nsIThread> GetOrCreateIPCThread();
+
+  static void AssertOnIPCThread() MOZ_ASSERT_CAPABILITY(sIPCCapability);
+  static void StopIPCThreadIfPossible();
+
+  template <typename Func>
+  static void OnIPCThread(Func&& aFunc) MOZ_ASSERT_CAPABILITY(sIPCCapability);
+
+  static StaticRefPtr<nsIThread> sIPCThread;
+
+ public:
+  static mozilla::EventTargetCapability<nsIThread>* sIPCCapability;
+
+ private:
+  static StaticRefPtr<mozilla::hwinference::HWInferenceManagerChild>
+      sHWInferenceChild;
+
+  static IPCThreadUserCounter sIPCThreadUsers;
+
   WeakPtr<SpeechRecognition> mParent;
   nsCString mLanguage;
   nsTArray<nsString> mPhrases;
+
+  // Per-instance IPC channel for speech recognition sessions
+  RefPtr<SpeechRecognitionChild> mSpeechRecognitionChild;
 };
 
 }  // namespace mozilla::dom
