@@ -112,6 +112,7 @@ VsyncIOThread
 Wifi Monitor
 Worker Launcher
 speechd init
+SpeechIPC
 thread
 thread shutdown
 Parakeet
