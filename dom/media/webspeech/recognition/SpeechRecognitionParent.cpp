@@ -77,16 +77,33 @@ nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
 
 void SpeechRecognitionParent::ResolveOrRejectInitOnIPCThread(
     InitResolver&& aResolver, bool aSuccess) {
+  if (!aSuccess) {
+    // Init failed after this session claimed the single-session slot in
+    // RecvInit. Release it here so the next session is not falsely rejected as
+    // concurrent. The concurrent-session rejection path in RecvInit resolves
+    // the resolver directly and never reaches this helper, so it cannot clear
+    // another session's slot.
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession == this) {
+      LOGD("Clearing active session after init failure");
+      sActiveSession = nullptr;
+    }
+  }
+  // An empty string means success; otherwise it carries the Web Speech error
+  // token. Every failure reaching this helper is a model-retrieval or
+  // engine-startup problem, surfaced as "network" so it is not conflated with
+  // the genuine concurrent-session rejection handled directly in RecvInit.
+  nsCString error = aSuccess ? nsCString() : nsCString("network");
   if (GetActorEventTarget()->IsOnCurrentThread()) {
-    LOGV("Resolving init on same thread {}", aSuccess);
-    aResolver(aSuccess);
+    LOGV("Resolving init on same thread, error='{}'", error.get());
+    aResolver(error);
   } else {
-    LOGV("Resolving init accross thread {}", aSuccess);
+    LOGV("Resolving init accross thread, error='{}'", error.get());
     GetActorEventTarget()->Dispatch(NS_NewRunnableFunction(
         "Speech recognition init runnable",
-        [resolver = std::move(aResolver), aSuccess]() {
-          LOGV("Resolving init accross thread {}", aSuccess);
-          resolver(aSuccess);
+        [resolver = std::move(aResolver), error = std::move(error)]() {
+          LOGV("Resolving init accross thread, error='{}'", error.get());
+          resolver(error);
         }));
   }
 }
@@ -479,7 +496,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
     StaticMutexAutoLock lock(sSessionMutex);
     if (sActiveSession) {
       LOGE("Rejecting Init - another recognition session is already active");
-      aResolver(false);
+      aResolver("concurrent-session"_ns);
       return IPC_OK();
     }
     sActiveSession = this;

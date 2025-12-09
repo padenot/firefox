@@ -157,6 +157,16 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   // when "start" fires (see MaybeDispatchStart()).
   void NotifyBackendListening();
 
+  // A backend's callbacks are bound to that specific instance and can still
+  // be in flight when it's superseded by a newer one (e.g. stop() followed
+  // immediately by start()). DispatchToParentIfAlive uses this to drop
+  // notifications from a backend that is no longer the current one, rather
+  // than misattributing them to whatever session happens to be active by the
+  // time the callback reaches the main thread.
+  bool IsCurrentBackend(const SpeechRecognitionBackend* aBackend) const {
+    return mBackend == aBackend;
+  }
+
  private:
   virtual ~SpeechRecognition();
 

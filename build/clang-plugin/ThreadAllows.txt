@@ -113,6 +113,7 @@ Wifi Monitor
 Worker Launcher
 speechd init
 SpeechIPC
+SpeechResampler
 thread
 thread shutdown
 Parakeet

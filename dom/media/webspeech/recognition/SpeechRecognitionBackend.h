@@ -7,14 +7,22 @@
 #ifndef mozilla_dom_SpeechRecognitionBackend_h
 #define mozilla_dom_SpeechRecognitionBackend_h
 
+#include <atomic>
+
+#include "AudioConverter.h"
 #include "AudioSegment.h"
+#include "MainThreadUtils.h"
+#include "SpeechTrackListener.h"
 #include "mozilla/EventTargetCapability.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/SPSCQueue.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/ThreadSafeWeakPtr.h"
 #include "mozilla/ThreadSafety.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/dom/AudioStreamTrack.h"
+#include "mozilla/dom/Promise.h"
 #include "nsITargetShutdownTask.h"
 #include "nsIThread.h"
 #include "nsString.h"
@@ -31,12 +39,11 @@ namespace dom {
 class AudioStreamTrack;
 class SpeechRecognition;
 class SpeechTrackListener;
+class Promise;
 }  // namespace dom
 }  // namespace mozilla
 
 namespace mozilla::dom {
-
-class Promise;
 
 class IPCThreadUserCounter {
  public:
@@ -121,8 +128,7 @@ class SpeechRecognitionBackend
   void StartSpeechRecognitionSession(const nsCString& aLanguage)
       MOZ_REQUIRES(sIPCCapability);
   void StopSpeechRecognitionSession() MOZ_REQUIRES(sIPCCapability);
-  void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal,
-                               float aConfidence, TimeStamp aEventTime)
+  void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal)
       MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsCString& aError)
       MOZ_REQUIRES(sIPCCapability);
@@ -165,6 +171,7 @@ class SpeechRecognitionBackend
 
   static void AssertOnIPCThread() MOZ_ASSERT_CAPABILITY(sIPCCapability);
   static void StopIPCThreadIfPossible();
+  void AssertOnResamplingThread() MOZ_ASSERT_CAPABILITY(mResamplingCapability);
 
   // Closes sHWInferenceChild if open. Called on the IPC thread, both from a
   // live idle-close (StopIPCThreadIfPossible) and from the thread's own
@@ -203,6 +210,9 @@ class SpeechRecognitionBackend
                                       OnFailure aOnFailure)
       MOZ_REQUIRES(sMainThreadCapability);
 
+  template <typename Func>
+  void DispatchToParentIfAlive(const char* aName, Func&& aFunc);
+
   static StaticRefPtr<nsIThread> sIPCThread;
 
  public:
@@ -215,11 +225,34 @@ class SpeechRecognitionBackend
   static IPCThreadUserCounter sIPCThreadUsers;
 
   WeakPtr<SpeechRecognition> mParent;
-  nsCString mLanguage;
-  nsTArray<nsString> mPhrases;
 
-  // Per-instance IPC channel for speech recognition sessions
+  RefPtr<AudioStreamTrack> mTrack;
+  RefPtr<SpeechTrackListener> mTrackListener;
+
+  const nsCString mLanguage;
+  const nsTArray<nsString> mPhrases;
+  UniquePtr<SPSCQueue<float>> mRingBuffer;
+  nsCOMPtr<nsIThread> mResamplingThread;
+  mozilla::EventTargetCapability<nsIThread> mResamplingCapability;
+  nsTArray<AudioDataValue> mMonoBuffer;
+  std::atomic<bool> mResamplingThreadRunning{false};
+  uint32_t mGraphRate = 0;
+  // Main-thread only. Stop()/Abort() run at most one teardown; the destructor
+  // also calls Abort()->Stop(), where re-running it would resurrect an object
+  // already at refcount zero.
+  bool mStopped = false;
+  bool mCurrentlyAudible = false;
+  bool mAudioStartDispatched = false;
+  UniquePtr<mozilla::AudibilityMonitor> mAudibilityMonitor;
+  // Held for the lifetime of an active session (Start() to Stop()/Abort()),
+  // set from EnsureIPC()'s result. See IPCThreadUserGuard.
+  RefPtr<IPCThreadUserGuard> mIPCThreadUserGuard;
   RefPtr<SpeechRecognitionChild> mSpeechRecognitionChild;
+  // IPC-thread only. Set when teardown was requested so that a session-init
+  // task still queued on the IPC thread does not open a session nobody will
+  // tear down (which would leak the inference process' single-session slot).
+  bool mStopRequested = false;
+  UniquePtr<AudioConverter> mAudioConverter;
 };
 
 }  // namespace mozilla::dom

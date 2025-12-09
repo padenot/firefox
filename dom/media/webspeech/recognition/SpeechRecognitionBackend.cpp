@@ -6,13 +6,21 @@
 
 #include "SpeechRecognitionBackend.h"
 
-#include <type_traits>
+#include <speex/speex_resampler.h>
 
+#include <type_traits>
+#include <utility>
+
+#include "AudibilityMonitor.h"
+#include "AudioConfig.h"
+#include "AudioConverter.h"
+#include "MainThreadUtils.h"
 #include "SpeechRecognition.h"
 #include "SpeechTrackListener.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/SpeechRecognitionChild.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
@@ -20,7 +28,9 @@
 #include "mozilla/hwinference/HWInferenceManagerChild.h"
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/ProtocolUtils.h"
-#include "mozilla/SpeechRecognitionChild.h"
+#include "nsCOMPtr.h"
+#include "nsProxyRelease.h"
+#include "nsString.h"
 
 namespace mozilla::dom {
 
@@ -67,7 +77,9 @@ TransientSpeechRecognitionSession::TransientSpeechRecognitionSession()
 TransientSpeechRecognitionSession::~TransientSpeechRecognitionSession() {
   SpeechRecognitionBackend::AssertOnIPCThread();
   if (mChild) {
-    SpeechRecognitionChild::Send__delete__(mChild);
+    if (mChild->CanSend()) {
+      SpeechRecognitionChild::Send__delete__(mChild);
+    }
     mChild = nullptr;
   }
 }
@@ -94,22 +106,120 @@ SpeechRecognitionBackend::IPCThreadUserGuard::~IPCThreadUserGuard() {
   }
 }
 
+static constexpr double IPC_BLOCK_SIZE_S = 0.5;
+static constexpr int32_t SPEECH_RECOGNITION_TARGET_RATE = 16000;
+static constexpr auto SPEECH_RECOGNITION_ENGINE_ID = "parakeet-cpp"_ns;
+
 SpeechRecognitionBackend::SpeechRecognitionBackend(
     SpeechRecognition* aParent, uint32_t aGraphRate, const nsString& aLanguage,
     const nsTArray<nsString>& aPhrases)
     : mParent(aParent),
       mLanguage(NS_ConvertUTF16toUTF8(aLanguage)),
-      mPhrases(aPhrases.Clone()) {}
+      mPhrases(aPhrases.Clone()),
+      mRingBuffer(MakeUnique<SPSCQueue<float>>(SPEECH_RECOGNITION_TARGET_RATE *
+                                               IPC_BLOCK_SIZE_S * 4)),
+      mResamplingCapability(NS_GetCurrentThread()),
+      mMonoBuffer(512),
+      mGraphRate(aGraphRate) {}
 
-SpeechRecognitionBackend::~SpeechRecognitionBackend() {
-  Abort();
-}
+SpeechRecognitionBackend::~SpeechRecognitionBackend() { Abort(); }
 
 nsresult SpeechRecognitionBackend::Start() {
+  AssertIsOnMainThread();
+  LOG("SpeechRecognitionBackend::Start");
+
+  MOZ_ASSERT(!mSpeechRecognitionChild);
+
+  mAudibilityMonitor = MakeUnique<AudibilityMonitor>(mGraphRate, 0.5f);
+  mCurrentlyAudible = false;
+
+  // Held for the whole session (released in Stop()/Abort()), so the shared
+  // IPC thread can't be idle-closed out from under an active session.
+  auto [ready, ipcUserGuard] = EnsureIPC();
+  mIPCThreadUserGuard = std::move(ipcUserGuard);
+
+  ready->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [self = RefPtr{this}](bool aSuccess) {
+        AssertIsOnMainThread();
+        if (!aSuccess) {
+          LOGE("Failed to establish IPC connection in Start()");
+          return;
+        }
+        OnIPCThread([self]() {
+          AssertOnIPCThread();
+          self->StartSpeechRecognitionSession(self->mLanguage);
+        });
+      },
+      [self = RefPtr{this}](nsresult aError) {
+        LOGE("IPC connection failed in Start(): {:x}",
+             static_cast<uint32_t>(aError));
+      });
+
   return NS_OK;
 }
 
 void SpeechRecognitionBackend::Stop() {
+  AssertIsOnMainThread();
+  LOG("SpeechRecognitionBackend::Stop");
+
+  // Idempotent: ~SpeechRecognitionBackend() also runs Abort()->Stop(). Once the
+  // teardown below has run, it must not run again from the destructor, where
+  // capturing RefPtr{this} would resurrect an object already at refcount zero
+  // and double-free it.
+  if (mStopped) {
+    return;
+  }
+  mStopped = true;
+
+  // Detach before tearing anything else down: SpeechTrackListener holds a
+  // strong RefPtr<SpeechRecognitionBackend> while registered, so leaving it
+  // attached keeps this backend (and the track->listener->backend->track
+  // cycle) alive and feeding DataCallback() from the graph thread after the
+  // session has nominally stopped.
+  DetachFromTrack();
+
+  // Tear down the IPC session unconditionally, not only once the resampling
+  // thread exists. Start() may be stopped or aborted (including via
+  // ~SpeechRecognitionBackend) while session init is still in flight, before
+  // the resampling thread is created. Skipping teardown in that window leaks
+  // the inference process' single-session slot and makes the next session fail
+  // with a spurious concurrent-session error.
+  if (sIPCThread) {
+    OnIPCThread([self = RefPtr{this}]() {
+      AssertOnIPCThread();
+      self->StopSpeechRecognitionSession();
+    });
+  }
+
+  if (mResamplingThread) {
+    // Shutdown() blocks by spinning a nested event loop, which is unsafe from
+    // e.g. global teardown; AsyncShutdown() just requests it, and
+    // mResamplingThreadRunning stops the thread rescheduling itself.
+    mResamplingThreadRunning.store(false, std::memory_order_release);
+    mResamplingThread->AsyncShutdown();
+    mResamplingThread = nullptr;
+  }
+
+  mMonoBuffer.Clear();
+
+  RefPtr<SpeechRecognition> parent(mParent);
+  if (!parent) {
+    return;
+  }
+
+  if (mCurrentlyAudible) {
+    nsCOMPtr<nsIRunnable> soundendRunnable = NS_NewRunnableFunction(
+        "SpeechRecognitionBackend::DispatchSoundEnd",
+        [parent]() { parent->DispatchTrustedEvent(u"soundend"_ns); });
+    NS_DispatchToMainThread(soundendRunnable.forget());
+    mCurrentlyAudible = false;
+  }
+
+  nsCOMPtr<nsIRunnable> audioendRunnable = NS_NewRunnableFunction(
+      "SpeechRecognitionBackend::DispatchAudioEnd",
+      [parent]() { parent->DispatchTrustedEvent(u"audioend"_ns); });
+  NS_DispatchToMainThread(audioendRunnable.forget());
 }
 
 void SpeechRecognitionBackend::Abort() {
@@ -121,16 +231,319 @@ void SpeechRecognitionBackend::Abort() {
 void SpeechRecognitionBackend::AttachToTrack(AudioStreamTrack* aTrack) {
   AssertIsOnMainThread();
   MOZ_ASSERT(aTrack);
+  MOZ_ASSERT(!mTrack, "Already attached to a track");
+  MOZ_ASSERT(!mTrackListener);
+
+  mTrack = aTrack;
+  mTrackListener = SpeechTrackListener::Create(this);
+  mTrack->AddListener(mTrackListener);
+
+  LOG("SpeechRecognitionBackend::AttachToTrack");
 }
 
 void SpeechRecognitionBackend::DetachFromTrack() {
   AssertIsOnMainThread();
+
+  if (!mTrack) {
+    return;
+  }
+
+  LOG("SpeechRecognitionBackend::DetachFromTrack");
+
+  if (mTrackListener) {
+    mTrack->RemoveListener(mTrackListener);
+    mTrackListener = nullptr;
+  }
+
+  mTrack = nullptr;
 }
 
 void SpeechRecognitionBackend::DataCallback(TrackTime aTime,
-                                            const AudioChunk& aChunk) {}
+                                            const AudioChunk& aChunk) {
+  MOZ_ASSERT(!NS_IsMainThread(), "DataCallback must be on graph thread");
 
-void SpeechRecognitionBackend::NotifyTrackEnded() {}
+  if (aChunk.IsNull() || aChunk.mDuration == 0) {
+    LOG("Null chunk in SpeechRecognitionBackend::DataCallback");
+    return;
+  }
+
+  size_t frameCount = static_cast<size_t>(aChunk.mDuration);
+
+  if (mMonoBuffer.Capacity() < frameCount) {
+    LOGE("Warning: chunk size {} exceeds pre-allocated buffer capacity {}",
+         frameCount, mMonoBuffer.Capacity());
+    mMonoBuffer.SetLength(frameCount);
+    MOZ_DIAGNOSTIC_CRASH("Implement chunked downmixing");
+  }
+
+  mMonoBuffer.SetLengthAndRetainStorage(frameCount);
+
+  AudioDataValue* monoData = mMonoBuffer.Elements();
+  Span<AudioDataValue* const> outputChannels(&monoData, 1);
+
+  aChunk.DownMixTo(outputChannels);
+
+  int written = mRingBuffer->Enqueue(mMonoBuffer.Elements(),
+                                     AssertedCast<int>(frameCount));
+
+  if (written < static_cast<int>(frameCount)) {
+    LOG("Ring buffer overflow: wrote {} of {} frames", written, frameCount);
+  }
+}
+
+void SpeechRecognitionBackend::StartProcessingAudioOnBackgroundThread() {
+  AssertOnResamplingThread();
+
+  ProcessAudioChunk();
+}
+
+void SpeechRecognitionBackend::ProcessAudioChunk() {
+  mResamplingCapability.AssertOnCurrentThread();
+  if (!mResamplingThreadRunning.load(std::memory_order_acquire)) {
+    LOG("Background thread stopping, not scheduling next audio chunk");
+    return;
+  }
+
+  LOGV("ProcessAudioChunk");
+
+  if (!mAudioConverter) {
+    AudioConfig inputConfig(1, mGraphRate, AudioConfig::FORMAT_FLT);
+    AudioConfig outputConfig(1, SPEECH_RECOGNITION_TARGET_RATE,
+                             AudioConfig::FORMAT_FLT);
+    mAudioConverter = MakeUnique<AudioConverter>(inputConfig, outputConfig,
+                                                 SPEEX_RESAMPLER_QUALITY_MIN);
+  }
+
+  int available = mRingBuffer->AvailableRead();
+  double secondsAvailable = AssertedCast<double>(available) / mGraphRate;
+  bool flushed = false;
+  if (secondsAvailable > IPC_BLOCK_SIZE_S) {
+    flushed = true;
+    nsTArray<float> audioBuffer;
+    audioBuffer.SetLength(available);
+    int read = mRingBuffer->Dequeue(audioBuffer.Elements(), available);
+
+    if (!mAudioStartDispatched) {
+      mAudioStartDispatched = true;
+      DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchAudioStart",
+                              [](SpeechRecognition* aParent) {
+                                aParent->DispatchTrustedEvent(u"audiostart"_ns);
+                              });
+    }
+
+    if (mAudibilityMonitor) {
+      const float* audioData = audioBuffer.Elements();
+      mAudibilityMonitor->ProcessPlanar(Span<const float* const>(&audioData, 1),
+                                        read);
+
+      bool nowAudible = mAudibilityMonitor->RecentlyAudible();
+      if (nowAudible != mCurrentlyAudible) {
+        mCurrentlyAudible = nowAudible;
+
+        nsString eventName = nowAudible ? u"soundstart"_ns : u"soundend"_ns;
+        DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchSoundEvent",
+                                [eventName](SpeechRecognition* aParent) {
+                                  aParent->DispatchTrustedEvent(eventName);
+                                });
+      }
+    }
+
+    nsTArray<float> resampledBuffer;
+    mAudioConverter->Process(resampledBuffer, audioBuffer.Elements(), read);
+
+    size_t frames = resampledBuffer.Length();
+
+    LOGV("Sending {}s of audio via IPC",
+         static_cast<float>(frames) / SPEECH_RECOGNITION_TARGET_RATE);
+    SendAudioDataViaIPC(std::move(resampledBuffer));
+  } else {
+    LOGV("Not enough data in ringbuffer ({}s), retrying in a bit",
+         secondsAvailable);
+  }
+
+  nsCOMPtr<nsIRunnable> nextChunk = NS_NewRunnableFunction(
+      "SpeechRecognitionBackend::ProcessAudioChunk", [self = RefPtr{this}]() {
+        self->AssertOnResamplingThread();
+        self->ProcessAudioChunk();
+      });
+
+  uint32_t nextProcessingTime =
+      flushed ? AssertedCast<uint32_t>(IPC_BLOCK_SIZE_S * 1000) : 100;
+  mResamplingThread->DelayedDispatch(nextChunk.forget(), nextProcessingTime);
+}
+
+void SpeechRecognitionBackend::SendAudioDataViaIPC(
+    nsTArray<float>&& aAudioData) {
+  AssertOnResamplingThread();
+
+  RefPtr<SpeechRecognitionBackend> self = this;
+  OnIPCThread([self, audioData = std::move(aAudioData)]() mutable {
+    if (self->mSpeechRecognitionChild &&
+        self->mSpeechRecognitionChild->CanSend()) {
+      size_t sampleCount = audioData.Length();
+      self->mSpeechRecognitionChild->SendProcessAudioData(std::move(audioData));
+      LOGV("Sent {} samples to HWInference", sampleCount);
+    } else {
+      LOGE("SpeechRecognitionChild not available, dropping {} samples",
+           audioData.Length());
+    }
+  });
+}
+
+void SpeechRecognitionBackend::StartSpeechRecognitionSession(
+    const nsCString& aLanguage) {
+  AssertOnIPCThread();
+
+  if (mStopRequested) {
+    // Stop()/Abort() ran before this init task reached the IPC thread; do not
+    // open a session that nobody will tear down.
+    LOG("Session init skipped, teardown already requested");
+    return;
+  }
+
+  mSpeechRecognitionChild = sHWInferenceChild->CreateSpeechRecognitionSession();
+  if (!mSpeechRecognitionChild) {
+    LOGE("Failed to create speech recognition session");
+    HandleRecognitionError(nsCString("network"));
+    return;
+  }
+
+  mSpeechRecognitionChild->SetResultCallback(
+      [self = RefPtr{this}](const nsCString& aTranscript, bool aIsFinal) {
+        AssertOnIPCThread();
+        LOG("Received recognition result: {} (final={})", aTranscript.get(),
+            aIsFinal);
+
+        self->HandleRecognitionResult(aTranscript, aIsFinal);
+      });
+
+  mSpeechRecognitionChild->SetErrorCallback(
+      [self = RefPtr{this}](const nsCString& aError) {
+        AssertOnIPCThread();
+        LOGE("Recognition error: {}", aError.get());
+
+        self->HandleRecognitionError(aError);
+      });
+
+  mSpeechRecognitionChild->SetSpeechChangeCallback(
+      [self = RefPtr{this}](bool aSpeechDetected) {
+        LOG("Speech change: {}", aSpeechDetected ? "started" : "ended");
+
+        self->DispatchToParentIfAlive(
+            "SpeechRecognitionBackend::HandleSpeechChange",
+            [speechDetected = aSpeechDetected](SpeechRecognition* aParent) {
+              aParent->DispatchTrustedEvent(speechDetected ? u"speechstart"_ns
+                                                           : u"speechend"_ns);
+            });
+      });
+
+  // The actor can be torn down from the other side (utility process crash,
+  // channel close) without Stop()/Abort() ever running. Drop the reference
+  // then, instead of leaving mSpeechRecognitionChild pointing at a dead actor
+  // that the resampling loop keeps trying to send audio through.
+  mSpeechRecognitionChild->SetDestroyedCallback(
+      [self = RefPtr{this}, child = mSpeechRecognitionChild]() {
+        AssertOnIPCThread();
+        if (self->mSpeechRecognitionChild == child) {
+          self->mSpeechRecognitionChild = nullptr;
+        }
+      });
+
+  mSpeechRecognitionChild
+      ->SendInit(SPEECH_RECOGNITION_ENGINE_ID, aLanguage, mPhrases)
+      ->Then(
+          GetCurrentSerialEventTarget(), __func__,
+          [self = RefPtr{this}](const nsCString& aError) {
+            AssertOnIPCThread();
+            if (!aError.IsEmpty()) {
+              LOGE("Failed to initialize speech recognition session: {}",
+                   aError.get());
+              self->HandleRecognitionError(aError);
+            } else {
+              LOG("Speech recognition session initialized successfully");
+              self->DispatchToParentIfAlive(
+                  "SpeechRecognitionBackend::NotifyBackendListening",
+                  [](SpeechRecognition* aParent) {
+                    aParent->NotifyBackendListening();
+                  });
+              self->mResamplingThreadRunning.store(true,
+                                                   std::memory_order_release);
+              nsCOMPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
+                  "SpeechRecognitionBackend::ProcessAudioOnBackgroundThread",
+                  [self]() {
+                    self->AssertOnResamplingThread();
+                    self->StartProcessingAudioOnBackgroundThread();
+                  });
+              nsresult rv = NS_NewNamedThread(
+                  "SpeechResampler", getter_AddRefs(self->mResamplingThread),
+                  runnable.forget());
+              if (NS_FAILED(rv)) {
+                LOGE("Failed to create background thread: {:x}",
+                     static_cast<uint32_t>(rv));
+                self->mResamplingThreadRunning.store(false,
+                                                     std::memory_order_release);
+              } else {
+                self->mResamplingCapability =
+                    EventTargetCapability<nsIThread>(self->mResamplingThread);
+              }
+            }
+          },
+          [self = RefPtr{this}](ResponseRejectReason aReason) {
+            LOGE("Init IPC call failed: {}", static_cast<int>(aReason));
+            AssertOnIPCThread();
+            self->HandleRecognitionError(nsCString("network"));
+          });
+}
+
+void SpeechRecognitionBackend::StopSpeechRecognitionSession() {
+  AssertOnIPCThread();
+  mStopRequested = true;
+  if (!mSpeechRecognitionChild) {
+    // Session init has not reached the IPC thread yet (or already failed);
+    // mStopRequested above keeps it from opening a leaked session.
+    return;
+  }
+  LOG("Stopping HWInference speech recognition session");
+  if (mSpeechRecognitionChild->CanSend()) {
+    mSpeechRecognitionChild->SendStop();
+    SpeechRecognitionChild::Send__delete__(mSpeechRecognitionChild);
+  }
+  mSpeechRecognitionChild = nullptr;
+}
+
+void SpeechRecognitionBackend::HandleRecognitionResult(
+    const nsCString& aTranscript, bool aIsFinal) {
+  MOZ_ASSERT(!NS_IsMainThread(), "Called from background thread");
+  LOG("HandleRecognitionResult: {} (final={})", aTranscript.get(), aIsFinal);
+
+  DispatchToParentIfAlive("SpeechRecognitionBackend::HandleRecognitionResult",
+                          [transcript = nsCString(aTranscript),
+                           aIsFinal](SpeechRecognition* aParent) {
+                            aParent->HandleRecognitionResultFromBackend(
+                                transcript, aIsFinal);
+                          });
+}
+
+void SpeechRecognitionBackend::HandleRecognitionError(const nsCString& aError) {
+  MOZ_ASSERT(!NS_IsMainThread(), "Called from background thread");
+  LOGE("HandleRecognitionError: {}", aError.get());
+
+  DispatchToParentIfAlive(
+      "SpeechRecognitionBackend::HandleRecognitionError",
+      [error = nsCString(aError)](SpeechRecognition* aParent) {
+        aParent->HandleRecognitionErrorFromBackend(error);
+      });
+}
+
+void SpeechRecognitionBackend::AssertOnResamplingThread() {
+  MOZ_ASSERT(mResamplingThread->IsOnCurrentThread(),
+             "Must be called on resampling thread");
+}
+
+void SpeechRecognitionBackend::NotifyTrackEnded() {
+  DispatchToParentIfAlive("SpeechRecognitionBackend::NotifyTrackEnded",
+                          [](SpeechRecognition* aParent) { aParent->Stop(); });
+}
 
 /* static */
 nsCOMPtr<nsIThread> SpeechRecognitionBackend::GetOrCreateIPCThread() {
@@ -224,6 +637,25 @@ void SpeechRecognitionBackend::OnIPCThread(Func&& aFunc) {
   MOZ_ASSERT(sIPCThread, "Programming error: IPC thread not initialized");
   sIPCThread->Dispatch(NS_NewRunnableFunction(
       "SpeechRecognitionBackend::OnIPCThread", std::forward<Func>(aFunc)));
+}
+
+template <typename Func>
+void SpeechRecognitionBackend::DispatchToParentIfAlive(const char* aName,
+                                                       Func&& aFunc) {
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      aName,
+      [self = RefPtr{this}, aFunc = std::forward<Func>(aFunc)]() mutable {
+        RefPtr<SpeechRecognition> parent(self->mParent);
+        // Also drop this if a newer backend has since replaced self on the
+        // parent (e.g. stop() immediately followed by start()): self's
+        // callback was already in flight when it was superseded, and its
+        // notification belongs to the session it was created for, not
+        // whichever one happens to be current by the time this runs.
+        if (!parent || !parent->IsCurrentBackend(self.get())) {
+          return;
+        }
+        aFunc(parent.get());
+      }));
 }
 
 /* static */
@@ -340,7 +772,6 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Available(
   return promise.forget();
 }
 
-/* static */
 /* static */
 SpeechRecognitionBackend::EnsureIPCResult
 SpeechRecognitionBackend::EnsureIPC() {
