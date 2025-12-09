@@ -9,3 +9,7 @@ N/A
 # D268401 - Bug 1940906 - Vendor and compile the Metal backend for libggml. r?#firefox-build-system-reviewers,atossou
 
 N/A
+# D275657 - Bug 1940906 - Introduce SpeechRecognitionBackend - Part 2 - Audio side. r?pehrsons
+
+N/A
+

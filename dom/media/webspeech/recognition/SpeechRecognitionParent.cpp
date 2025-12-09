@@ -17,8 +17,8 @@
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
+#include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessChild.h"
 #include "mozilla/llama/LlamaRuntimeLinker.h"
@@ -38,7 +38,8 @@
 namespace mozilla {
 void ParakeetContextDeleter::operator()(parakeet_context* ctx) {
   if (ctx) {
-    mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+    mozilla::llama::LlamaLibWrapper* lib =
+        mozilla::llama::LlamaRuntimeLinker::Get();
     if (lib) {
       lib->parakeet_free(ctx);
     }
@@ -70,7 +71,7 @@ SpeechRecognitionParent::ModelIdentifier
 SpeechRecognitionParent::LanguagesToModelIdentifier(
     const nsTArray<nsCString>&) {
   return {"cstr/parakeet-tdt-0.6b-v3-GGUF"_ns,
-          "parakeet-tdt-0.6b-v3-q4_k.gguf"_ns, "main"_ns};
+          "parakeet-tdt-0.6b-v3-q4_0.gguf"_ns, "main"_ns};
 }
 
 nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
@@ -124,8 +125,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
       __func__, fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
 
   hwInferenceChild
-      ->SendIsModelAvailable("parakeet-gguf"_ns,
-                             modelIdentifier.mModelName,
+      ->SendIsModelAvailable("parakeet-gguf"_ns, modelIdentifier.mModelName,
                              modelIdentifier.mRevision,
                              modelIdentifier.mFileName)
       ->Then(
@@ -201,7 +201,7 @@ SpeechRecognitionParent::SpeechRecognitionParent()
       // We expect that in some less powerful computer that aren't doing hw
       // accelerated recognition, having a very long queue can smooth things
       // out.
-      mAudioQueue(WHISPER_SAMPLE_RATE * 30),
+      mAudioQueue(PARAKEET_SAMPLE_RATE * 30),
       mParams(),
       mShouldContinueProcessing(false),
       mProcessedAudioPos(0) {
@@ -210,7 +210,7 @@ SpeechRecognitionParent::SpeechRecognitionParent()
   // sent to whisper.cpp
   const int MONO = 1;
   mWhisperAudioDumper.Open("SpeechRecognition-Whisper-Input", MONO,
-                           WHISPER_SAMPLE_RATE);
+                           PARAKEET_SAMPLE_RATE);
 
   // Load tunable parameters from preferences (can be overridden via
   // about:config)
@@ -221,12 +221,14 @@ void SpeechRecognitionParent::LoadPreferences() {
   // Timing parameters
   mParams.mRecognitionIntervalMs =
       Preferences::GetInt("media.webspeech.recognition.interval_ms", 500);
+  // Length of the sliding context window fed to the encoder each step.
   mParams.mAudioLengthMs =
-      Preferences::GetInt("media.webspeech.recognition.audio_length_ms", 10000);
+      Preferences::GetInt("media.webspeech.recognition.audio_length_ms", 8000);
   mParams.mKeepAudioMs =
       Preferences::GetInt("media.webspeech.recognition.keep_audio_ms", 200);
+  // How much new audio is consumed per inference step: this bounds latency.
   mParams.mStepMs =
-      Preferences::GetInt("media.webspeech.recognition.step_ms", 3000);
+      Preferences::GetInt("media.webspeech.recognition.step_ms", 1000);
 
   // Quality parameters
   mParams.mBeamSize =
@@ -293,19 +295,16 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
   ModelIdentifier modelIdentifier;
   {
     MutexAutoLock lock(mLock);
-    modelIdentifier =
-        LanguagesToModelIdentifier(nsTArray{mLanguage});
+    modelIdentifier = LanguagesToModelIdentifier(nsTArray{mLanguage});
   }
 
   LOGD("{} Requesting model: model={}", __func__,
        modelIdentifier.ToString().get());
 
   hwInferenceChild
-      ->SendGetModelFile(
-        "parakeet-gguf"_ns,
-        "speech-recognition"_ns,
-        modelIdentifier.mModelName, modelIdentifier.mRevision,
-        modelIdentifier.mFileName)
+      ->SendGetModelFile("parakeet-gguf"_ns, "speech-recognition"_ns,
+                         modelIdentifier.mModelName, modelIdentifier.mRevision,
+                         modelIdentifier.mFileName)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
           [self = RefPtr{this}, resolver = aResolver](
@@ -363,7 +362,8 @@ void SpeechRecognitionParent::InitializeParakeetContext(
   // This runs on the recognition thread
   MOZ_ASSERT(!NS_IsMainThread());
 
-  mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
   if (!lib) {
     LOGE("{} Failed to get runtime linker", __func__);
     ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
@@ -417,6 +417,16 @@ SpeechRecognitionParent::~SpeechRecognitionParent() {
 void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("{} ActorDestroy called", __func__);
 
+  {
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession == this) {
+      LOGD("Clearing active session in ActorDestroy");
+      sActiveSession = nullptr;
+    }
+  }
+
+  mShouldContinueProcessing.store(false);
+
   MutexAutoLock lock(mLock);
   if (mModelFile) {
     mModelFile = nullptr;
@@ -464,7 +474,7 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvProcessAudioData(
   LOGV("{} {} samples", __func__, aAudioData.Length());
 
   if (!mAudioQueue.Enqueue(aAudioData.Elements(),
-                          static_cast<int>(aAudioData.Length()))) {
+                           static_cast<int>(aAudioData.Length()))) {
     LOGD("Audio queue full, dropping sample");
   }
 
@@ -487,42 +497,15 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
   return IPC_OK();
 }
 
-whisper_full_params SpeechRecognitionParent::GetWhisperParams() {
-  enum whisper_sampling_strategy strat =
-      static_cast<enum whisper_sampling_strategy>(
-          (mParams.mBeamSize > 1) ? WHISPER_SAMPLING_BEAM_SEARCH
-                                  : WHISPER_SAMPLING_GREEDY);
-
-  mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
-  whisper_full_params wparams = lib->whisper_full_default_params(strat);
-  wparams.print_progress = false;
-  wparams.print_special = false;
-  wparams.print_realtime = false;
-  wparams.print_timestamps = true;
-  wparams.translate = false;
-  wparams.single_segment = mParams.mSingleSegment;
-  wparams.max_tokens =
-      mParams.mMaxTokensPerSegment;  // 0 = unlimited (recommended)
-  wparams.n_threads = mParams.mNumThreads;
-  wparams.audio_ctx = mParams.mAudioContextSize;
-
-  wparams.temperature = mParams.mTemperature;
-  wparams.temperature_inc = mParams.mTemperatureInc;
-  wparams.beam_search.beam_size = mParams.mBeamSize;
-  wparams.greedy.best_of = mParams.mBestOf;
-  wparams.entropy_thold = mParams.mEntropyThreshold;
-  wparams.logprob_thold = mParams.mLogProbThreshold;
-  wparams.no_speech_thold = mParams.mNoSpeechThreshold;
-
-  if (mParams.mUseContextCarryover) {
-    wparams.no_context = false;
-  } else {
-    wparams.prompt_tokens = nullptr;
-    wparams.prompt_n_tokens = 0;
-    wparams.no_context = true;
-  }
-
-  return wparams;
+parakeet_full_params SpeechRecognitionParent::GetParakeetParams() {
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
+  parakeet_full_params params =
+      lib->parakeet_full_default_params(PARAKEET_SAMPLING_GREEDY);
+  params.n_threads = mParams.mNumThreads;
+  params.audio_ctx = mParams.mAudioContextSize;
+  params.no_context = !mParams.mUseContextCarryover;
+  return params;
 }
 
 void SpeechRecognitionParent::SignalError(const nsCString& aErrorMessage) {
@@ -545,225 +528,215 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
   // in m-c in the future. I anticipate that some more tuning and more advanced
   // audio input preparation and token output massaging is needed to improve
   // the overall quality of the recognition, and the latency.
+  //
+  // Low-latency streaming via a sliding context window with LocalAgreement-2.
+  // Every mStepMs of new audio we re-run parakeet_full() over a trailing window
+  // of up to mAudioLengthMs. The conformer encoder runs over the whole window,
+  // so each inference has enough acoustic left-context to recognise the most
+  // recent words accurately even though we advance by a small step (which is
+  // what bounds the latency). We then only *commit* the longest prefix of
+  // tokens that two consecutive inferences agree on, discarding the unstable
+  // tail near the right edge of the window. Token positions come from
+  // parakeet_token_data::t0/t1, expressed in mel frames of PARAKEET_HOP_LENGTH
+  // samples each, which lets us track how far into the absolute audio stream we
+  // have committed across windows. The model is run with no_context=true: it is
+  // the cross-window agreement, not decoder state, that stabilises the output.
+  //
+  // The "true" low-latency path is cache-aware streaming (retain the encoder
+  // cache and decode incrementally), which would avoid re-encoding the window
+  // every step, but the vendored parakeet API does not expose it yet.
 
-  // Amount of new audio in an inference step. Typically a small number of
-  // seconds.
-  const size_t samplePerStep =
-      size_t((1e-3 * mParams.mStepMs) * WHISPER_SAMPLE_RATE);
-  // Total amount of audio in an inference step, typically 10 to 30 seconds
-  // (which is the maximum whisper supports, and also the audio duration it has
-  // been trained as).
-  const size_t stepSampleCount =
-      size_t(1e-3 * mParams.mAudioLengthMs * WHISPER_SAMPLE_RATE);
-  // Amount of sample we keep from a step to the next, to improved recognition
-  // in case we've split a word in two.
-  const size_t keptSamples =
-      std::min(size_t(1e-3 * mParams.mKeepAudioMs * WHISPER_SAMPLE_RATE),
-               stepSampleCount);
+  // Amount of new audio consumed per inference step. Bounds the latency.
+  const size_t advanceSamples = std::max<size_t>(
+      1, size_t(1e-3 * mParams.mStepMs * PARAKEET_SAMPLE_RATE));
+  // Maximum length of the sliding context window fed to the encoder.
+  const size_t windowSamples =
+      std::max(advanceSamples,
+               size_t(1e-3 * mParams.mAudioLengthMs * PARAKEET_SAMPLE_RATE));
+  // Emit a final result once this much speech has been committed since the last
+  // one, consolidating the interim results the consumer has already seen.
+  const size_t samplesPerFinal = windowSamples;
 
-  // Calculate number of iterations before we decide that a recognition is
-  // "complete", marking the result as final, and we start over with mostly
-  // fresh audio.
-  const int iterationPerLine =
-      std::max(1, mParams.mAudioLengthMs / mParams.mStepMs - 1);
-  int iterationCount = 0;
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
 
-  nsTArray<float> pcmf32;
-  pcmf32.SetLength(stepSampleCount);
-  memset(pcmf32.Elements(), 0, stepSampleCount * sizeof(float));
-  nsTArray<float> oldAudio;
-  nsTArray<float> newAudio;
-
-  // Current line's accumulated transcript
-  nsCString currentLineTranscript;
-  // Last segment text to avoid duplicates
-  nsCString lastSegmentText;
-
-  // Tokens from previous segment for context, only used when prompt carryover
-  // has been enabled.
-  nsTArray<int32_t> promptTokens;
-
-  // Prompt. This comes from the "phrases" member of the Web Speech API.
-  nsCString language;
-  nsCString prompt;
-  {
-    MutexAutoLock lock(mLock);
-    language = mLanguage;
-    for (const auto& phrase : mPhrases) {
-      prompt.Append(NS_ConvertUTF16toUTF8(phrase));
-      prompt.AppendLiteral(". ");
+  // Renders a single token to text. parakeet_token_to_text() turns the raw
+  // sentencepiece piece into text, encoding inter-word spacing as a leading
+  // space on word-start pieces (suppressed when aIsFirst).
+  auto renderToken = [&](parakeet_token aId, bool aIsFirst) -> nsCString {
+    const char* piece = lib->parakeet_token_to_str(mParakeetCtx.get(), aId);
+    if (!piece) {
+      return nsCString();
     }
-  }
+    char buf[256];
+    int len = lib->parakeet_token_to_text(piece, aIsFirst, buf, sizeof(buf));
+    if (len <= 0) {
+      return nsCString();
+    }
+    return nsCString(buf);
+  };
 
-  auto lastRecognitionTime = std::chrono::steady_clock::now();
+  auto dispatchResult = [self = RefPtr{this}](const nsCString& aPayload,
+                                              bool aIsFinal) {
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "SpeechRecognitionParent::SendResult", [self, aPayload, aIsFinal]() {
+          LOGV("Sending result: '{}' (final={})", aPayload.get(), aIsFinal);
+          if (self->CanSend() &&
+              !self->SendOnRecognitionResult(aPayload, aIsFinal)) {
+            self->SignalError(
+                nsFmtCString("Couldn't send recognition result {}, final={}",
+                             aPayload.get(), aIsFinal));
+          }
+        }));
+  };
+
+  struct Token {
+    parakeet_token mId;
+    int64_t mStartSample;
+    int64_t mEndSample;
+  };
+
+  // Rolling context window, and the absolute sample index of its first sample.
+  nsTArray<float> window;
+  int64_t windowStartSample = 0;
+  // Hypothesis from the previous inference, for the LocalAgreement comparison.
+  nsTArray<Token> prevTokens;
+  // Absolute sample position up to which tokens have been committed.
+  int64_t committedSample = 0;
+  // Text committed but not yet flushed as a final result.
+  nsCString pendingFinal;
+  size_t committedSinceFinal = 0;
+  // Whether anything has been committed in the current final segment (drives
+  // leading-space handling for the first rendered token).
+  bool anyCommitted = false;
+
+  // Commit a single token: append its text and advance the commit position.
+  auto commitToken = [&](const Token& aTok) {
+    pendingFinal.Append(renderToken(aTok.mId, !anyCommitted));
+    anyCommitted = true;
+    committedSample = aTok.mEndSample;
+    committedSinceFinal +=
+        size_t(std::max<int64_t>(0, aTok.mEndSample - aTok.mStartSample));
+  };
+  // Index of the first not-yet-committed token in a hypothesis.
+  auto firstUncommitted = [&](const nsTArray<Token>& aToks) -> size_t {
+    size_t i = 0;
+    while (i < aToks.Length() && aToks[i].mStartSample < committedSample) {
+      ++i;
+    }
+    return i;
+  };
+
+  nsTArray<float> incoming;
 
   while (mShouldContinueProcessing.load()) {
     size_t available = mAudioQueue.AvailableRead();
-    if (available < samplePerStep) {
-      float ms_to_sleep = 1000.f *
-                          static_cast<float>(samplePerStep - available) /
-                          WHISPER_SAMPLE_RATE;
+    if (available < advanceSamples) {
+      float msToSleep = 1000.f *
+                        static_cast<float>(advanceSamples - available) /
+                        PARAKEET_SAMPLE_RATE;
       std::this_thread::sleep_for(
-          std::chrono::milliseconds(static_cast<int>(ms_to_sleep)));
+          std::chrono::milliseconds(static_cast<int>(msToSleep)));
       continue;
     }
 
-    // Dequeue new audio from our lock-free ringbuffer into a linear buffer
-    newAudio.SetLength(samplePerStep);
-    size_t dequeued =
-        mAudioQueue.Dequeue(newAudio.Elements(), AssertedCast<int>(samplePerStep));
-    if (dequeued < AssertedCast<size_t>(samplePerStep)) {
-      newAudio.SetLength(dequeued);
-    }
-
+    incoming.SetLength(advanceSamples);
+    size_t dequeued = mAudioQueue.Dequeue(incoming.Elements(),
+                                          AssertedCast<int>(advanceSamples));
+    incoming.SetLength(dequeued);
     mProcessedAudioPos += dequeued;
 
-    // Check timing. We might want to go off a clock synthesized from the SPSC
-    // queue here instead.
-    auto now = std::chrono::steady_clock::now();
-    const auto elapsedMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - lastRecognitionTime)
-            .count();
-    if (elapsedMs < mParams.mRecognitionIntervalMs) {
-      // Not time yet for recognition
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      continue;
+    window.AppendElements(incoming);
+    // Slide the window, advancing the absolute start of its first sample.
+    if (window.Length() > windowSamples) {
+      size_t excess = window.Length() - windowSamples;
+      window.RemoveElementsAt(0, excess);
+      windowStartSample += excess;
     }
 
-    // Take up to keepMS audio from previous iteration
-    const size_t neededSamples = std::min(
-        oldAudio.Length(),
-        std::max(0ul, keptSamples + stepSampleCount - newAudio.Length()));
-
-    pcmf32.SetLength(newAudio.Length() + neededSamples);
-
-    // for (int i = 0; i < neededSamples; i++) {
-    //   pcmf32[i] = oldAudio[oldAudio.size() - neededSamples + i];
-    // }
-
-    // Copy old samples that we're keeping from previous step
-    size_t offset = oldAudio.Length() - neededSamples;
-    memcpy(pcmf32.Elements(), oldAudio.Elements() + offset,
-           neededSamples * sizeof(float));
-    // Followed by the new samples
-    memcpy(pcmf32.Elements() + neededSamples, newAudio.Elements(),
-           newAudio.Length() * sizeof(float));
-
-    oldAudio.Assign(pcmf32);
+    // Force-commit tokens from the previous hypothesis that have just slid out
+    // of the window: they are too old to ever reach agreement now and would
+    // otherwise be silently dropped. By the time a token reaches the left edge
+    // it has had the whole window of context, so it is stable.
+    for (size_t k = firstUncommitted(prevTokens);
+         k < prevTokens.Length() &&
+         prevTokens[k].mStartSample < windowStartSample;
+         ++k) {
+      commitToken(prevTokens[k]);
+    }
 
     // Dump audio for debugging
-    mWhisperAudioDumper.Write(pcmf32.Elements(), pcmf32.Length());
+    mWhisperAudioDumper.Write(window.Elements(), window.Length());
 
-    whisper_full_params wparams = GetWhisperParams();
-    wparams.language = language.get();
-    wparams.initial_prompt = prompt.IsEmpty() ? nullptr : prompt.get();
-    wparams.prompt_tokens =
-        promptTokens.IsEmpty() ? nullptr : promptTokens.Elements();
-    wparams.prompt_n_tokens = static_cast<int>(promptTokens.Length());
-
-    mozilla::llama::LlamaLibWrapper* lib =
-      mozilla::llama::LlamaRuntimeLinker::Get();
-    if (lib->whisper_full(mWhisperCtx.get(), wparams, pcmf32.Elements(),
-                           static_cast<int>(pcmf32.Length()))) {
-      SignalError("whisper_full failed"_ns);
+    parakeet_full_params wparams = GetParakeetParams();
+    // Each window is transcribed from scratch; agreement across windows, not
+    // decoder state carryover, is what makes the committed output stable.
+    wparams.no_context = true;
+    if (lib->parakeet_full(mParakeetCtx.get(), wparams, window.Elements(),
+                           static_cast<int>(window.Length()))) {
+      SignalError("parakeet_full failed"_ns);
       return;
     }
 
-    const int nSegments = lib->whisper_full_n_segments(mWhisperCtx.get());
-    bool appendedAnything = false;
-
-    for (int i = 0; i < nSegments; ++i) {
-      const char* text = lib->whisper_full_get_segment_text(mWhisperCtx.get(), i);
-      if (!text || !text[0]) {
-        continue;
-      }
-      nsCString segmentText(text);
-      segmentText.Trim(" \t\n\r");
-
-      // Skip empty or duplicate segments, this can happen with some whisper
-      // models that hallucinate repetitions.
-      if (segmentText.IsEmpty() || segmentText.Equals(lastSegmentText)) {
-        continue;
-      }
-
-      // Append to current line
-      if (!currentLineTranscript.IsEmpty()) {
-        currentLineTranscript.AppendLiteral(" ");
-      }
-      currentLineTranscript.Append(segmentText);
-      lastSegmentText = segmentText;
-      appendedAnything = true;
-    }
-
-    // Increment iteration counter first
-    iterationCount++;
-
-    bool isNewLine = (iterationCount % iterationPerLine) == 0;
-
-    // Send results if we have new content
-    if (appendedAnything && !currentLineTranscript.IsEmpty()) {
-      // Send as FINAL if this is the end of a line, INTERIM otherwise
-      bool isFinal = isNewLine;
-
-      NS_DispatchToMainThread(NS_NewRunnableFunction(
-          "SpeechRecognitionParent::SendResult",
-          [self = RefPtr{this}, payload = currentLineTranscript, isFinal]() {
-            LOGV("Sending result: '{}' (final={})", payload.get(), isFinal);
-            if (!self->SendOnRecognitionResult(payload, isFinal)) {
-              self->SignalError(
-                  nsFmtCString("Couldn't send recognition result {}, final={}",
-                               payload.get(), isFinal));
-            }
-          }));
-    }
-
-    // If new line detected, clear transcript for next line
-    if (isNewLine) {
-      LOGD("New line detected at iteration {}, clearing transcript",
-           iterationCount);
-
-      currentLineTranscript.Truncate();
-      lastSegmentText.Truncate();
-
-      // Clear audio, but keep a little bit of it to improve recognition, if a
-      // word was cut in two. This will be improved by using a more advanced
-      // audio processing algorithm, such as splitting during low energy
-      // periods.
-      oldAudio.ReplaceElementsAt(0, oldAudio.Length(),
-                                  pcmf32.Elements() + pcmf32.Length() - keptSamples,
-                                  keptSamples);
-
-      // Update prompt tokens if context carryover is enabled
-      if (mParams.mUseContextCarryover) {
-        promptTokens.Clear();
-        for (int i = 0; i < nSegments; ++i) {
-          const int token_count = lib->whisper_full_n_tokens(mWhisperCtx.get(), i);
-          for (int j = 0; j < token_count; ++j) {
-            promptTokens.AppendElement(
-                lib->whisper_full_get_token_id(mWhisperCtx.get(), i, j));
-          }
-        }
-        if (promptTokens.Length() > (size_t)mParams.mMaxContextTokens) {
-          promptTokens.RemoveElementsAt(
-              0, promptTokens.Length() - mParams.mMaxContextTokens);
-        }
+    // Flatten the hypothesis into absolute-positioned tokens.
+    nsTArray<Token> tokens;
+    const int nSegments = lib->parakeet_full_n_segments(mParakeetCtx.get());
+    for (int s = 0; s < nSegments; ++s) {
+      const int nTokens = lib->parakeet_full_n_tokens(mParakeetCtx.get(), s);
+      for (int t = 0; t < nTokens; ++t) {
+        parakeet_token_data data =
+            lib->parakeet_full_get_token_data(mParakeetCtx.get(), s, t);
+        tokens.AppendElement(Token{
+            data.id, windowStartSample + int64_t(data.t0) * PARAKEET_HOP_LENGTH,
+            windowStartSample + int64_t(data.t1) * PARAKEET_HOP_LENGTH});
       }
     }
 
-    lastRecognitionTime = now;
+    const size_t newStart = firstUncommitted(tokens);
+    const size_t prevStart = firstUncommitted(prevTokens);
+
+    // LocalAgreement-2: commit the longest prefix of the uncommitted tokens
+    // that is identical between this hypothesis and the previous one.
+    size_t agreed = 0;
+    while (newStart + agreed < tokens.Length() &&
+           prevStart + agreed < prevTokens.Length() &&
+           tokens[newStart + agreed].mId ==
+               prevTokens[prevStart + agreed].mId) {
+      commitToken(tokens[newStart + agreed]);
+      ++agreed;
+    }
+
+    prevTokens = std::move(tokens);
+
+    // Interim transcript: committed text plus the still-unstable tail of the
+    // current hypothesis, so the consumer sees words as soon as they decode.
+    nsCString interim(pendingFinal);
+    bool first = !anyCommitted;
+    for (size_t j = newStart + agreed; j < prevTokens.Length(); ++j) {
+      interim.Append(renderToken(prevTokens[j].mId, first));
+      first = false;
+    }
+    interim.Trim(" \t\n\r");
+    if (!interim.IsEmpty()) {
+      dispatchResult(interim, /* isFinal */ false);
+    }
+
+    if (committedSinceFinal >= samplesPerFinal && !pendingFinal.IsEmpty()) {
+      nsCString payload(pendingFinal);
+      payload.Trim(" \t\n\r");
+      dispatchResult(payload, /* isFinal */ true);
+      pendingFinal.Truncate();
+      committedSinceFinal = 0;
+      anyCommitted = false;
+    }
   }
 
-  // Send final transcript on shutdown if we have any pending text
-  if (!currentLineTranscript.IsEmpty()) {
-    NS_DispatchToMainThread(NS_NewRunnableFunction(
-        "SpeechRecognitionParent::SendFinalOnExit",
-        [self = RefPtr{this}, payload = currentLineTranscript]() {
-          if (self->CanSend()) {
-            LOGD("Sending final transcript on shutdown: '{}'", payload.get());
-            (void)self->SendOnRecognitionResult(payload, true);
-          }
-        }));
+  // Flush whatever has been committed since the last final, as the final.
+  if (!pendingFinal.IsEmpty()) {
+    nsCString payload(pendingFinal);
+    payload.Trim(" \t\n\r");
+    LOGD("Sending final transcript on shutdown: '{}'", payload.get());
+    dispatchResult(payload, /* isFinal */ true);
   }
   LOGD("Recognition loop exiting");
 }
