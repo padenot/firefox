@@ -52,16 +52,33 @@ static constexpr int32_t DEFAULT_NUM_THREADS = 4;
 
 void SpeechRecognitionParent::ResolveOrRejectInitOnIPCThread(
     InitResolver&& aResolver, bool aSuccess) {
+  if (!aSuccess) {
+    // Init failed after this session claimed the single-session slot in
+    // RecvInit. Release it here so the next session is not falsely rejected as
+    // concurrent. The concurrent-session rejection path in RecvInit resolves
+    // the resolver directly and never reaches this helper, so it cannot clear
+    // another session's slot.
+    StaticMutexAutoLock lock(sSessionMutex);
+    if (sActiveSession == this) {
+      LOGD("Clearing active session after init failure");
+      sActiveSession = nullptr;
+    }
+  }
+  // An empty string means success; otherwise it carries the Web Speech error
+  // token. Every failure reaching this helper is a model-retrieval or
+  // engine-startup problem, surfaced as "network" so it is not conflated with
+  // the genuine concurrent-session rejection handled directly in RecvInit.
+  nsCString error = aSuccess ? nsCString() : nsCString("network");
   if (GetActorEventTarget()->IsOnCurrentThread()) {
-    LOGV("Resolving init on same thread {}", aSuccess);
-    aResolver(aSuccess);
+    LOGV("Resolving init on same thread, error='{}'", error.get());
+    aResolver(error);
   } else {
-    LOGV("Resolving init accross thread {}", aSuccess);
+    LOGV("Resolving init accross thread, error='{}'", error.get());
     GetActorEventTarget()->Dispatch(NS_NewRunnableFunction(
         "Speech recognition init runnable",
-        [resolver = std::move(aResolver), aSuccess]() {
-          LOGV("Resolving init accross thread {}", aSuccess);
-          resolver(aSuccess);
+        [resolver = std::move(aResolver), error = std::move(error)]() {
+          LOGV("Resolving init accross thread, error='{}'", error.get());
+          resolver(error);
         }));
   }
 }
@@ -205,9 +222,8 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
       ->SendIsModelInstalled(nsCString(dom::kSpeechRecognitionTask), modelId)
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [self = RefPtr{this}, aResolver = std::move(aResolver),
-              modelId](hwinference::PHWInferenceChild::
-                           IsModelInstalledPromise::ResolveOrRejectValue&&
-                               aValue) mutable {
+              modelId](hwinference::PHWInferenceChild::IsModelInstalledPromise::
+                           ResolveOrRejectValue&& aValue) mutable {
                self->mRetrieveModelIsInstalledRequest.Complete();
                if (!aValue.IsResolve() || !aValue.ResolveValue()) {
                  LOGE(
@@ -351,13 +367,12 @@ void SpeechRecognitionParent::InitializeParakeetContext(
     std::this_thread::sleep_for(std::chrono::milliseconds(testDelayMs));
   }
 
-  // ActorDestroy() can run concurrently on the main thread while this is
-  // delayed above (or otherwise still in flight). Bail out instead of
-  // resurrecting mShouldContinueProcessing and starting a streaming loop
-  // nobody will ever stop, or touching mModelFile after ActorDestroy has
-  // cleared it.
-  if (mActorDestroyed.load()) {
-    LOGD("{} Actor already destroyed, abandoning init", __func__);
+  // ActorDestroy() or RecvStop() can run concurrently on the main thread while
+  // this is delayed above (or otherwise still in flight). Bail out instead of
+  // starting a streaming loop nobody will ever stop, or touching mModelFile
+  // after ActorDestroy has cleared it.
+  if (!mShouldContinueProcessing.load()) {
+    LOGD("{} Session already torn down, abandoning init", __func__);
     return;
   }
 
@@ -396,7 +411,6 @@ void SpeechRecognitionParent::InitializeParakeetContext(
     return;
   }
 
-  mShouldContinueProcessing.store(true);
   ResolveOrRejectInitOnIPCThread(std::move(aResolver), true);
   LOGD("Parakeet streaming session ready, starting streaming loop");
 
@@ -434,7 +448,6 @@ void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   }
 
   mShouldContinueProcessing.store(false);
-  mActorDestroyed.store(true);
 
   // Disconnect outstanding requests to the utility process so their
   // resolve/reject callbacks never run and try to resolve a dead IPDL
@@ -472,12 +485,17 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
     StaticMutexAutoLock lock(sSessionMutex);
     if (sActiveSession) {
       LOGE("Rejecting Init - another recognition session is already active");
-      aResolver(false);
+      aResolver("concurrent-session"_ns);
       return IPC_OK();
     }
     sActiveSession = this;
     LOGD("Session registered as active");
   }
+
+  // Set here rather than on the recognition thread once the engine is up: this
+  // is what tells a session setup still in flight there that the session has
+  // gone away in the meantime.
+  mShouldContinueProcessing.store(true);
 
   {
     MutexAutoLock lock(mLock);
@@ -514,7 +532,8 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvProcessAudioData(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop(
+    StopResolver&& aResolver) {
   // Clear active session if this was it
   {
     StaticMutexAutoLock lock(sSessionMutex);
@@ -525,8 +544,29 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
   }
 
   mShouldContinueProcessing.store(false);
-
   LOGD("Stopping speech recognition session and cleaning up resources");
+
+  if (!mRecognitionThread) {
+    // No streaming loop was ever started: nothing to flush, and nothing was
+    // ever finalized.
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  // Resolving is deferred onto mRecognitionThread: it is serial and
+  // ProcessAudioStreaming() holds it for the whole session, so this happens
+  // after that loop's end-of-stream flush and after the results the flush
+  // dispatched, which is what stop() promises the page. That thread is also
+  // where mEmittedFinalResult is written, hence reading it there.
+  mRecognitionThread->Dispatch(NS_NewRunnableFunction(
+      "SpeechRecognitionParent::ResolveStop",
+      [self = RefPtr{this}, resolver = std::move(aResolver)]() mutable {
+        self->GetActorEventTarget()->Dispatch(NS_NewRunnableFunction(
+            "SpeechRecognitionParent::ResolveStop",
+            [resolver = std::move(resolver),
+             any = self->mEmittedFinalResult]() { resolver(any); }));
+      }));
+
   return IPC_OK();
 }
 
@@ -568,8 +608,13 @@ void SpeechRecognitionParent::ProcessAudioStreaming() {
   };
 
   auto emit = [self = RefPtr{this}](const nsCString& aText, bool aFinal) {
+    // An empty transcript is not a result; a session that only ever produces
+    // these is reported as a nomatch when RecvStop() resolves.
     if (aText.IsEmpty()) {
       return;
+    }
+    if (aFinal) {
+      self->mEmittedFinalResult = true;
     }
     NS_DispatchToMainThread(NS_NewRunnableFunction(
         "SpeechRecognitionParent::StreamResult",

@@ -8,16 +8,16 @@
 #define mozilla_dom_SpeechRecognitionBackend_h
 
 #include "AudioSegment.h"
+#include "MainThreadUtils.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/EventTargetCapability.h"
 #include "mozilla/LazyIdleThread.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/SPSCQueue.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/ThreadSafeWeakPtr.h"
 #include "mozilla/ThreadSafety.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/WeakPtr.h"
-#include "mozilla/dom/AudioStreamTrack.h"
-#include "mozilla/dom/Promise.h"
 #include "mozilla/hwinference/PHWInferenceManagerChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "nsIThread.h"
@@ -30,6 +30,8 @@ class SpeechRecognitionChild;
 
 namespace mozilla {
 class AudibilityMonitor;
+class AudioConverter;
+class MediaTrackGraph;
 namespace dom {
 class AudioStreamTrack;
 class SpeechRecognition;
@@ -43,27 +45,29 @@ class Promise;
 
 class SpeechRecognitionBackend;
 
-class SpeechRecognitionBackend
-    : public SupportsThreadSafeWeakPtr<SpeechRecognitionBackend> {
+class SpeechRecognitionBackend {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(
       SpeechRecognitionBackend)
 
-  SpeechRecognitionBackend(SpeechRecognition* aParent, uint32_t aGraphRate,
-                           const nsString& aLanguage,
-                           const nsTArray<nsString>& aPhrases)
+  // Creates a backend, along with the resampling thread it processes audio on.
+  // Returns nullptr if that thread cannot be created.
+  static already_AddRefed<SpeechRecognitionBackend> Create(
+      SpeechRecognition* aParent, uint32_t aGraphRate,
+      const nsString& aLanguage, const nsTArray<nsString>& aPhrases)
       MOZ_REQUIRES(sMainThreadCapability);
-  // Called when SpeechRecognition.start() is called from JS.
-  // Starts the background thread and IPC session.
-  // Creates background thread and establishes IPC connection.
-  nsresult Start() MOZ_REQUIRES(sMainThreadCapability);
-  // Called when SpeechRecognition.stop() is called from JS.
-  // Stops the background thread and IPC session.
-  // Gracefully shuts down background thread and closes IPC.
+
+  // Called when SpeechRecognition.start() is called from JS. Establishes the
+  // IPC connection; the resampling loop only starts once the engine has
+  // confirmed session init.
+  void Start() MOZ_REQUIRES(sMainThreadCapability);
+  // Called when SpeechRecognition.stop() is called from JS. Shuts down the
+  // background thread and IPC session, waiting for the engine's end-of-stream
+  // flush before reporting the session finished.
   void Stop() MOZ_REQUIRES(sMainThreadCapability);
-  // Called when SpeechRecognition.abort() is called from js.
-  // Aborts the recognition session.
-  // Immediately terminates background thread and IPC.
+  // Called when SpeechRecognition.abort() is called from JS, and from
+  // SpeechRecognition's own teardown. Immediately terminates the resampling
+  // thread and IPC, discarding any result the engine had yet to flush.
   void Abort() MOZ_REQUIRES(sMainThreadCapability);
 
   // Attach to an audio track to start receiving audio data.
@@ -76,7 +80,8 @@ class SpeechRecognitionBackend
   // == Graph thread
   // Called by SpeechTrackListener on the graph's real-time thread
   // Uses lock-free SPSC queue to send data to background thread
-  void DataCallback(TrackTime aTime, const AudioChunk& aChunk);
+  void DataCallback(MediaTrackGraph* aGraph, TrackTime aTime,
+                    const AudioChunk& aChunk);
   // Called by SpeechTrackListener when the track ends
   void NotifyTrackEnded();
 
@@ -91,23 +96,33 @@ class SpeechRecognitionBackend
       nsTArray<nsCString>&& aLanguages);
 
  private:
+  SpeechRecognitionBackend(SpeechRecognition* aParent,
+                           nsIThread* aResamplingThread, uint32_t aGraphRate,
+                           const nsString& aLanguage,
+                           const nsTArray<nsString>& aPhrases)
+      MOZ_REQUIRES(sMainThreadCapability);
   virtual ~SpeechRecognitionBackend();
 
+  // Shared body of Stop() and Abort(). aWaitForFlush defers
+  // NotifySessionFinished() until the engine has flushed and answered
+  // PSpeechRecognition::Stop.
+  void Shutdown(bool aWaitForFlush) MOZ_REQUIRES(sMainThreadCapability);
+  // Tells the SpeechRecognition the session is over and whether the engine
+  // finalized anything, so it can fire nomatch before end. Callable from the
+  // main and IPC threads.
+  void NotifySessionFinished(bool aProducedResult);
+
   // == Resampling thread
-  void StartProcessingAudioOnBackgroundThread()
-      MOZ_REQUIRES(mResamplingCapability);
   void ProcessAudioChunk() MOZ_REQUIRES(mResamplingCapability);
   void SendAudioDataViaIPC(nsTArray<float>&& aAudioData)
       MOZ_REQUIRES(mResamplingCapability);
 
   // == IPC thread
-  void StartSpeechRecognitionSession(const nsCString& aLanguage)
+  void StartSpeechRecognitionSession(const nsACString& aLanguage)
       MOZ_REQUIRES(sIPCCapability);
-  void StopSpeechRecognitionSession() MOZ_REQUIRES(sIPCCapability);
-  void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal,
-                               float aConfidence, TimeStamp aEventTime)
+  void HandleRecognitionResult(const nsACString& aTranscript, bool aIsFinal)
       MOZ_REQUIRES(sIPCCapability);
-  void HandleRecognitionError(const nsCString& aError)
+  void HandleRecognitionError(const nsACString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
   // Holds the shared IPC actor open for as long as it's held, releasing on
@@ -171,6 +186,12 @@ class SpeechRecognitionBackend
                                       OnFailure aOnFailure)
       MOZ_REQUIRES(sMainThreadCapability);
 
+  // Runs aFunc(parent) on the main thread, named aName, if the parent
+  // SpeechRecognition is still alive and still owns this backend by then.
+  // Callable from any thread.
+  template <typename Func>
+  void DispatchToParentIfAlive(const char* aName, Func&& aFunc);
+
  public:
   static StaticAutoPtr<mozilla::EventTargetCapability<nsISerialEventTarget>>
       sIPCCapability;
@@ -186,14 +207,69 @@ class SpeechRecognitionBackend
   static StaticRefPtr<nsITimer> sIdleCloseTimer
       MOZ_GUARDED_BY(sMainThreadCapability);
 
-  WeakPtr<SpeechRecognition> mParent;
-  nsCString mLanguage;
-  nsTArray<nsString> mPhrases;
+  // Upgraded to a RefPtr on the main thread only; see DispatchToParentIfAlive.
+  WeakPtr<SpeechRecognition> mParent MOZ_GUARDED_BY(sMainThreadCapability);
 
-  mozilla::EventTargetCapability<nsIThread> mResamplingCapability;
+  RefPtr<AudioStreamTrack> mTrack MOZ_GUARDED_BY(sMainThreadCapability);
+  RefPtr<SpeechTrackListener> mTrackListener
+      MOZ_GUARDED_BY(sMainThreadCapability);
 
-  // Per-instance IPC channel for speech recognition sessions
-  RefPtr<hwinference::SpeechRecognitionChild> mSpeechRecognitionChild;
+  // Read on the IPC thread, when initializing a session.
+  const nsCString mLanguage;
+  const nsTArray<nsString> mPhrases;
+  // Written by the graph thread (DataCallback), read by the resampling thread
+  // (ProcessAudioChunk). There is no capability for the graph thread, hence no
+  // annotation here.
+  const UniquePtr<SPSCQueue<float>> mRingBuffer;
+  // Created by Create() and shut down by Shutdown(), both on the main thread,
+  // and touched by nobody else - the resampling thread reaches itself through
+  // mResamplingCapability. Sole owner of the thread's lifetime.
+  nsCOMPtr<nsIThread> mResamplingThread MOZ_GUARDED_BY(sMainThreadCapability);
+  // Guards the members only the resampling thread may touch.
+  const mozilla::EventTargetCapability<nsIThread> mResamplingCapability;
+  // Graph-thread downmixing scratch buffer, freed with the backend after
+  // DetachFromTrack() has stopped the callbacks.
+  nsTArray<AudioDataValue> mMonoBuffer;
+  const uint32_t mGraphRate;
+  // Whether Shutdown() has already run, so it runs exactly once.
+  bool mStopped MOZ_GUARDED_BY(sMainThreadCapability) = false;
+  // Whether a soundstart was fired without its soundend. The main thread owns
+  // the soundstart/soundend pair, the resampling thread only reports the
+  // transitions it sees, so that teardown - which happens here - is what
+  // decides how the session ends.
+  bool mCurrentlyAudible MOZ_GUARDED_BY(sMainThreadCapability) = false;
+  // Last audibility the monitor reported, to detect transitions.
+  bool mAudible MOZ_GUARDED_BY(mResamplingCapability) = false;
+  bool mAudioStartDispatched MOZ_GUARDED_BY(mResamplingCapability) = false;
+  // Set by a task Shutdown() dispatches to the resampling thread, and never
+  // cleared, so the loop stops and cannot be restarted by a session init that
+  // completes after teardown. This is the only thing that stops the loop: the
+  // audio path never takes a lock or reads an atomic to decide whether to
+  // continue.
+  bool mAudioProcessingStopped MOZ_GUARDED_BY(mResamplingCapability) = false;
+  // Created by Start() on main, before the resampling thread that uses it.
+  UniquePtr<mozilla::AudibilityMonitor> mAudibilityMonitor;
+  // Held for the lifetime of an active session (Start() to Stop()/Abort()),
+  // set from EnsureIPC()'s result. See IPCActorUserGuard.
+  RefPtr<IPCActorUserGuard> mIPCActorUserGuard
+      MOZ_GUARDED_BY(sMainThreadCapability);
+
+  // The current session's actor, and whether teardown has been requested.
+  // mStopRequested is how Shutdown() on main tells the IPC thread, which can be
+  // in the middle of opening a session, that there is no longer a session to
+  // open one for. Publishing it and taking mChild away happen together under
+  // this lock, so exactly one of the two sides ends up owning the actor: either
+  // the IPC thread stores it and Shutdown() stops it, or the IPC thread sees
+  // the flag and closes it itself. See mState in
+  // dom/workers/remoteworkers/RemoteWorkerChild.h for the same pattern.
+  struct Session {
+    RefPtr<hwinference::SpeechRecognitionChild> mChild;
+    bool mStopRequested = false;
+  };
+  DataMutex<Session> mSession{"SpeechRecognitionBackend::mSession"};
+
+  UniquePtr<AudioConverter> mAudioConverter
+      MOZ_GUARDED_BY(mResamplingCapability);
 };
 
 }  // namespace mozilla::dom

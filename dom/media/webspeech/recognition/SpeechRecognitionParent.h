@@ -53,7 +53,7 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
                                    const nsTArray<nsString>& aPhrases,
                                    InitResolver&& aResolver);
   mozilla::ipc::IPCResult RecvProcessAudioData(nsTArray<float>&& aAudioData);
-  mozilla::ipc::IPCResult RecvStop();
+  mozilla::ipc::IPCResult RecvStop(StopResolver&& aResolver);
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
@@ -121,17 +121,21 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // MOZ_DISABLE_UTILITY_SANDBOX=1 MOZ_DUMP_AUDIO=1 to activate
   WavDumper mRecognitionAudioDumper;
 
-  // Flag to signal the recognition thread to stop processing. Set to true when
-  // starting, false when we want to stop. Checked periodically by the
-  // recognition thread during audio processing.
+  // Whether this session is still wanted. Set in RecvInit(), cleared by
+  // ActorDestroy() and RecvStop(), and checked periodically by the recognition
+  // thread during audio processing. It is set before the session setup is
+  // dispatched to the recognition thread rather than by that thread, so that
+  // InitializeParakeetContext(), which can still be mid-flight there when the
+  // session goes away (e.g. delayed behind a model fetch), discards its work
+  // instead of starting a streaming loop nobody will ever stop, or touching
+  // mModelFile after ActorDestroy() has cleared it.
   std::atomic<bool> mShouldContinueProcessing;
 
-  // Set once ActorDestroy() has run. InitializeParakeetContext() can still be
-  // mid-flight on the recognition thread when that happens (e.g. delayed
-  // behind a model fetch); this tells it to discard its work instead of
-  // resurrecting mShouldContinueProcessing and starting a streaming loop
-  // nobody will ever stop.
-  std::atomic<bool> mActorDestroyed{false};
+  // Whether the streaming loop ever emitted a final result. Answers RecvStop(),
+  // letting content fire nomatch when the recognizer finalized nothing.
+  // https://webaudio.github.io/web-speech-api/#eventdef-speechrecognition-nomatch
+  // mRecognitionThread only, and only meaningful if there is such a thread.
+  bool mEmittedFinalResult = false;
 
   // Position in the audio stream that has been processed in samples
   // This provides a rather crude timing estimate, but will be improved.
