@@ -131,15 +131,18 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   explicit MediaTrackGraphImpl(uint64_t aWindowID, TrackRate aSampleRate,
                                CubebUtils::AudioDeviceID aOutputDeviceID,
-                               nsISerialEventTarget* aMainThread);
+                               nsISerialEventTarget* aMainThread,
+                               uint32_t aRequestedCallbackFrames);
 
   static MediaTrackGraphImpl* GetInstance(
       GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
       TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
-      nsISerialEventTarget* aMainThread);
+      nsISerialEventTarget* aMainThread,
+      uint32_t aRequestedCallbackFrames = 0);
   static MediaTrackGraphImpl* GetInstanceIfExists(
       uint64_t aWindowID, TrackRate aSampleRate,
-      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
+      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
+      uint32_t aRequestedCallbackFrames = 0);
   static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate);
   // For GraphHashSet:
   struct Lookup;
@@ -159,6 +162,12 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   bool InDriverIteration(const GraphDriver* aDriver) const override;
 #endif
+  uint32_t RequestedCallbackFrames() const override {
+    return GetRequestedCallbackFrames();
+  }
+  void SetCallbackBufferSize(uint32_t aSize) override {
+    mCallbackBufferSize = aSize;
+  }
 
   /**
    * Unregisters memory reporting and deletes this instance. This should be
@@ -735,6 +744,8 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    * graphs.
    */
   const uint64_t mWindowID;
+  // Number of frames requested per audio callback, as passed to cubeb.
+  Atomic<uint32_t> mCallbackBufferSize{0};
   /*
    * If set, the GraphRunner class handles handing over data from audio
    * callbacks to a common single thread, shared across GraphDrivers.

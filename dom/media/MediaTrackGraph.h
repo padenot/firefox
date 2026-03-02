@@ -16,6 +16,7 @@
 #include "mozilla/Mutex.h"
 #include "mozilla/StateWatching.h"
 #include "mozilla/TaskQueue.h"
+
 #include "nsAutoRef.h"
 #include "nsIRunnable.h"
 #include "nsTArray.h"
@@ -1105,10 +1106,12 @@ class MediaTrackGraph {
   // Main thread only
   static MediaTrackGraph* GetInstanceIfExists(
       nsPIDOMWindowInner* aWindow, TrackRate aSampleRate,
-      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
+      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
+      uint32_t aRequestedCallbackFrames = 0);
   static MediaTrackGraph* GetInstance(
       GraphDriverType aGraphDriverRequested, nsPIDOMWindowInner* aWindow,
-      TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
+      TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
+      uint32_t aRequestedCallbackFrames = 0);
   static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate);
 
   // Idempotent
@@ -1225,6 +1228,10 @@ class MediaTrackGraph {
   CubebUtils::AudioDeviceID PrimaryOutputDeviceID() const {
     return mPrimaryOutputDeviceID;
   }
+  uint32_t GetRequestedCallbackFrames() const {
+    return mRequestedCallbackFrames;
+  }
+  uint32_t CallbackBufferSize() const;
 
   double AudioOutputLatency();
   /* Return whether the clock for the audio output device used for the AEC
@@ -1283,9 +1290,11 @@ class MediaTrackGraph {
 
  protected:
   explicit MediaTrackGraph(TrackRate aSampleRate,
-                           CubebUtils::AudioDeviceID aPrimaryOutputDeviceID)
+                           CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
+                           uint32_t aRequestedCallbackFrames = 0)
       : mSampleRate(aSampleRate),
-        mPrimaryOutputDeviceID(aPrimaryOutputDeviceID) {
+        mPrimaryOutputDeviceID(aPrimaryOutputDeviceID),
+        mRequestedCallbackFrames(aRequestedCallbackFrames) {
     MOZ_COUNT_CTOR(MediaTrackGraph);
   }
   MOZ_COUNTED_DTOR_VIRTUAL(MediaTrackGraph)
@@ -1309,6 +1318,7 @@ class MediaTrackGraph {
    * This is the device specified when creating the graph.
    */
   const CubebUtils::AudioDeviceID mPrimaryOutputDeviceID;
+  const uint32_t mRequestedCallbackFrames;
 
   /* A monotonically increasing graph-unique generation for
    * AudioInputProcessingParamsRequest::mGeneration. */

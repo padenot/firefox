@@ -283,10 +283,9 @@ const AudioNodeTrack::Flags kTrackFlags =
     AudioNodeTrack::NEED_MAIN_THREAD_CURRENT_TIME |
     AudioNodeTrack::NEED_MAIN_THREAD_ENDED | AudioNodeTrack::EXTERNAL_OUTPUT;
 
-AudioDestinationNode::AudioDestinationNode(AudioContext* aContext,
-                                           bool aIsOffline,
-                                           uint32_t aNumberOfChannels,
-                                           uint32_t aLength)
+AudioDestinationNode::AudioDestinationNode(
+    AudioContext* aContext, bool aIsOffline, uint32_t aNumberOfChannels,
+    uint32_t aLength, uint32_t aRequestedCallbackFrames)
     : AudioNode(aContext, aNumberOfChannels, ChannelCountMode::Explicit,
                 ChannelInterpretation::Speakers),
       mFramesToProduce(aLength),
@@ -301,7 +300,8 @@ AudioDestinationNode::AudioDestinationNode(AudioContext* aContext,
   // MediaTrackGraph
   MediaTrackGraph* graph = MediaTrackGraph::GetInstance(
       MediaTrackGraph::AUDIO_THREAD_DRIVER, aContext->GetOwnerWindow(),
-      aContext->SampleRate(), MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
+      aContext->SampleRate(), MediaTrackGraph::DEFAULT_OUTPUT_DEVICE,
+      aRequestedCallbackFrames);
   AudioNodeEngine* engine = new DestinationNodeEngine(this);
 
   mTrack = AudioNodeTrack::Create(aContext, engine, kTrackFlags, graph);

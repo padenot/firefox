@@ -117,21 +117,24 @@ void DeviceInputTrackManager::Remove(DeviceInputTrack* aTrack) {
 
 /**
  * A hash table containing the graph instances, one per Window ID,
- * sample rate, and device ID combination.
+ * sample rate, device ID, and latency hint combination.
  */
 
 struct MediaTrackGraphImpl::Lookup final {
   HashNumber Hash() const {
-    return HashGeneric(mWindowID, mSampleRate, mOutputDeviceID);
+    return HashGeneric(mWindowID, mSampleRate, mOutputDeviceID,
+                       mRequestedCallbackFrames);
   }
   const uint64_t mWindowID;
   const TrackRate mSampleRate;
   const CubebUtils::AudioDeviceID mOutputDeviceID;
+  const uint32_t mRequestedCallbackFrames;
 };
 
 // Implicit to support GraphHashSet.lookup(*graph).
 MOZ_IMPLICIT MediaTrackGraphImpl::operator MediaTrackGraphImpl::Lookup() const {
-  return {mWindowID, mSampleRate, PrimaryOutputDeviceID()};
+  return {mWindowID, mSampleRate, PrimaryOutputDeviceID(),
+          mRequestedCallbackFrames};
 }
 
 namespace {
@@ -143,7 +146,9 @@ struct GraphHasher {  // for HashSet
   static bool match(const MediaTrackGraphImpl* aGraph, const Lookup& aLookup) {
     return aGraph->mWindowID == aLookup.mWindowID &&
            aGraph->GraphRate() == aLookup.mSampleRate &&
-           aGraph->PrimaryOutputDeviceID() == aLookup.mOutputDeviceID;
+           aGraph->PrimaryOutputDeviceID() == aLookup.mOutputDeviceID &&
+           aGraph->GetRequestedCallbackFrames() ==
+               aLookup.mRequestedCallbackFrames;
   }
 };
 
@@ -3357,11 +3362,12 @@ void ProcessedMediaTrack::DestroyImpl() {
   // SetTrackOrderDirty(), for other reasons.
 }
 
-MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
-                                         TrackRate aSampleRate,
-                                         AudioDeviceID aPrimaryOutputDeviceID,
-                                         nsISerialEventTarget* aMainThread)
-    : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID),
+MediaTrackGraphImpl::MediaTrackGraphImpl(
+    uint64_t aWindowID, TrackRate aSampleRate,
+    AudioDeviceID aPrimaryOutputDeviceID, nsISerialEventTarget* aMainThread,
+    uint32_t aRequestedCallbackFrames)
+    : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID,
+                      aRequestedCallbackFrames),
       mWindowID(aWindowID),
       mFirstCycleBreaker(0)
       // An offline graph is not initially processing.
@@ -3464,12 +3470,20 @@ void MediaTrackGraphImpl::Destroy() {
 /* static */
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstanceIfExists(
     uint64_t aWindowID, TrackRate aSampleRate,
-    AudioDeviceID aPrimaryOutputDeviceID) {
+    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aRequestedCallbackFrames) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
 
-  GraphHashSet::Ptr p =
-      Graphs()->lookup({aWindowID, aSampleRate, aPrimaryOutputDeviceID});
+  if (aRequestedCallbackFrames == 0) {
+    cubeb_stream_params params = {};
+    params.format = CUBEB_SAMPLE_FLOAT32NE;
+    params.rate = static_cast<uint32_t>(aSampleRate);
+    aRequestedCallbackFrames = CubebUtils::GetCubebMTGLatencyInFrames(&params);
+  }
+
+  GraphHashSet::Ptr p = Graphs()->lookup(
+      {aWindowID, aSampleRate, aPrimaryOutputDeviceID,
+       aRequestedCallbackFrames});
   return p ? *p : nullptr;
 }
 
@@ -3478,28 +3492,36 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstanceIfExists(
 /* static */
 MediaTrackGraph* MediaTrackGraph::GetInstanceIfExists(
     nsPIDOMWindowInner* aWindow, TrackRate aSampleRate,
-    AudioDeviceID aPrimaryOutputDeviceID) {
+    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aRequestedCallbackFrames) {
   TrackRate sampleRate =
       aSampleRate ? aSampleRate
                   : CubebUtils::PreferredSampleRate(
                         aWindow->AsGlobal()->ShouldResistFingerprinting(
                             RFPTarget::AudioSampleRate));
   return MediaTrackGraphImpl::GetInstanceIfExists(
-      aWindow->WindowID(), sampleRate, aPrimaryOutputDeviceID);
+      aWindow->WindowID(), sampleRate, aPrimaryOutputDeviceID,
+      aRequestedCallbackFrames);
 }
 
 /* static */
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
     GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
     TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
-    nsISerialEventTarget* aMainThread) {
+    nsISerialEventTarget* aMainThread, uint32_t aRequestedCallbackFrames) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
   MOZ_ASSERT(aGraphDriverRequested != OFFLINE_THREAD_DRIVER,
              "Use CreateNonRealtimeInstance() for offline graphs");
 
-  MediaTrackGraphImpl* graph =
-      GetInstanceIfExists(aWindowID, aSampleRate, aPrimaryOutputDeviceID);
+  if (aRequestedCallbackFrames == 0) {
+    cubeb_stream_params params = {};
+    params.format = CUBEB_SAMPLE_FLOAT32NE;
+    params.rate = static_cast<uint32_t>(aSampleRate);
+    aRequestedCallbackFrames = CubebUtils::GetCubebMTGLatencyInFrames(&params);
+  }
+
+  MediaTrackGraphImpl* graph = GetInstanceIfExists(
+      aWindowID, aSampleRate, aPrimaryOutputDeviceID, aRequestedCallbackFrames);
   if (graph) {  // graph already exists
     return graph;
   }
@@ -3512,11 +3534,12 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
   // In a real time graph, the number of output channels is determined by
   // the underlying number of channel of the default audio output device.
   uint32_t channelCount = CubebUtils::MaxNumberOfChannels();
-  graph = new MediaTrackGraphImpl(aWindowID, aSampleRate,
-                                  aPrimaryOutputDeviceID, aMainThread);
+  graph = new MediaTrackGraphImpl(aWindowID, aSampleRate, aPrimaryOutputDeviceID,
+                                  aMainThread, aRequestedCallbackFrames);
   graph->Init(aGraphDriverRequested, runType, channelCount);
   MOZ_ALWAYS_TRUE(Graphs()->putNew(
-      {aWindowID, aSampleRate, aPrimaryOutputDeviceID}, graph));
+      {aWindowID, aSampleRate, aPrimaryOutputDeviceID, aRequestedCallbackFrames},
+      graph));
 
   LOG(LogLevel::Debug, ("Starting up MediaTrackGraph %p for window 0x%" PRIx64,
                         graph, aWindowID));
@@ -3527,7 +3550,8 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
 /* static */
 MediaTrackGraph* MediaTrackGraph::GetInstance(
     GraphDriverType aGraphDriverRequested, nsPIDOMWindowInner* aWindow,
-    TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID) {
+    TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
+    uint32_t aRequestedCallbackFrames) {
   TrackRate sampleRate =
       aSampleRate ? aSampleRate
                   : CubebUtils::PreferredSampleRate(
@@ -3535,7 +3559,8 @@ MediaTrackGraph* MediaTrackGraph::GetInstance(
                             RFPTarget::AudioSampleRate));
   return MediaTrackGraphImpl::GetInstance(
       aGraphDriverRequested, aWindow->WindowID(), sampleRate,
-      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget());
+      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget(),
+      aRequestedCallbackFrames);
 }
 
 MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
@@ -3545,8 +3570,9 @@ MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
   nsISerialEventTarget* mainThread = GetMainThreadSerialEventTarget();
   // Offline graphs have 0 output channel count: they write the output to a
   // buffer, not an audio output track.
-  MediaTrackGraphImpl* graph = new MediaTrackGraphImpl(
-      0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread);
+  MediaTrackGraphImpl* graph =
+      new MediaTrackGraphImpl(0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread,
+                              0);
   graph->Init(OFFLINE_THREAD_DRIVER, DIRECT_DRIVER, 0);
 
   LOG(LogLevel::Debug, ("Starting up Offline MediaTrackGraph %p", graph));
@@ -4014,6 +4040,10 @@ uint32_t MediaTrackGraphImpl::AudioOutputChannelCount(
 
 double MediaTrackGraph::AudioOutputLatency() {
   return static_cast<MediaTrackGraphImpl*>(this)->AudioOutputLatency();
+}
+
+uint32_t MediaTrackGraph::CallbackBufferSize() const {
+  return static_cast<const MediaTrackGraphImpl*>(this)->mCallbackBufferSize;
 }
 
 double MediaTrackGraphImpl::AudioOutputLatency() {

@@ -9,7 +9,16 @@
  * liability, trademark and document use rules apply.
  */
 
+// https://webaudio.github.io/web-audio-api/#enumdef-audiocontextlatencycategory
+enum AudioContextLatencyCategory {
+  "balanced",
+  "interactive",
+  "playback"
+};
+
+// https://webaudio.github.io/web-audio-api/#AudioContextOptions
 dictionary AudioContextOptions {
+  (AudioContextLatencyCategory or double) latencyHint = "interactive";
              float        sampleRate;
 };
 

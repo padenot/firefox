@@ -7,6 +7,7 @@
 
 #include "AudioParamDescriptorMap.h"
 #include "MediaBufferDecoder.h"
+#include "MediaTrackGraph.h"
 #include "X11UndefineNone.h"
 #include "js/TypeDecls.h"
 #include "mozilla/DOMEventTargetHelper.h"
@@ -134,7 +135,9 @@ class AudioContext final : public DOMEventTargetHelper,
                            public RelativeTimeline {
   AudioContext(nsPIDOMWindowInner* aParentWindow, bool aIsOffline,
                uint32_t aNumberOfChannels = 0, uint32_t aLength = 0,
-               float aSampleRate = 0.0f);
+               float aSampleRate = 0.0f,
+               const OwningAudioContextLatencyCategoryOrDouble* aLatencyHint =
+                   nullptr);
   ~AudioContext();
 
  public:
@@ -189,11 +192,7 @@ class AudioContext final : public DOMEventTargetHelper,
 
   AudioContextState State() const { return mAudioContextState; }
 
-  double BaseLatency() const {
-    // Gecko does not do any buffering between rendering the audio and sending
-    // it to the audio subsystem.
-    return 0.0;
-  }
+  double BaseLatency() const;
 
   double OutputLatency();
 
@@ -413,6 +412,7 @@ class AudioContext final : public DOMEventTargetHelper,
   const RTPCallerType mRTPCallerType;
   const bool mShouldResistFingerprinting;
   const bool mIsOffline;
+  uint32_t mRequestedLatencyFrames = 0;
   // true iff realtime or startRendering() has been called.
   bool mIsStarted;
   bool mIsShutDown;

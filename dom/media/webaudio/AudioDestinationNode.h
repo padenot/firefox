@@ -8,6 +8,7 @@
 #include "AudioChannelAgent.h"
 #include "AudioChannelService.h"
 #include "AudioNode.h"
+#include "MediaTrackGraph.h"
 #include "mozilla/TimeStamp.h"
 
 namespace mozilla::dom {
@@ -22,7 +23,8 @@ class AudioDestinationNode final : public AudioNode,
   // This node type knows what MediaTrackGraph to use based on
   // whether it's in offline mode.
   AudioDestinationNode(AudioContext* aContext, bool aIsOffline,
-                       uint32_t aNumberOfChannels, uint32_t aLength);
+                       uint32_t aNumberOfChannels, uint32_t aLength,
+                       uint32_t aRequestedCallbackFrames);
 
   void DestroyMediaTrack() override;
 

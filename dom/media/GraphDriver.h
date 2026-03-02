@@ -192,6 +192,12 @@ struct GraphInterface : public nsISupports {
    * and mGraphRunner is currently run by aDriver. */
   virtual bool InDriverIteration(const GraphDriver* aDriver) const = 0;
 #endif
+  /* The requested audio callback buffer size in frames, as set by the
+   * AudioContext latencyHint. Used by AudioCallbackDriver::Init(). */
+  virtual uint32_t RequestedCallbackFrames() const { return 0; }
+  /* Called by AudioCallbackDriver to inform the graph of the actual callback
+   * buffer size negotiated with the audio device. */
+  virtual void SetCallbackBufferSize(uint32_t aSize) {}
 };
 
 /**

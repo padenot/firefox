@@ -555,9 +555,8 @@ void AudioCallbackDriver::Init(const nsCString& aStreamName) {
   }
   output.input_params = CUBEB_INPUT_PROCESSING_PARAM_NONE;
 
-  uint32_t latencyFrames = CubebUtils::GetCubebMTGLatencyInFrames(&output);
-
-  LOG(LogLevel::Debug, ("Minimum latency in frames: %d", latencyFrames));
+  uint32_t latencyFrames = Graph()->RequestedCallbackFrames();
+  LOG(LogLevel::Debug, ("Latency in frames: %d", latencyFrames));
 
   // Buffer sizes lower than 10ms are nowadays common. It's not very useful
   // when doing voice, because all the WebRTC code that does audio input
@@ -581,6 +580,7 @@ void AudioCallbackDriver::Init(const nsCString& aStreamName) {
     latencyFrames = WEBAUDIO_BLOCK_SIZE;
   }
   LOG(LogLevel::Debug, ("Effective latency in frames: %d", latencyFrames));
+  Graph()->SetCallbackBufferSize(latencyFrames);
 
   input = output;
   input.channels = mInputChannelCount;
@@ -833,6 +833,7 @@ long AudioCallbackDriver::DataCallback(const AudioDataValue* aInputBuffer,
                                         AudioStreamState::Running)) {
     MOZ_ASSERT(mScratchBuffer.IsEmpty());
     mFirstCallbackIteration = true;
+    Graph()->SetCallbackBufferSize(aFrames);
     LOG(LogLevel::Verbose, ("%p: AudioCallbackDriver %p First audio callback "
                             "close the Fallback driver",
                             Graph(), this));

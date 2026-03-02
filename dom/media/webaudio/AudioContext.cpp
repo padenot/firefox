@@ -146,9 +146,10 @@ static float GetSampleRateForAudioContext(bool aIsOffline, float aSampleRate,
   }
 }
 
-AudioContext::AudioContext(nsPIDOMWindowInner* aWindow, bool aIsOffline,
-                           uint32_t aNumberOfChannels, uint32_t aLength,
-                           float aSampleRate)
+AudioContext::AudioContext(
+    nsPIDOMWindowInner* aWindow, bool aIsOffline, uint32_t aNumberOfChannels,
+    uint32_t aLength, float aSampleRate,
+    const OwningAudioContextLatencyCategoryOrDouble* aLatencyHint)
     : DOMEventTargetHelper(aWindow),
       mId(gAudioContextId++),
       mSampleRate(GetSampleRateForAudioContext(
@@ -174,11 +175,57 @@ AudioContext::AudioContext(nsPIDOMWindowInner* aWindow, bool aIsOffline,
       mSuspendedByChrome(nsGlobalWindowInner::Cast(aWindow)->IsSuspended()) {
   bool mute = aWindow->AddAudioContext(this);
 
+  uint32_t latencyFrames = 0;
+  if (!aIsOffline && aLatencyHint) {
+    auto interactiveFrames = [this]() -> uint32_t {
+      cubeb_stream_params params = {};
+      params.format = CUBEB_SAMPLE_FLOAT32NE;
+      params.rate = static_cast<uint32_t>(mSampleRate);
+      return CubebUtils::GetCubebMTGLatencyInFrames(&params);
+    };
+    const uint32_t minFrames = interactiveFrames();
+    const uint32_t balancedFrames = minFrames * 4;
+    const uint32_t playbackFrames = std::max(
+        balancedFrames,
+        static_cast<uint32_t>(
+            CubebUtils::GetCubebPlaybackLatencyInMilliseconds() *
+            mSampleRate / 1000));
+    if (aLatencyHint->IsAudioContextLatencyCategory()) {
+      switch (aLatencyHint->GetAsAudioContextLatencyCategory()) {
+        case AudioContextLatencyCategory::Interactive:
+          latencyFrames = 0;
+          break;
+        case AudioContextLatencyCategory::Balanced:
+          latencyFrames = balancedFrames;
+          break;
+        case AudioContextLatencyCategory::Playback:
+          latencyFrames = playbackFrames;
+          break;
+      }
+    } else if (aLatencyHint->IsDouble()) {
+      latencyFrames = std::clamp(
+          static_cast<uint32_t>(
+              std::max(0.0, aLatencyHint->GetAsDouble()) * mSampleRate),
+          minFrames, playbackFrames);
+    } else {
+      latencyFrames = 0;
+    }
+    if (latencyFrames != 0) {
+      latencyFrames = ((latencyFrames + WEBAUDIO_BLOCK_SIZE / 2) /
+                       WEBAUDIO_BLOCK_SIZE) *
+                      WEBAUDIO_BLOCK_SIZE;
+      latencyFrames = std::max(latencyFrames, WEBAUDIO_BLOCK_SIZE);
+      mRequestedLatencyFrames = latencyFrames;
+    } else {
+      mRequestedLatencyFrames = minFrames;
+    }
+  }
+
   // Note: AudioDestinationNode needs an AudioContext that must already be
   // bound to the window.
   const bool allowedToStart = media::AutoplayPolicy::IsAllowedToPlay(*this);
-  mDestination =
-      new AudioDestinationNode(this, aIsOffline, aNumberOfChannels, aLength);
+  mDestination = new AudioDestinationNode(this, aIsOffline, aNumberOfChannels,
+                                          aLength, latencyFrames);
   mDestination->Init();
   // If an AudioContext is not allowed to start, we would postpone its state
   // transition from `suspended` to `running` until sites explicitly call
@@ -280,9 +327,9 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
                          ? aOptions.mSampleRate.Value()
                          : MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE;
 
-  WEB_AUDIO_API_LOG("AudioContext sampleRate={}", sampleRate);
+  WEB_AUDIO_API_LOG("AudioContext ctor sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
-      new AudioContext(window, false, 2, 0, sampleRate);
+      new AudioContext(window, false, 2, 0, sampleRate, &aOptions.mLatencyHint);
 
   RegisterWeakMemoryReporter(object);
 
@@ -548,6 +595,13 @@ AudioListener* AudioContext::Listener() {
   return mListener;
 }
 
+double AudioContext::BaseLatency() const {
+  if (mIsShutDown || mIsOffline) {
+    return 0.0;
+  }
+  return Graph()->CallbackBufferSize() / static_cast<double>(mSampleRate);
+}
+
 double AudioContext::OutputLatency() {
   if (mIsShutDown) {
     return 0.0;
@@ -570,6 +624,7 @@ double AudioContext::OutputLatency() {
   }
   return latency_s;
 }
+
 
 void AudioContext::GetOutputTimestamp(AudioTimestamp& aTimeStamp) {
   if (!Destination()) {
