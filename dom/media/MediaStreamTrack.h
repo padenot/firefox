@@ -514,6 +514,7 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   ProcessedMediaTrack* GetTrack() const;
   MediaTrackGraph* Graph() const;
   MediaTrackGraphImpl* GraphImpl() const;
+  uint64_t MediaTrackGraphId() const;
 
   MediaStreamTrackSource& GetSource() const {
     MOZ_RELEASE_ASSERT(mSource,

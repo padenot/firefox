@@ -625,6 +625,19 @@ double AudioContext::OutputLatency() {
   return latency_s;
 }
 
+uint32_t AudioContext::CallbackBufferSize() const {
+  if (mIsShutDown || mIsOffline) {
+    return 0;
+  }
+  return Graph()->CallbackBufferSize();
+}
+
+uint64_t AudioContext::MediaTrackGraphId() const {
+  if (mIsShutDown || mIsOffline) {
+    return 0;
+  }
+  return reinterpret_cast<uintptr_t>(Graph());
+}
 
 void AudioContext::GetOutputTimestamp(AudioTimestamp& aTimeStamp) {
   if (!Destination()) {

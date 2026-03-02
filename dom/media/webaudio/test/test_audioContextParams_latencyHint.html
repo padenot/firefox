@@ -1,0 +1,108 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Test AudioContext latencyHint parameter</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
+</head>
+<body>
+<pre id="test">
+<script class="testbody" type="text/javascript">
+
+SimpleTest.waitForExplicitFinish();
+
+function wrap(ctx) {
+  return SpecialPowers.wrap(ctx);
+}
+
+function waitForRunning(ctx) {
+  if (ctx.state === "running") {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    ctx.onstatechange = () => {
+      if (ctx.state === "running") {
+        ctx.onstatechange = null;
+        resolve();
+      }
+    };
+  });
+}
+
+async function runTest() {
+  // Graph sharing: same latency hint and sample rate reuses the same graph.
+  const interactive1 = new AudioContext({ latencyHint: "interactive" });
+  const interactive2 = new AudioContext({ latencyHint: "interactive" });
+  const balanced     = new AudioContext({ latencyHint: "balanced" });
+  const playback     = new AudioContext({ latencyHint: "playback" });
+
+  is(wrap(interactive1).mediaTrackGraphId, wrap(interactive2).mediaTrackGraphId,
+    "Two interactive contexts share the same MediaTrackGraph");
+
+  isnot(wrap(interactive1).mediaTrackGraphId, wrap(balanced).mediaTrackGraphId,
+    "Interactive and balanced contexts use different MediaTrackGraphs");
+
+  isnot(wrap(interactive1).mediaTrackGraphId, wrap(playback).mediaTrackGraphId,
+    "Interactive and playback contexts use different MediaTrackGraphs");
+
+  // A custom numeric latency hint of 80ms should differ from interactive.
+  const custom = new AudioContext({ latencyHint: 0.08 });
+  isnot(wrap(interactive1).mediaTrackGraphId, wrap(custom).mediaTrackGraphId,
+    "Interactive and 80ms custom latency contexts use different graphs");
+
+  // Wait for all contexts to reach the running state so that
+  // callbackBufferSize is populated by the AudioCallbackDriver.
+  await Promise.all([interactive1, interactive2, balanced, playback, custom]
+    .map(waitForRunning));
+
+  // Both interactive contexts share a driver, so they see the same buffer size.
+  is(wrap(interactive1).callbackBufferSize, wrap(interactive2).callbackBufferSize,
+    "Shared-graph contexts report the same callbackBufferSize");
+
+  // Only assert ordering when audio is actually running (non-zero means a real
+  // AudioCallbackDriver was used, rather than the SystemClockDriver fallback).
+  const interactiveFrames = wrap(interactive1).callbackBufferSize;
+  const balancedFrames    = wrap(balanced).callbackBufferSize;
+  const playbackFrames    = wrap(playback).callbackBufferSize;
+
+  const interactiveRequested = wrap(interactive1).requestedLatencyFrames;
+  const balancedRequested = wrap(balanced).requestedLatencyFrames;
+  const playbackRequested = wrap(playback).requestedLatencyFrames;
+
+  if (interactiveFrames > 0 && balancedFrames > 0 && playbackFrames > 0) {
+    ok(interactiveFrames <= balancedFrames,
+      `interactive (${interactiveFrames}) <= balanced (${balancedFrames}) frames`);
+    ok(balancedFrames <= playbackFrames,
+      `balanced (${balancedFrames}) <= playback (${playbackFrames}) frames`);
+    ok(interactiveRequested > 0,
+      `interactive requested latency is non-zero (${interactiveRequested} frames)`);
+    ok(balancedRequested >= interactiveRequested,
+      `balanced requested (${balancedRequested}) >= interactive requested (${interactiveRequested}) frames`);
+    ok(playbackRequested >= balancedRequested,
+      `playback requested (${playbackRequested}) >= balanced requested (${balancedRequested}) frames`);
+    // Balanced and playback share a graph iff they requested the same number
+    // of frames (which happens when the platform saturates at the same latency).
+    if (balancedRequested === playbackRequested) {
+      is(wrap(balanced).mediaTrackGraphId, wrap(playback).mediaTrackGraphId,
+        "Balanced and playback share a graph when they requested the same frames");
+    } else {
+      isnot(wrap(balanced).mediaTrackGraphId, wrap(playback).mediaTrackGraphId,
+        "Balanced and playback contexts use different MediaTrackGraphs");
+    }
+  } else {
+    todo(false, "AudioCallbackDriver not running; skipping callbackBufferSize ordering checks");
+  }
+
+  await Promise.all([interactive1, interactive2, balanced, playback, custom]
+    .map(c => c.close()));
+}
+
+runTest().then(() => SimpleTest.finish(), e => {
+  ok(false, `Test failed: ${e}`);
+  SimpleTest.finish();
+});
+
+</script>
+</pre>
+</body>
+</html>

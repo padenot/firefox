@@ -1,0 +1,177 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>AudioContext cross-graph latency via impulse matching</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
+</head>
+<body>
+<script type="worklet" id="sender-worklet">
+class ImpulseSender extends AudioWorkletProcessor {
+  constructor(options) {
+    super(options);
+    this._fired = false;
+  }
+  process(inputs, outputs) {
+    if (!this._fired && currentFrame >= 128) {
+      outputs[0][0][0] = 1.0;
+      this._fired = true;
+      this.port.postMessage(currentFrame);
+    }
+    return true;
+  }
+}
+registerProcessor("impulse-sender", ImpulseSender);
+</script>
+<script type="worklet" id="receiver-worklet">
+const MAX_WAIT_FRAMES = 16384;
+class ImpulseReceiver extends AudioWorkletProcessor {
+  constructor(options) {
+    super(options);
+    this._startFrame = null;
+    this._done = false;
+  }
+  process(inputs) {
+    if (this._done) return true;
+    const ch = inputs[0]?.[0];
+    if (ch) {
+      if (this._startFrame === null) this._startFrame = currentFrame;
+      for (let i = 0; i < ch.length; i++) {
+        if (ch[i] > 0.5) {
+          this._done = true;
+          this.port.postMessage({ ok: true, frame: currentFrame + i });
+          return true;
+        }
+      }
+      if (currentFrame - this._startFrame >= MAX_WAIT_FRAMES) {
+        this._done = true;
+        this.port.postMessage({ ok: false });
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("impulse-receiver", ImpulseReceiver);
+</script>
+<pre id="test">
+<script class="testbody" type="text/javascript">
+
+SimpleTest.waitForExplicitFinish();
+
+function workletURL(id) {
+  const text = document.getElementById(id).innerText;
+  return URL.createObjectURL(new Blob([text], { type: "application/javascript" }));
+}
+
+function waitForRunning(ctx) {
+  if (ctx.state === 'running') return Promise.resolve();
+  return new Promise(resolve => {
+    ctx.onstatechange = () => {
+      if (ctx.state === 'running') { ctx.onstatechange = null; resolve(); }
+    };
+  });
+}
+
+async function measureLatency(srcHint, dstHint) {
+  const src = new AudioContext({ latencyHint: srcHint });
+  const dst = new AudioContext({ latencyHint: dstHint });
+
+  await Promise.all([waitForRunning(src), waitForRunning(dst)]);
+
+  const senderUrl   = workletURL("sender-worklet");
+  const receiverUrl = workletURL("receiver-worklet");
+  await src.audioWorklet.addModule(senderUrl);
+  await dst.audioWorklet.addModule(receiverUrl);
+  URL.revokeObjectURL(senderUrl);
+  URL.revokeObjectURL(receiverUrl);
+
+  const dest   = src.createMediaStreamDestination();
+  const sender = new AudioWorkletNode(src, 'impulse-sender');
+  sender.connect(dest);
+
+  const source   = dst.createMediaStreamSource(dest.stream);
+  const receiver = new AudioWorkletNode(dst, 'impulse-receiver',
+    { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
+  source.connect(receiver);
+
+  // Capture the initial frame-count offset between the two contexts before
+  // starting the measurement.  When contexts reuse an existing MTG (same
+  // latencyHint across calls) the MTG's frame counter is already ahead; we
+  // correct for this so latencyFrames only reflects cross-graph delay.
+  const sampleRate = src.sampleRate;
+  const frameOffset = Math.round((dst.currentTime - src.currentTime) * sampleRate);
+
+  // sentFrame: currentFrame in src context when the impulse sample was written.
+  // receivedFrame: currentFrame + sample-offset in dst context when detected.
+  const { sentFrame, receivedFrame } = await new Promise((resolve, reject) => {
+    let sentFrame = null;
+    sender.port.onmessage = e => { sentFrame = e.data; };
+    receiver.port.onmessage = e => {
+      if (!e.data.ok) {
+        reject(new Error(`impulse not detected: ${srcHint} -> ${dstHint}`));
+      } else {
+        resolve({ sentFrame, receivedFrame: e.data.frame });
+      }
+    };
+  });
+
+  const srcFrames  = SpecialPowers.wrap(src).callbackBufferSize;
+  const dstFrames  = SpecialPowers.wrap(dst).callbackBufferSize;
+  const latencyFrames = receivedFrame - sentFrame - frameOffset;
+
+  await Promise.all([src.close(), dst.close()]);
+  return { latencyFrames, srcFrames, dstFrames, sampleRate };
+}
+
+async function runTest() {
+  const same = await measureLatency('interactive', 'interactive');
+  info(`same-graph (interactive->interactive): ` +
+       `${same.latencyFrames} frames  buffer=${same.srcFrames} frames`);
+
+  const iToB = await measureLatency('interactive', 'balanced');
+  info(`cross-graph (interactive->balanced): ` +
+       `${iToB.latencyFrames} frames  src=${iToB.srcFrames} dst=${iToB.dstFrames} frames`);
+
+  const iToP = await measureLatency('interactive', 'playback');
+  info(`cross-graph (interactive->playback): ` +
+       `${iToP.latencyFrames} frames  src=${iToP.srcFrames} dst=${iToP.dstFrames} frames`);
+
+  const bToI = await measureLatency('balanced', 'interactive');
+  info(`cross-graph (balanced->interactive): ` +
+       `${bToI.latencyFrames} frames  src=${bToI.srcFrames} dst=${bToI.dstFrames} frames`);
+
+  const pToI = await measureLatency('playback', 'interactive');
+  info(`cross-graph (playback->interactive): ` +
+       `${pToI.latencyFrames} frames  src=${pToI.srcFrames} dst=${pToI.dstFrames} frames`);
+
+  // Intra-graph: no cross-graph buffering, impulse arrives in the same tick.
+  ok(same.latencyFrames === 0,
+    `same-graph latency is 0 frames (got ${same.latencyFrames})`);
+
+  // Cross-graph: latency = src callback timing + drift-correction pre-buffer
+  // (min 50 ms initial desired buffering) + dst callback timing.
+  for (const [label, r] of [
+    ["interactive->balanced", iToB],
+    ["interactive->playback", iToP],
+    ["balanced->interactive", bToI],
+    ["playback->interactive", pToI],
+  ]) {
+    const driftBuffering = Math.ceil(r.sampleRate * 0.05);
+    const bound = r.srcFrames + r.dstFrames + driftBuffering;
+    ok(r.latencyFrames > 0,
+      `${label}: latency (${r.latencyFrames} frames) > 0`);
+    ok(r.latencyFrames < bound,
+      `${label}: latency (${r.latencyFrames} frames) < ` +
+      `src+dst+50ms buffers (${bound} frames)`);
+  }
+}
+
+runTest().then(
+  () => SimpleTest.finish(),
+  e  => { ok(false, `Test threw: ${e}`); SimpleTest.finish(); }
+);
+
+</script>
+</pre>
+</body>
+</html>

@@ -398,6 +398,13 @@ MediaTrackGraphImpl* MediaStreamTrack::GraphImpl() const {
   return mTrack->GraphImpl();
 }
 
+uint64_t MediaStreamTrack::MediaTrackGraphId() const {
+  if (Ended()) {
+    return 0;
+  }
+  return reinterpret_cast<uintptr_t>(Graph());
+}
+
 void MediaStreamTrack::SetPrincipal(nsIPrincipal* aPrincipal) {
   if (aPrincipal == mPrincipal) {
     return;

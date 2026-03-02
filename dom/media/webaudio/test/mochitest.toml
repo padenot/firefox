@@ -84,7 +84,7 @@ support-files = [
   "8ch-s16.wav",
   "../../webrtc/tests/mochitests/mediaStreamPlayback.js",
   "../../webrtc/tests/mochitests/head.js",
-  "tiny.flac"
+  "tiny.flac",
 ]
 
 ["test_OfflineAudioContext.html"]
@@ -109,6 +109,15 @@ run-if = [
 run-if = [
   "os == 'android'", # Tested in web-platform-tests test-analyser-scale.html, but times out on Android.
 ]
+
+["test_audioContextParams_latencyHint.html"]
+
+["test_audioContextParams_latencyHint_crossgraph.html"]
+scheme = "https"
+skip-if = ["os == 'android'"] # frame counters of two contexts diverge on Android, making latency measurement unreliable
+
+["test_audioContextParams_latencyHint_gum.html"]
+scheme = "https"
 
 ["test_audioContextParams_recordNonDefaultSampleRate.html"]
 

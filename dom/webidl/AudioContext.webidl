@@ -53,4 +53,12 @@ interface AudioContext : BaseAudioContext {
 
     [NewObject, Throws]
     MediaStreamAudioDestinationNode createMediaStreamDestination();
+
+    // Test-only: exposes internals for verifying latencyHint behaviour.
+    [ChromeOnly]
+    readonly attribute unsigned long callbackBufferSize;
+    [ChromeOnly]
+    readonly attribute unsigned long requestedLatencyFrames;
+    [ChromeOnly]
+    readonly attribute unsigned long long mediaTrackGraphId;
 };

@@ -123,4 +123,7 @@ interface MediaStreamTrack : EventTarget {
     [NewObject, NeedsCallerType]
     Promise<undefined>     applyConstraints (optional MediaTrackConstraints constraints = {});
 //              attribute EventHandler          onoverconstrained;
+
+    [ChromeOnly]
+    readonly attribute unsigned long long mediaTrackGraphId;
 };

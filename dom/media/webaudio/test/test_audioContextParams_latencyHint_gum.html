@@ -1,0 +1,70 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Test AudioContext latencyHint graph sharing with getUserMedia</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
+</head>
+<body>
+<pre id="test">
+<script class="testbody" type="text/javascript">
+
+SimpleTest.waitForExplicitFinish();
+
+function wrap(o) {
+  return SpecialPowers.wrap(o);
+}
+
+function waitForRunning(ctx) {
+  if (ctx.state === "running") {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    ctx.onstatechange = () => {
+      if (ctx.state === "running") {
+        ctx.onstatechange = null;
+        resolve();
+      }
+    };
+  });
+}
+
+async function runTest() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["media.navigator.streams.fake", true],
+      ["media.navigator.permission.disabled", true],
+    ],
+  });
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const track = stream.getAudioTracks()[0];
+
+  const interactive = new AudioContext({ latencyHint: "interactive" });
+  const balanced    = new AudioContext({ latencyHint: "balanced" });
+
+  await Promise.all([waitForRunning(interactive), waitForRunning(balanced)]);
+
+  const trackGraphId      = wrap(track).mediaTrackGraphId;
+  const interactiveGraphId = wrap(interactive).mediaTrackGraphId;
+  const balancedGraphId   = wrap(balanced).mediaTrackGraphId;
+
+  is(interactiveGraphId, trackGraphId,
+    "Interactive AudioContext shares a MediaTrackGraph with the gUM track");
+
+  isnot(balancedGraphId, trackGraphId,
+    "Balanced AudioContext uses a different MediaTrackGraph from the gUM track");
+
+  track.stop();
+  await Promise.all([interactive.close(), balanced.close()]);
+}
+
+runTest().then(() => SimpleTest.finish(), e => {
+  ok(false, `Test failed: ${e}`);
+  SimpleTest.finish();
+});
+
+</script>
+</pre>
+</body>
+</html>

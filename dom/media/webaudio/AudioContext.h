@@ -198,6 +198,13 @@ class AudioContext final : public DOMEventTargetHelper,
 
   void GetOutputTimestamp(AudioTimestamp& aTimeStamp);
 
+  // Chrome-only, for testing only.
+  uint32_t CallbackBufferSize() const;
+  // Chrome-only, for testing only.
+  uint32_t RequestedLatencyFrames() const { return mRequestedLatencyFrames; }
+  // Chrome-only, for testing only.
+  uint64_t MediaTrackGraphId() const;
+
   AudioWorklet* GetAudioWorklet(ErrorResult& aRv);
 
   bool IsRunning() const;
