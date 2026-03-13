@@ -29,6 +29,8 @@ class AudioDeviceInfo final : public nsIAudioDeviceInfo {
   const nsString& Name() const;
   uint32_t DefaultRate() const { return mDefaultRate; }
   uint32_t MaxChannels() const;
+  uint32_t MaxLatency() const { return mMaxLatency; }
+  uint32_t MinLatency() const { return mMinLatency; }
   uint32_t Type() const;
   uint32_t State() const;
   const nsString& GroupID() const;

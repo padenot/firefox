@@ -441,6 +441,7 @@ void MediaEngineFakeAudioSource::GetSettings(
   aOutSettings.mAutoGainControl.Construct(false);
   aOutSettings.mEchoCancellation.Construct(false);
   aOutSettings.mNoiseSuppression.Construct(false);
+  aOutSettings.mLatency.Construct(0.0);
   aOutSettings.mChannelCount.Construct(1);
 }
 
@@ -463,6 +464,11 @@ void MediaEngineFakeAudioSource::GetCapabilities(
   channelCountRange.mMax.Construct(1);
   channelCountRange.mMin.Construct(1);
   aOutCapabilities.mChannelCount.Construct(channelCountRange);
+
+  dom::DoubleRange latencyRange;
+  latencyRange.mMin.Construct(256.0 / 44100.0);
+  latencyRange.mMax.Construct(4096.0 / 44100.0);
+  aOutCapabilities.mLatency.Construct(latencyRange);
 }
 
 nsresult MediaEngineFakeAudioSource::Allocate(

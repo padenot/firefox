@@ -80,6 +80,14 @@ class AudioInputSource : public CubebInputStream::Listener {
   // This can be fired on any thread.
   void DeviceChangedCallback() override;
 
+  // Any threads (written on graph thread, read on main thread):
+  std::atomic<double> mLatencySeconds{0.0};
+  double LatencySeconds() const {
+    // memory_order_relaxed is sufficient: we only need atomicity for safe
+    // concurrent reads, with no ordering relationship required.
+    return mLatencySeconds.load(std::memory_order_relaxed);
+  }
+
   // Any threads:
   // The unique id of this source.
   const Id mId;

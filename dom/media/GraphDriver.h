@@ -681,6 +681,8 @@ class AudioCallbackDriver final : public GraphDriver,
 
   // Returns the output latency for the current audio output stream.
   TimeDuration AudioOutputLatency();
+  // Returns the input latency for the current audio input stream.
+  TimeDuration AudioInputLatency();
 
   /* Returns true if this driver has a fallback driver and handover to the audio
    * callback has not been completed. */

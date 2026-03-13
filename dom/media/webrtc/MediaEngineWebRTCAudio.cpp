@@ -74,6 +74,7 @@ MediaEngineWebRTCMicrophoneSource::MediaEngineWebRTCMicrophoneSource(
   mSettings->mEchoCancellation.Construct(0);
   mSettings->mAutoGainControl.Construct(0);
   mSettings->mNoiseSuppression.Construct(0);
+  mSettings->mLatency.Construct(0.0);
   mSettings->mChannelCount.Construct(0);
 
   mState = kReleased;
@@ -81,7 +82,10 @@ MediaEngineWebRTCMicrophoneSource::MediaEngineWebRTCMicrophoneSource(
   // Set mMaxChannelsCapablitiy on main thread.
   NS_DispatchToMainThread(NS_NewRunnableFunction(
       __func__, [capabilities = mCapabilities,
-                 deviceMaxChannelCount = mDeviceMaxChannelCount] {
+                 deviceMaxChannelCount = mDeviceMaxChannelCount,
+                 maxLatency = mDeviceInfo->MaxLatency(),
+                 minLatency = mDeviceInfo->MinLatency(),
+                 defaultRate = mDeviceInfo->DefaultRate()] {
         nsTArray<bool> echoCancellation;
         echoCancellation.AppendElement(true);
         echoCancellation.AppendElement(false);
@@ -99,6 +103,16 @@ MediaEngineWebRTCMicrophoneSource::MediaEngineWebRTCMicrophoneSource(
         noiseSuppression.AppendElement(false);
         capabilities->mNoiseSuppression.Reset();
         capabilities->mNoiseSuppression.Construct(std::move(noiseSuppression));
+
+        if (defaultRate && maxLatency && minLatency) {
+          dom::DoubleRange latencyRange;
+          latencyRange.mMax.Construct(static_cast<double>(maxLatency) /
+                                      defaultRate);
+          latencyRange.mMin.Construct(static_cast<double>(minLatency) /
+                                      defaultRate);
+          capabilities->mLatency.Reset();
+          capabilities->mLatency.Construct(latencyRange);
+        }
 
         if (deviceMaxChannelCount) {
           dom::ULongRange channelCountRange;
@@ -461,6 +475,11 @@ void MediaEngineWebRTCMicrophoneSource::GetSettings(
     dom::MediaTrackSettings& aOutSettings) const {
   MOZ_ASSERT(NS_IsMainThread());
   aOutSettings = *mSettings;
+  if (mInputProcessing) {
+    // mInputProcessing computes latency on the graph thread and exposes it via
+    // an atomic, which is safe to read here on the main thread.
+    aOutSettings.mLatency.Value() = mInputProcessing->GetLatencySeconds();
+  }
 }
 
 void MediaEngineWebRTCMicrophoneSource::GetCapabilities(
@@ -600,12 +619,34 @@ void AudioInputProcessing::Stop(MediaTrackGraph* aGraph) {
   mEnabled = false;
 
   if (IsPassThrough(aGraph)) {
+    mLatencySeconds.store(0.0, std::memory_order_relaxed);
     return;
   }
 
   // Packetizer is active and we were just stopped. Stop the packetizer and
   // processing.
   ResetAudioProcessing(aGraph);
+}
+
+double AudioInputProcessing::DeviceLatencySeconds(
+    AudioProcessingTrack* aTrack) const {
+  aTrack->AssertOnGraphThread();
+  DeviceInputTrack* inputTrack = aTrack->GetDeviceInputTrackGraphThread();
+  if (auto* nonNative = inputTrack->AsNonNativeInputTrack()) {
+    return nonNative->InputLatencySeconds();
+  }
+  if (auto* native = inputTrack->AsNativeInputTrack()) {
+    return native->InputLatencySeconds();
+  }
+  return 0.0;
+}
+
+void AudioInputProcessing::UpdateLatency(AudioProcessingTrack* aTrack,
+                                         TrackTime aBufferedFrames) {
+  aTrack->AssertOnGraphThread();
+  const double latency = DeviceLatencySeconds(aTrack) +
+                         double(aBufferedFrames) / aTrack->mSampleRate;
+  mLatencySeconds.store(latency, std::memory_order_relaxed);
 }
 
 // The following is how how Process() works in pass-through and non-pass-through
@@ -736,6 +777,7 @@ void AudioInputProcessing::Process(AudioProcessingTrack* aTrack,
               " frames of silence to output (disabled)",
               graph, graph->CurrentDriver(), this, need);
     aOutput->AppendNullData(need);
+    mLatencySeconds.store(0.0, std::memory_order_relaxed);
     return;
   }
 
@@ -756,6 +798,7 @@ void AudioInputProcessing::Process(AudioProcessingTrack* aTrack,
         " frames of input data to output directly (PassThrough)",
         graph, graph->CurrentDriver(), this, aInput->GetDuration());
     aOutput->AppendSegment(aInput);
+    UpdateLatency(aTrack, 0);
     return;
   }
 
@@ -787,6 +830,9 @@ void AudioInputProcessing::Process(AudioProcessingTrack* aTrack,
   MOZ_ASSERT(mSegment.GetDuration() > need);
   aOutput->AppendSlice(mSegment, 0, need);
   mSegment.RemoveLeading(need);
+  UpdateLatency(
+      aTrack, mSegment.GetDuration() +
+                  static_cast<TrackTime>(mPacketizerInput->FramesAvailable()));
   LOG_FRAME("(Graph %p, Driver %p) AudioInputProcessing %p moving %" PRId64
             " frames of data to output, leaving %" PRId64 " frames in buffer",
             graph, graph->CurrentDriver(), this, need, mSegment.GetDuration());
@@ -1201,6 +1247,7 @@ const webrtc::AudioProcessing::Config& AudioInputProcessing::AppliedConfig(
 void AudioInputProcessing::End() {
   mEnded = true;
   mSegment.Clear();
+  mLatencySeconds.store(0.0, std::memory_order_relaxed);
 }
 
 TrackTime AudioInputProcessing::NumBufferedFrames(
@@ -1331,6 +1378,7 @@ void AudioInputProcessing::ResetAudioProcessing(MediaTrackGraph* aGraph) {
       " frames of data",
       aGraph, aGraph->CurrentDriver(), this, mSegment.GetDuration());
   mSegment.Clear();
+  mLatencySeconds.store(0.0, std::memory_order_relaxed);
 
   mPacketizerInput = Nothing();
   mChunksInPacketizer.clear();
@@ -1481,6 +1529,7 @@ void MediaEngineWebRTCAudioCaptureSource::GetSettings(
   aOutSettings.mAutoGainControl.Construct(false);
   aOutSettings.mEchoCancellation.Construct(false);
   aOutSettings.mNoiseSuppression.Construct(false);
+  aOutSettings.mLatency.Construct(0.0);
   aOutSettings.mChannelCount.Construct(1);
 }
 

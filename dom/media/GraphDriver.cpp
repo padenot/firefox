@@ -1231,6 +1231,21 @@ TimeDuration AudioCallbackDriver::AudioOutputLatency() {
                                    mSampleRate);
 }
 
+TimeDuration AudioCallbackDriver::AudioInputLatency() {
+  TRACE("AudioCallbackDriver::AudioInputLatency");
+  if (mAudioStreamState < AudioStreamState::Starting) {
+    return TimeDuration::FromSeconds(0.0);
+  }
+  uint32_t latencyFrames;
+  int rv = cubeb_stream_get_input_latency(mAudioStream, &latencyFrames);
+  if (rv || mSampleRate == 0) {
+    return TimeDuration::FromSeconds(0.0);
+  }
+
+  return TimeDuration::FromSeconds(static_cast<double>(latencyFrames) /
+                                   mSampleRate);
+}
+
 bool AudioCallbackDriver::HasFallback() const {
   MOZ_ASSERT(InIteration());
   return mFallbackDriverState != FallbackDriverState::None;

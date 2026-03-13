@@ -4,6 +4,8 @@
 
 #include "DeviceInputTrack.h"
 
+#include "GraphDriver.h"
+#include "MediaTrackGraphImpl.h"
 #include "Tracing.h"
 
 namespace mozilla {
@@ -621,6 +623,20 @@ void NonNativeInputTrack::NotifyInputStopped(uint32_t aSourceId) {
 AudioInputSource::Id NonNativeInputTrack::GenerateSourceId() {
   AssertOnGraphThread();
   return mSourceIdNumber++;
+}
+
+double NativeInputTrack::InputLatencySeconds() const {
+  AssertOnGraphThread();
+  auto* impl = static_cast<const MediaTrackGraphImpl*>(Graph());
+  if (auto* driver = impl->CurrentDriver()->AsAudioCallbackDriver()) {
+    return driver->AudioInputLatency().ToSeconds();
+  }
+  return 0.0;
+}
+
+double NonNativeInputTrack::InputLatencySeconds() const {
+  AssertOnGraphThreadOrNotRunning();
+  return mAudioSource ? mAudioSource->LatencySeconds() : 0.0;
 }
 
 void NonNativeInputTrack::ReevaluateProcessingParams() {

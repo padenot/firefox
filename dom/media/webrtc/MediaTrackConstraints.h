@@ -212,6 +212,7 @@ class NormalizedConstraintSet {
   StringRange mGroupId;
   LongRange mViewportOffsetX, mViewportOffsetY, mViewportWidth, mViewportHeight;
   BooleanRange mEchoCancellation, mNoiseSuppression, mAutoGainControl;
+  DoubleRange mLatency;
   LongRange mChannelCount;
 
  public:
@@ -242,6 +243,7 @@ class NormalizedConstraintSet {
                           advanced),
         mAutoGainControl("autoGainControl"_ns, aOther.mAutoGainControl,
                          advanced),
+        mLatency("latency"_ns, aOther.mLatency, advanced),
         mChannelCount("channelCount"_ns, aOther.mChannelCount, advanced) {}
 
   bool operator==(const NormalizedConstraintSet& aOther) const noexcept {
@@ -259,7 +261,7 @@ class NormalizedConstraintSet {
            mEchoCancellation == aOther.mEchoCancellation &&
            mNoiseSuppression == aOther.mNoiseSuppression &&
            mAutoGainControl == aOther.mAutoGainControl &&
-           mChannelCount == aOther.mChannelCount;
+           mLatency == aOther.mLatency && mChannelCount == aOther.mChannelCount;
   }
 };
 

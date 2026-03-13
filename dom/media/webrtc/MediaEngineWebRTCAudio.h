@@ -5,6 +5,8 @@
 #ifndef MediaEngineWebRTCAudio_h
 #define MediaEngineWebRTCAudio_h
 
+#include <atomic>
+
 #include "AudioDeviceInfo.h"
 #include "AudioPacketizer.h"
 #include "AudioSegment.h"
@@ -200,6 +202,18 @@ class AudioInputProcessing : public AudioDataListener {
 
   bool IsEnded() const { return mEnded; }
 
+  double DeviceLatencySeconds(AudioProcessingTrack* aTrack) const;
+  void UpdateLatency(AudioProcessingTrack* aTrack, TrackTime aBufferedFrames);
+
+  // Returns the total input latency: device I/O latency plus packetizer
+  // and processing buffering latency. Updated on the graph thread, safe to
+  // read on any thread.
+  double GetLatencySeconds() const {
+    // memory_order_relaxed is sufficient: we only need atomicity for safe
+    // concurrent reads, with no ordering relationship required.
+    return mLatencySeconds.load(std::memory_order_relaxed);
+  }
+
   // For testing:
   bool HadAECAndDrift() const { return mHadAECAndDrift; }
 
@@ -298,6 +312,7 @@ class AudioInputProcessing : public AudioDataListener {
   RefPtr<WebrtcEnvironmentWrapper> mEnvWrapper;
   Maybe<WavDumper> mInputDump;
   Maybe<WavDumper> mOutputDump;
+  std::atomic<double> mLatencySeconds{0.0};
 };
 
 // MediaTrack subclass tailored for MediaEngineWebRTCMicrophoneSource.

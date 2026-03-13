@@ -567,6 +567,7 @@ void MediaConstraintsHelper::LogConstraints(
     LogConstraintRange(c.mEchoCancellation);
     LogConstraintRange(c.mAutoGainControl);
     LogConstraintRange(c.mNoiseSuppression);
+    LogConstraintRange(c.mLatency);
     LogConstraintRange(c.mChannelCount);
     return "}";
   }());

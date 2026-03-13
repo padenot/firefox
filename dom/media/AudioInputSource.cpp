@@ -215,6 +215,9 @@ AudioSegment AudioInputSource::GetAudioSegment(TrackTime aDuration,
 
   if (latency) {
     mDriftCorrector.SetSourceLatency(*latency);
+    // memory_order_relaxed is sufficient: we only need atomicity for safe
+    // concurrent reads, with no ordering relationship required.
+    mLatencySeconds.store(latency->ToSeconds(), std::memory_order_relaxed);
   }
   return mDriftCorrector.RequestFrames(raw, static_cast<uint32_t>(aDuration));
 }

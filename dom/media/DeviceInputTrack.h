@@ -242,6 +242,9 @@ class NativeInputTrack final : public DeviceInputTrack {
                        size_t aFrames, TrackRate aRate, uint32_t aChannels,
                        uint32_t aAlreadyBuffered);
 
+  // Graph thread only
+  double InputLatencySeconds() const;
+
   // Any thread
   NativeInputTrack* AsNativeInputTrack() override { return this; }
 
@@ -282,6 +285,7 @@ class NonNativeInputTrack final : public DeviceInputTrack {
   void NotifyInputStopped(AudioInputSource::Id aSourceId);
   AudioInputSource::Id GenerateSourceId();
   void ReevaluateProcessingParams();
+  double InputLatencySeconds() const;
 
  private:
   ~NonNativeInputTrack() = default;
