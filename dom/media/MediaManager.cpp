@@ -1175,6 +1175,35 @@ void LocalMediaDevice::GetSettings(MediaTrackSettings& aOutSettings) {
 void LocalMediaDevice::GetCapabilities(
     MediaTrackCapabilities& aOutCapabilities) {
   MOZ_ASSERT(NS_IsMainThread());
+  if (mSource) {
+    mSource->GetCapabilities(aOutCapabilities);
+    return;
+  }
+  if (AudioDeviceInfo* info = GetAudioDeviceInfo()) {
+    nsTArray<bool> ec{true, false};
+    aOutCapabilities.mEchoCancellation.Construct(std::move(ec));
+    nsTArray<bool> agc{true, false};
+    aOutCapabilities.mAutoGainControl.Construct(std::move(agc));
+    nsTArray<bool> ns_{true, false};
+    aOutCapabilities.mNoiseSuppression.Construct(std::move(ns_));
+    uint32_t defaultRate = info->DefaultRate();
+    if (defaultRate && info->MaxLatency() && info->MinLatency()) {
+      dom::DoubleRange latency;
+      latency.mMax.Construct(double(info->MaxLatency()) / defaultRate);
+      latency.mMin.Construct(double(info->MinLatency()) / defaultRate);
+      aOutCapabilities.mLatency.Construct(latency);
+    }
+    if (uint32_t maxChannels = info->MaxChannels()) {
+      dom::ULongRange channelCount;
+      channelCount.mMax.Construct(maxChannels);
+      channelCount.mMin.Construct(1);
+      aOutCapabilities.mChannelCount.Construct(channelCount);
+    }
+    // Audio sources (WebRTC microphones) must not be created on the main
+    // thread, so we compute capabilities directly from AudioDeviceInfo here
+    // rather than calling Source()->GetCapabilities().
+    return;
+  }
   Source()->GetCapabilities(aOutCapabilities);
 }
 

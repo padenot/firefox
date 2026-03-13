@@ -38,6 +38,4 @@ void MediaDeviceInfo::GetGroupId(nsString& retval) { retval = mGroupId; }
 
 void MediaDeviceInfo::GetLabel(nsString& retval) { retval = mLabel; }
 
-MediaDeviceKind Kind();
-
 }  // namespace mozilla::dom

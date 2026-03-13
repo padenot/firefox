@@ -18,7 +18,7 @@ namespace mozilla::dom {
 #define MOZILLA_DOM_MEDIADEVICEINFO_IMPLEMENTATION_IID \
   {0x25091870, 0x84d6, 0x4acf, {0xaf, 0x97, 0x6e, 0xd5, 0x5b, 0xe0, 0x47, 0xb2}}
 
-class MediaDeviceInfo final : public nsISupports, public nsWrapperCache {
+class MediaDeviceInfo : public nsISupports, public nsWrapperCache {
  public:
   explicit MediaDeviceInfo(const nsAString& aDeviceId, MediaDeviceKind aKind,
                            const nsAString& aLabel, const nsAString& aGroupId);
@@ -37,7 +37,7 @@ class MediaDeviceInfo final : public nsISupports, public nsWrapperCache {
   void GetLabel(nsString& retval);
   void GetGroupId(nsString& retval);
 
- private:
+ protected:
   MediaDeviceKind mKind;
   nsString mDeviceId;
   nsString mLabel;

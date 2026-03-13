@@ -13,6 +13,7 @@
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/FeaturePolicyUtils.h"
+#include "mozilla/dom/InputDeviceInfo.h"
 #include "mozilla/dom/MediaDeviceInfo.h"
 #include "mozilla/dom/MediaDevicesBinding.h"
 #include "mozilla/dom/MediaStreamBinding.h"
@@ -503,10 +504,24 @@ void MediaDevices::ResolveEnumerateDevicesPromise(
   for (const RefPtr<LocalMediaDevice>& device : aDevices) {
     bool exposeInfo = CanExposeInfo(device->Kind()) || legacy;
     bool exposeLabel = legacy ? capturePermitted : exposeInfo;
-    infos.AppendElement(MakeRefPtr<MediaDeviceInfo>(
-        exposeInfo ? device->mID : u""_ns, device->Kind(),
-        exposeLabel ? device->mName : u""_ns,
-        exposeInfo ? device->mGroupID : u""_ns));
+    nsString deviceId = exposeInfo ? device->mID : u""_ns;
+    nsString groupId = exposeInfo ? device->mGroupID : u""_ns;
+    nsString label = exposeLabel ? device->mName : u""_ns;
+    if (device->Kind() == dom::MediaDeviceKind::Audioinput ||
+        device->Kind() == dom::MediaDeviceKind::Videoinput) {
+      RefPtr caps =
+          MakeAndAddRef<media::Refcountable<dom::MediaTrackCapabilities>>();
+      device->GetCapabilities(*caps);
+      if (exposeInfo) {
+        caps->mDeviceId.Construct(deviceId);
+        caps->mGroupId.Construct(groupId);
+      }
+      infos.AppendElement(MakeRefPtr<InputDeviceInfo>(
+          deviceId, device->Kind(), label, groupId, std::move(caps)));
+    } else {
+      infos.AppendElement(MakeRefPtr<MediaDeviceInfo>(deviceId, device->Kind(),
+                                                      label, groupId));
+    }
   }
   aPromise->MaybeResolve(std::move(infos));
 }
