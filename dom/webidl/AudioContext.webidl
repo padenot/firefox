@@ -16,10 +16,21 @@ enum AudioContextLatencyCategory {
   "playback"
 };
 
+// https://webaudio.github.io/web-audio-api/#enumdef-audiosinktype
+enum AudioSinkType {
+  "none"
+};
+
+// https://webaudio.github.io/web-audio-api/#AudioSinkOptions
+dictionary AudioSinkOptions {
+  required AudioSinkType type;
+};
+
 // https://webaudio.github.io/web-audio-api/#AudioContextOptions
 dictionary AudioContextOptions {
   (AudioContextLatencyCategory or double) latencyHint = "interactive";
              float        sampleRate;
+  (DOMString or AudioSinkOptions) sinkId = "";
 };
 
 dictionary AudioTimestamp {
@@ -53,6 +64,16 @@ interface AudioContext : BaseAudioContext {
 
     [NewObject, Throws]
     MediaStreamAudioDestinationNode createMediaStreamDestination();
+
+    // https://webaudio.github.io/web-audio-api/#dom-audiocontext-sinkid
+    readonly attribute (DOMString or AudioSinkInfo) sinkId;
+
+    // https://webaudio.github.io/web-audio-api/#dom-audiocontext-setsinkid
+    [NewObject]
+    Promise<undefined> setSinkId((DOMString or AudioSinkOptions) sinkId);
+
+    attribute EventHandler onsinkchange;
+    attribute EventHandler onerror;
 
     // Test-only: exposes internals for verifying latencyHint behaviour.
     [ChromeOnly]

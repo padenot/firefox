@@ -8,6 +8,12 @@
 </head>
 <body>
 <script>
+// Setup: Get permission via getUserMedia() so that enumerateDevices() exposes
+// all audio output devices.
+promise_setup(async t => {
+  await navigator.mediaDevices.getUserMedia({ audio: true });
+}, 'Get permission via getUserMedia().');
+
 promise_test(async t => {
   // A timeout for waiting for the audio context to transition to a new state.
   const TRANSITION_TIMEOUT = 250;

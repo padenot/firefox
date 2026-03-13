@@ -283,9 +283,11 @@ const AudioNodeTrack::Flags kTrackFlags =
     AudioNodeTrack::NEED_MAIN_THREAD_CURRENT_TIME |
     AudioNodeTrack::NEED_MAIN_THREAD_ENDED | AudioNodeTrack::EXTERNAL_OUTPUT;
 
-AudioDestinationNode::AudioDestinationNode(
-    AudioContext* aContext, bool aIsOffline, uint32_t aNumberOfChannels,
-    uint32_t aLength, uint32_t aRequestedCallbackFrames)
+AudioDestinationNode::AudioDestinationNode(AudioContext* aContext,
+                                           bool aIsOffline,
+                                           uint32_t aNumberOfChannels,
+                                           uint32_t aLength,
+                                           uint32_t aRequestedCallbackFrames)
     : AudioNode(aContext, aNumberOfChannels, ChannelCountMode::Explicit,
                 ChannelInterpretation::Speakers),
       mFramesToProduce(aLength),

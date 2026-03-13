@@ -6,6 +6,7 @@
 #define AudioContext_h_
 
 #include "AudioParamDescriptorMap.h"
+#include "AudioSinkInfo.h"
 #include "MediaBufferDecoder.h"
 #include "MediaTrackGraph.h"
 #include "X11UndefineNone.h"
@@ -133,11 +134,12 @@ struct AudioContextOptions;
 class AudioContext final : public DOMEventTargetHelper,
                            public nsIMemoryReporter,
                            public RelativeTimeline {
-  AudioContext(nsPIDOMWindowInner* aParentWindow, bool aIsOffline,
-               uint32_t aNumberOfChannels = 0, uint32_t aLength = 0,
-               float aSampleRate = 0.0f,
-               const OwningAudioContextLatencyCategoryOrDouble* aLatencyHint =
-                   nullptr);
+  AudioContext(
+      nsPIDOMWindowInner* aParentWindow, bool aIsOffline,
+      uint32_t aNumberOfChannels = 0, uint32_t aLength = 0,
+      float aSampleRate = 0.0f,
+      const OwningAudioContextLatencyCategoryOrDouble* aLatencyHint = nullptr,
+      const OwningStringOrAudioSinkOptions* aSinkId = nullptr);
   ~AudioContext();
 
  public:
@@ -197,6 +199,16 @@ class AudioContext final : public DOMEventTargetHelper,
   double OutputLatency();
 
   void GetOutputTimestamp(AudioTimestamp& aTimeStamp);
+
+  // https://webaudio.github.io/web-audio-api/#dom-audiocontext-sinkid
+  void GetSinkId(OwningStringOrAudioSinkInfo& aResult);
+
+  // https://webaudio.github.io/web-audio-api/#dom-audiocontext-setsinkid
+  already_AddRefed<Promise> SetSinkId(const StringOrAudioSinkOptions& aSinkId,
+                                      ErrorResult& aRv);
+
+  IMPL_EVENT_HANDLER(sinkchange)
+  IMPL_EVENT_HANDLER(error)
 
   // Chrome-only, for testing only.
   uint32_t CallbackBufferSize() const;
@@ -369,6 +381,7 @@ class AudioContext final : public DOMEventTargetHelper,
   void ResumeInternal();
   void SuspendInternal(void* aPromise, AudioContextOperationFlags aFlags);
   void CloseInternal(void* aPromise, AudioContextOperationFlags aFlags);
+  void ValidateSinkIdAtConstruction();
 
   // Will report error message to console and dispatch testing event if needed
   // when AudioContext is blocked by autoplay policy.
@@ -420,6 +433,14 @@ class AudioContext final : public DOMEventTargetHelper,
   const bool mShouldResistFingerprinting;
   const bool mIsOffline;
   uint32_t mRequestedLatencyFrames = 0;
+  // [[sink ID]] slot: empty string means default device.
+  nsString mSinkId;
+  // True when [[sink ID]] is AudioSinkInfo{type:"none"}.
+  bool mSinkIsNone = false;
+  // Cached AudioSinkInfo object for the {type:"none"} case.
+  RefPtr<AudioSinkInfo> mSinkInfo;
+  // Keeps setSinkId() promises alive until resolved.
+  nsTArray<RefPtr<Promise>> mPendingSinkIdPromises;
   // true iff realtime or startRendering() has been called.
   bool mIsStarted;
   bool mIsShutDown;

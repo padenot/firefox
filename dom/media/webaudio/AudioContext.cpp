@@ -8,8 +8,10 @@
 #include "AudioBufferSourceNode.h"
 #include "AudioChannelService.h"
 #include "AudioDestinationNode.h"
+#include "AudioDeviceInfo.h"
 #include "AudioListener.h"
 #include "AudioNodeTrack.h"
+#include "AudioSinkInfo.h"
 #include "AudioStream.h"
 #include "AudioWorkletImpl.h"
 #include "AutoplayPolicy.h"
@@ -22,6 +24,7 @@
 #include "DynamicsCompressorNode.h"
 #include "GainNode.h"
 #include "IIRFilterNode.h"
+#include "MediaDevices.h"
 #include "MediaElementAudioSourceNode.h"
 #include "MediaStreamAudioDestinationNode.h"
 #include "MediaStreamAudioSourceNode.h"
@@ -45,6 +48,7 @@
 #include "mozilla/dom/AnalyserNodeBinding.h"
 #include "mozilla/dom/AudioBufferSourceNodeBinding.h"
 #include "mozilla/dom/AudioContextBinding.h"
+#include "mozilla/dom/AudioSinkInfoBinding.h"
 #include "mozilla/dom/AudioWorklet.h"
 #include "mozilla/dom/BaseAudioContextBinding.h"
 #include "mozilla/dom/BiquadFilterNodeBinding.h"
@@ -56,12 +60,14 @@
 #include "mozilla/dom/ConvolverNodeBinding.h"
 #include "mozilla/dom/DelayNodeBinding.h"
 #include "mozilla/dom/DynamicsCompressorNodeBinding.h"
+#include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/GainNodeBinding.h"
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/dom/IIRFilterNodeBinding.h"
 #include "mozilla/dom/MediaElementAudioSourceNodeBinding.h"
 #include "mozilla/dom/MediaStreamAudioSourceNodeBinding.h"
 #include "mozilla/dom/MediaStreamTrackAudioSourceNodeBinding.h"
+#include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/OfflineAudioContextBinding.h"
 #include "mozilla/dom/OscillatorNodeBinding.h"
 #include "mozilla/dom/PannerNodeBinding.h"
@@ -102,6 +108,8 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(AudioContext)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mWorklet)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPromiseGripArray)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingResumePromises)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingSinkIdPromises)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mSinkInfo)
   if (tmp->mTracksAreSuspended || !tmp->mIsStarted) {
     NS_IMPL_CYCLE_COLLECTION_UNLINK(mActiveNodes)
   }
@@ -121,6 +129,8 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(AudioContext,
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mWorklet)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPromiseGripArray)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingResumePromises)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingSinkIdPromises)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSinkInfo)
   if (tmp->mTracksAreSuspended || !tmp->mIsStarted) {
     NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mActiveNodes)
   }
@@ -149,7 +159,8 @@ static float GetSampleRateForAudioContext(bool aIsOffline, float aSampleRate,
 AudioContext::AudioContext(
     nsPIDOMWindowInner* aWindow, bool aIsOffline, uint32_t aNumberOfChannels,
     uint32_t aLength, float aSampleRate,
-    const OwningAudioContextLatencyCategoryOrDouble* aLatencyHint)
+    const OwningAudioContextLatencyCategoryOrDouble* aLatencyHint,
+    const OwningStringOrAudioSinkOptions* aSinkId)
     : DOMEventTargetHelper(aWindow),
       mId(gAudioContextId++),
       mSampleRate(GetSampleRateForAudioContext(
@@ -185,11 +196,11 @@ AudioContext::AudioContext(
     };
     const uint32_t minFrames = interactiveFrames();
     const uint32_t balancedFrames = minFrames * 4;
-    const uint32_t playbackFrames = std::max(
-        balancedFrames,
-        static_cast<uint32_t>(
-            CubebUtils::GetCubebPlaybackLatencyInMilliseconds() *
-            mSampleRate / 1000));
+    const uint32_t playbackFrames =
+        std::max(balancedFrames,
+                 static_cast<uint32_t>(
+                     CubebUtils::GetCubebPlaybackLatencyInMilliseconds() *
+                     mSampleRate / 1000));
     if (aLatencyHint->IsAudioContextLatencyCategory()) {
       switch (aLatencyHint->GetAsAudioContextLatencyCategory()) {
         case AudioContextLatencyCategory::Interactive:
@@ -204,20 +215,31 @@ AudioContext::AudioContext(
       }
     } else if (aLatencyHint->IsDouble()) {
       latencyFrames = std::clamp(
-          static_cast<uint32_t>(
-              std::max(0.0, aLatencyHint->GetAsDouble()) * mSampleRate),
+          static_cast<uint32_t>(std::max(0.0, aLatencyHint->GetAsDouble()) *
+                                mSampleRate),
           minFrames, playbackFrames);
     } else {
-      latencyFrames = 0;
+      latencyFrames = minFrames;
     }
     if (latencyFrames != 0) {
-      latencyFrames = ((latencyFrames + WEBAUDIO_BLOCK_SIZE / 2) /
-                       WEBAUDIO_BLOCK_SIZE) *
-                      WEBAUDIO_BLOCK_SIZE;
+      latencyFrames =
+          ((latencyFrames + WEBAUDIO_BLOCK_SIZE / 2) / WEBAUDIO_BLOCK_SIZE) *
+          WEBAUDIO_BLOCK_SIZE;
       latencyFrames = std::max(latencyFrames, WEBAUDIO_BLOCK_SIZE);
       mRequestedLatencyFrames = latencyFrames;
     } else {
       mRequestedLatencyFrames = minFrames;
+    }
+  }
+
+  // Step 11.1. Initialize [[sink ID]] from options.sinkId.
+  if (!aIsOffline && aSinkId) {
+    if (aSinkId->IsAudioSinkOptions() &&
+        aSinkId->GetAsAudioSinkOptions().mType == AudioSinkType::None) {
+      mSinkIsNone = true;
+    } else if (aSinkId->IsString() && !aSinkId->GetAsString().IsEmpty()) {
+      // Store tentatively; validated asynchronously below.
+      mSinkId = aSinkId->GetAsString();
     }
   }
 
@@ -227,6 +249,15 @@ AudioContext::AudioContext(
   mDestination = new AudioDestinationNode(this, aIsOffline, aNumberOfChannels,
                                           aLength, latencyFrames);
   mDestination->Init();
+
+  // Step 11.2 (continued). For {type:"none"} or a specific device ID, remove
+  // the default audio output. This must happen after the destination node is
+  // created and has registered its audio output.
+  // For a device ID, ValidateSinkIdAtConstruction() will add the real device
+  // output once the device is confirmed to exist.
+  if (!aIsOffline && (mSinkIsNone || !mSinkId.IsEmpty())) {
+    mDestination->Track()->RemoveAudioOutput(nullptr);
+  }
   // If an AudioContext is not allowed to start, we would postpone its state
   // transition from `suspended` to `running` until sites explicitly call
   // AudioContext.resume() or AudioScheduledSourceNode.start().
@@ -235,7 +266,11 @@ AudioContext::AudioContext(
     AUTOPLAY_LOG("AudioContext %p is not allowed to start", this);
     ReportBlocked();
   } else if (!mIsOffline) {
-    ResumeInternal();
+    if (mSinkId.IsEmpty()) {
+      ResumeInternal();
+    }
+    // For a specific sinkId, ResumeInternal() is deferred to
+    // ValidateSinkIdAtConstruction() so the graph starts on the right device.
   }
 
   // The context can't be muted until it has a destination.
@@ -329,9 +364,21 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 
   WEB_AUDIO_API_LOG("AudioContext ctor sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
-      new AudioContext(window, false, 2, 0, sampleRate, &aOptions.mLatencyHint);
+      new AudioContext(window, false, 2, 0, sampleRate, &aOptions.mLatencyHint,
+                       &aOptions.mSinkId);
 
   RegisterWeakMemoryReporter(object);
+
+  // Step 11.1 (continued): If a specific device ID was given, validate it
+  // asynchronously (the device list isn't available synchronously). Done here
+  // rather than in the constructor so that a strong reference already exists.
+  if (!object->mSinkId.IsEmpty()) {
+    AbstractThread::MainThread()->Dispatch(NS_NewRunnableFunction(
+        "AudioContext::ValidateSinkIdAtConstruction",
+        [self = RefPtr<AudioContext>(object)]() {
+          self->ValidateSinkIdAtConstruction();
+        }));
+  }
 
   return object.forget();
 }
@@ -625,6 +672,246 @@ double AudioContext::OutputLatency() {
   return latency_s;
 }
 
+void AudioContext::GetSinkId(OwningStringOrAudioSinkInfo& aResult) {
+  // https://webaudio.github.io/web-audio-api/#dom-audiocontext-sinkid
+  // Returns the value of the [[sink ID]] internal slot.
+  if (mSinkIsNone) {
+    if (!mSinkInfo) {
+      mSinkInfo = new AudioSinkInfo(GetParentObject(), AudioSinkType::None);
+    }
+    aResult.SetAsAudioSinkInfo() = mSinkInfo;
+  } else {
+    aResult.SetAsString() = mSinkId;
+  }
+}
+
+already_AddRefed<Promise> AudioContext::SetSinkId(
+    const StringOrAudioSinkOptions& aSinkId, ErrorResult& aRv) {
+  // https://webaudio.github.io/web-audio-api/#dom-audiocontext-setsinkid
+
+  // Step 1. Let sinkId be the method's first argument. (the parameter)
+
+  // Step 2. If sinkId equals [[sink ID]], return an immediately resolved
+  // promise.
+  bool argIsNone = aSinkId.IsAudioSinkOptions() &&
+                   aSinkId.GetAsAudioSinkOptions().mType == AudioSinkType::None;
+  const nsAString& argString =
+      aSinkId.IsString() ? aSinkId.GetAsString() : EmptyString();
+  bool alreadyMatches =
+      (argIsNone && mSinkIsNone) ||
+      (!argIsNone && !mSinkIsNone && argString.Equals(mSinkId));
+  if (alreadyMatches) {
+    return Promise::CreateResolvedWithUndefined(GetParentObject(), aRv);
+  }
+
+  if (mCloseCalled) {
+    RefPtr<Promise> p = CreatePromise(aRv);
+    if (!p) return nullptr;
+    p->MaybeRejectWithInvalidStateError(
+        "Can't call setSinkId when the AudioContext is closed");
+    return p.forget();
+  }
+
+  // Step 3. Let validationResult be the return value of sink identifier
+  // validation of sinkId.
+  // Step 4. If validationResult is false, return a promise rejected with
+  // "NotAllowedError".
+  //
+  // Validation rules:
+  // - {type:"none"} is always valid.
+  // - Empty string (default device) is always valid.
+  // - Non-empty device ID strings require the "speaker-selection" permission
+  //   and a matching enumerated device.
+  if (aSinkId.IsString() && !argString.IsEmpty()) {
+    nsPIDOMWindowInner* window = GetOwnerWindow();
+    Document* doc = window ? window->GetExtantDoc() : nullptr;
+    if (!doc || !Preferences::GetBool("media.setsinkid.enabled") ||
+        !FeaturePolicyUtils::IsFeatureAllowed(doc, u"speaker-selection"_ns)) {
+      RefPtr<Promise> p = CreatePromise(aRv);
+      if (!p) return nullptr;
+      p->MaybeRejectWithNotAllowedError(
+          "setSinkId requires the speaker-selection permission");
+      return p.forget();
+    }
+
+    // Step 5. Let p be a new promise.
+    RefPtr<Promise> p = CreatePromise(aRv);
+    if (aRv.Failed() || p->State() == Promise::PromiseState::Rejected) {
+      return p.forget();
+    }
+    mPendingSinkIdPromises.AppendElement(p);
+
+    // Step 6. Enumerate audio output devices to validate the device ID and
+    // obtain the AudioDeviceInfo needed for routing.
+    ErrorResult navRv;
+    RefPtr<MediaDevices> mediaDevices =
+        window->Navigator()->GetMediaDevices(navRv);
+    if (navRv.Failed() || !mediaDevices) {
+      DebugOnly<bool> removed = mPendingSinkIdPromises.RemoveElement(p);
+      MOZ_ASSERT(removed);
+      ErrorResult rv;
+      rv.ThrowNotFoundError("Cannot access audio output devices");
+      p->MaybeReject(std::move(rv));
+      return p.forget();
+    }
+
+    nsString deviceId(argString);
+    mediaDevices->GetSinkDevice(deviceId)->Then(
+        GetMainThread(), __func__,
+        [self = RefPtr<AudioContext>(this), p,
+         deviceId](RefPtr<AudioDeviceInfo>&& deviceInfo) mutable {
+          if (self->mIsShutDown) {
+            return;
+          }
+          // Steps 7-8: Release system resources for the current sink and
+          // acquire resources for the new device.
+          if (!self->mSinkIsNone) {
+            self->mDestination->Track()->RemoveAudioOutput(nullptr);
+          }
+          self->mDestination->Track()->AddAudioOutput(nullptr,
+                                                      deviceInfo.get());
+
+          // Steps 10-11: Wait for the graph to confirm the new device is
+          // running before resolving, following the same pattern as Resume.
+          CubebUtils::AudioDeviceID deviceID = deviceInfo->DeviceID();
+          self->Graph()->NotifyWhenDeviceStarted(deviceID)->Then(
+              self->GetMainThread(), __func__,
+              [self, p, deviceId = std::move(deviceId)](bool) {
+                if (self->mIsShutDown) {
+                  return;
+                }
+                // Steps 11.1-11.3: Update [[sink ID]].
+                self->mSinkIsNone = false;
+                self->mSinkId = deviceId;
+                self->mSinkInfo = nullptr;
+                // Step 11.4: Resolve p.
+                bool removed = self->mPendingSinkIdPromises.RemoveElement(p);
+                p->MaybeResolveWithUndefined();
+                // Step 11.5: Fire sinkchange only if we actually changed state.
+                if (!removed) {
+                  return;
+                }
+                nsGlobalWindowInner* win = self->GetOwnerWindow();
+                if (!win) {
+                  return;
+                }
+                Document* doc = win->GetExtantDoc();
+                if (!doc) {
+                  return;
+                }
+                nsContentUtils::DispatchTrustedEvent(
+                    doc, self, u"sinkchange"_ns, CanBubble::eNo,
+                    Cancelable::eNo);
+              },
+              [self, p](nsresult) {
+                if (self->mIsShutDown) {
+                  return;
+                }
+                self->mPendingSinkIdPromises.RemoveElement(p);
+                p->MaybeRejectWithNotFoundError(
+                    "Failed to open audio output device");
+              });
+        },
+        [self = RefPtr<AudioContext>(this), p](nsresult) {
+          if (self->mIsShutDown) {
+            return;
+          }
+          self->mPendingSinkIdPromises.RemoveElement(p);
+          p->MaybeRejectWithNotFoundError("Audio output device not found");
+        });
+
+    // Step 7. Return p.
+    return p.forget();
+  }
+
+  // Step 5. Let p be a new promise (for {type:"none"} and default device).
+  RefPtr<Promise> p = CreatePromise(aRv);
+  if (aRv.Failed() || p->State() == Promise::PromiseState::Rejected) {
+    return p.forget();
+  }
+
+  // Steps 7-8: Pause renderer / release system resources.
+  // This is handled by changing the destination track's audio output
+  // registration, which sends a ControlMessage to the graph thread.
+  if (argIsNone && !mSinkIsNone) {
+    // Switching to {type:"none"}: stop sending audio to the output device.
+    mDestination->Track()->RemoveAudioOutput(nullptr);
+  } else if (!argIsNone && mSinkIsNone) {
+    // Switching back to the default device: restore audio output.
+    mDestination->Track()->AddAudioOutput(nullptr, nullptr);
+  }
+
+  mPendingSinkIdPromises.AppendElement(p);
+
+  // Capture values needed by the completion runnable.
+  bool newSinkIsNone = argIsNone;
+  nsString newSinkId(argString);
+  // Step 5-6: capture whether the context was running before the sink change.
+  bool wasRunning = (mAudioContextState == AudioContextState::Running);
+
+  // Steps 10-12: Queue a runnable that runs after the control messages above
+  // have been processed by the graph thread, so the output change is in effect
+  // before we resolve the promise and fire events.
+  RefPtr<nsIRunnable> r = NS_NewRunnableFunction(
+      "AudioContext::SetSinkId",
+      [self = RefPtr<AudioContext>(this), p = RefPtr<Promise>(p), newSinkIsNone,
+       newSinkId, wasRunning]() {
+        MOZ_ASSERT(NS_IsMainThread());
+        if (self->mIsShutDown) {
+          return;
+        }
+
+        nsGlobalWindowInner* win = self->GetOwnerWindow();
+        Document* doc = win ? win->GetExtantDoc() : nullptr;
+
+        // Step 9: if wasRunning, fire statechange:suspended before sinkchange.
+        // Events are fired synchronously here to guarantee the order:
+        // statechange:suspended -> sinkchange -> statechange:running.
+        if (wasRunning && doc) {
+          self->mAudioContextState = AudioContextState::Suspended;
+          self->Destination()->NotifyAudioContextStateChanged();
+          self->MaybeUpdatePageAwakeRequest();
+          nsContentUtils::DispatchTrustedEvent(doc, self, u"statechange"_ns,
+                                               CanBubble::eNo, Cancelable::eNo);
+        }
+
+        // Steps 11.1-11.3: Update [[sink ID]].
+        self->mSinkIsNone = newSinkIsNone;
+        self->mSinkId = newSinkId;
+        if (newSinkIsNone) {
+          // Cache a new AudioSinkInfo for the updated [[sink ID]].
+          self->mSinkInfo =
+              new AudioSinkInfo(self->GetParentObject(), AudioSinkType::None);
+        } else {
+          self->mSinkInfo = nullptr;
+        }
+
+        // Step 11.4: Resolve p.
+        DebugOnly<bool> removed = self->mPendingSinkIdPromises.RemoveElement(p);
+        MOZ_ASSERT(removed);
+        p->MaybeResolveWithUndefined();
+
+        // Step 11.5: Fire sinkchange.
+        if (doc) {
+          nsContentUtils::DispatchTrustedEvent(doc, self, u"sinkchange"_ns,
+                                               CanBubble::eNo, Cancelable::eNo);
+        }
+
+        // Step 12: if wasRunning, fire statechange:running after sinkchange.
+        if (wasRunning && doc) {
+          self->mAudioContextState = AudioContextState::Running;
+          self->Destination()->NotifyAudioContextStateChanged();
+          self->MaybeUpdatePageAwakeRequest();
+          nsContentUtils::DispatchTrustedEvent(doc, self, u"statechange"_ns,
+                                               CanBubble::eNo, Cancelable::eNo);
+        }
+      });
+  mDestination->Track()->RunAfterPendingUpdates(r.forget());
+
+  // Step 7. Return p.
+  return p.forget();
+}
+
 uint32_t AudioContext::CallbackBufferSize() const {
   if (mIsShutDown || mIsOffline) {
     return 0;
@@ -855,6 +1142,11 @@ void AudioContext::OnWindowDestroy() {
       p->MaybeRejectWithInvalidStateError("Navigated away from page");
     }
     mPendingResumePromises.Clear();
+
+    for (const auto& p : mPendingSinkIdPromises) {
+      p->MaybeRejectWithInvalidStateError("Navigated away from page");
+    }
+    mPendingSinkIdPromises.Clear();
   }
 
   // On process shutdown, the MTG thread shuts down before the destination
@@ -1141,6 +1433,56 @@ already_AddRefed<Promise> AudioContext::Resume(ErrorResult& aRv) {
   }
 
   return promise.forget();
+}
+
+void AudioContext::ValidateSinkIdAtConstruction() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (mIsShutDown || mSinkId.IsEmpty()) {
+    return;
+  }
+  nsPIDOMWindowInner* window = GetOwnerWindow();
+  if (!window) {
+    return;
+  }
+  ErrorResult navRv;
+  RefPtr<MediaDevices> mediaDevices = window->Navigator()->GetMediaDevices(navRv);
+  if (navRv.Failed() || !mediaDevices) {
+    mSinkId.Truncate();
+    nsGlobalWindowInner* win = GetOwnerWindow();
+    Document* doc = win ? win->GetExtantDoc() : nullptr;
+    if (doc) {
+      nsContentUtils::DispatchTrustedEvent(doc, this, u"error"_ns,
+                                           CanBubble::eNo, Cancelable::eNo);
+    }
+    return;
+  }
+  nsString deviceId(mSinkId);
+  mediaDevices->GetSinkDevice(deviceId)->Then(
+      GetMainThread(), __func__,
+      [self = RefPtr<AudioContext>(this),
+       deviceId](RefPtr<AudioDeviceInfo>&& deviceInfo) mutable {
+        if (self->mIsShutDown) {
+          return;
+        }
+        // The default output was removed at construction; add the real device.
+        self->mDestination->Track()->AddAudioOutput(nullptr, deviceInfo.get());
+        if (self->mWasAllowedToStart) {
+          self->ResumeInternal();
+        }
+      },
+      [self = RefPtr<AudioContext>(this)](nsresult) {
+        if (self->mIsShutDown) {
+          return;
+        }
+        // Validation failed: reset [[sink ID]] and fire error event.
+        self->mSinkId.Truncate();
+        nsGlobalWindowInner* win = self->GetOwnerWindow();
+        Document* doc = win ? win->GetExtantDoc() : nullptr;
+        if (doc) {
+          nsContentUtils::DispatchTrustedEvent(doc, self, u"error"_ns,
+                                               CanBubble::eNo, Cancelable::eNo);
+        }
+      });
 }
 
 void AudioContext::ResumeInternal() {

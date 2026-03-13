@@ -25,7 +25,7 @@ AudioChunk CreateAudioChunk(uint32_t aFrames, uint32_t aChannels,
 class MockGraph : public MediaTrackGraphImpl {
  public:
   explicit MockGraph(TrackRate aRate)
-      : MediaTrackGraphImpl(0, aRate, nullptr, AbstractThread::MainThread()) {
+      : MediaTrackGraphImpl(0, aRate, nullptr, AbstractThread::MainThread(), 0) {
     ON_CALL(*this, OnGraphThread).WillByDefault(Return(true));
   }
 
