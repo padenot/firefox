@@ -30,7 +30,7 @@ dictionary MediaTrackCapabilities {
   sequence<boolean> echoCancellation;
   sequence<boolean> autoGainControl;
   sequence<boolean> noiseSuppression;
-  // DoubleRange latency;
+  DoubleRange latency;
   ULongRange channelCount;
   DOMString deviceId;
   DOMString groupId;

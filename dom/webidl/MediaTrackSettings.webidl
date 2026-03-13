@@ -15,6 +15,7 @@ dictionary MediaTrackSettings {
     boolean   echoCancellation;
     boolean   autoGainControl;
     boolean   noiseSuppression;
+    double    latency;
     long      channelCount;
     DOMString deviceId;
     DOMString groupId;

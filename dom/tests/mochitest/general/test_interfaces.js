@@ -883,6 +883,8 @@ let interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "ImageTrackList" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "InputDeviceInfo", insecureContext: false },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "InputEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "InstallTrigger", insecureContext: true },

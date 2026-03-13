@@ -19,7 +19,7 @@ dictionary MediaTrackSupportedConstraints {
     boolean echoCancellation = true;
     boolean noiseSuppression = true;
     boolean autoGainControl = true;
-    boolean latency;            // to be supported
+    boolean latency = true;
     boolean channelCount = true;
     boolean deviceId = true;
     boolean groupId = true;

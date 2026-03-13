@@ -87,6 +87,7 @@ dictionary MediaTrackConstraintSet {
     ConstrainBoolean echoCancellation;
     ConstrainBoolean noiseSuppression;
     ConstrainBoolean autoGainControl;
+    ConstrainDouble latency;
     ConstrainLong channelCount;
 };
 
