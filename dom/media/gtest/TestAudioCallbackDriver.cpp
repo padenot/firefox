@@ -123,7 +123,8 @@ void TestSlowStart(const TrackRate aRate) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
     const GraphTime tenMillis = aRate / 100;
     // An iteration is always rounded upwards to the next full block.
     const GraphTime tenMillisIteration =
-        MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(tenMillis);
+        MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(tenMillis,
+                                                       WEBAUDIO_BLOCK_SIZE);
     // The iteration may be smaller because up to an extra block may have been
     // processed and buffered.
     const GraphTime tenMillisMinIteration =

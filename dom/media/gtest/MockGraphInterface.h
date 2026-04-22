@@ -7,6 +7,7 @@
 
 #include <tuple>
 
+#include "AudioSegment.h"
 #include "GraphDriver.h"
 #include "gmock/gmock.h"
 
@@ -16,6 +17,7 @@ class MockGraphInterface : public GraphInterface {
   NS_DECL_THREADSAFE_ISUPPORTS
   explicit MockGraphInterface(TrackRate aSampleRate)
       : mSampleRate(aSampleRate) {}
+  uint32_t BlockSize() const override { return WEBAUDIO_BLOCK_SIZE; }
   MOCK_METHOD(void, NotifyInputStopped, ());
   MOCK_METHOD(void, NotifyInputData,
               (const AudioDataValue*, size_t, TrackRate, uint32_t, uint32_t));

@@ -8,6 +8,7 @@
 #include <speex/speex_resampler.h>
 
 #include "AudioSampleFormat.h"
+#include "AudioSegment.h"
 #include "CubebUtils.h"
 #include "MainThreadUtils.h"
 #include "MediaSegment.h"
@@ -1105,11 +1106,13 @@ class MediaTrackGraph {
   // Main thread only
   static MediaTrackGraph* GetInstanceIfExists(
       nsPIDOMWindowInner* aWindow, TrackRate aSampleRate,
-      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
+      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize);
   static MediaTrackGraph* GetInstance(
       GraphDriverType aGraphDriverRequested, nsPIDOMWindowInner* aWindow,
-      TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
-  static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate);
+      TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
+      uint32_t aBlockSize);
+  static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate,
+                                                    uint32_t aBlockSize);
 
   // Idempotent
   void ForceShutDown();
@@ -1218,6 +1221,10 @@ class MediaTrackGraph {
    */
   TrackRate GraphRate() const { return mSampleRate; }
   /**
+   * Returns the render quantum size (block size) for this graph.
+   */
+  uint32_t BlockSize() const { return mBlockSize; }
+  /**
    * Returns the ID of the device used for audio output through an
    * AudioCallbackDriver.  This is the device specified when creating the
    * graph.  Can be called on any thread.
@@ -1283,9 +1290,11 @@ class MediaTrackGraph {
 
  protected:
   explicit MediaTrackGraph(TrackRate aSampleRate,
-                           CubebUtils::AudioDeviceID aPrimaryOutputDeviceID)
+                           CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
+                           uint32_t aBlockSize)
       : mSampleRate(aSampleRate),
-        mPrimaryOutputDeviceID(aPrimaryOutputDeviceID) {
+        mPrimaryOutputDeviceID(aPrimaryOutputDeviceID),
+        mBlockSize(aBlockSize) {
     MOZ_COUNT_CTOR(MediaTrackGraph);
   }
   MOZ_COUNTED_DTOR_VIRTUAL(MediaTrackGraph)
@@ -1309,6 +1318,10 @@ class MediaTrackGraph {
    * This is the device specified when creating the graph.
    */
   const CubebUtils::AudioDeviceID mPrimaryOutputDeviceID;
+  /**
+   * Render quantum size for this graph.
+   */
+  const uint32_t mBlockSize;
 
   /* A monotonically increasing graph-unique generation for
    * AudioInputProcessingParamsRequest::mGeneration. */

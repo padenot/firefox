@@ -89,7 +89,8 @@ class TestDecodedStream : public Test {
       : mMockCubeb(MakeRefPtr<MockCubeb>(MockCubeb::RunningMode::Manual)),
         mGraph(MediaTrackGraphImpl::GetInstance(
             MediaTrackGraph::SYSTEM_THREAD_DRIVER, /*Window ID*/ 1, kRate,
-            nullptr, GetMainThreadSerialEventTarget())),
+            nullptr, GetMainThreadSerialEventTarget(),
+            MediaTrackGraph::kRenderQuantumFrames)),
         mDummyTrack(new nsMainThreadPtrHolder<SharedDummyTrack>(
             __func__, new SharedDummyTrack(
                           mGraph->CreateSourceTrack(MediaSegment::AUDIO)))),

@@ -115,7 +115,7 @@ TEST(TestAudioInputProcessing, Buffering)
     // aip has not started and set to processing mode yet, so output will be
     // filled with silence data directly.
     processedTime = 0;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -134,7 +134,7 @@ TEST(TestAudioInputProcessing, Buffering)
     // aip has not started yet, so output will be filled with silence data
     // directly.
     processedTime = nextTime;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(2 * frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(2 * frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -152,7 +152,7 @@ TEST(TestAudioInputProcessing, Buffering)
     // Process() will return early on 0 frames of input.
     // Pre-buffering is not triggered.
     processedTime = nextTime;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(3 * frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(3 * frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -173,7 +173,7 @@ TEST(TestAudioInputProcessing, Buffering)
     // frames the internal buffer to output, leaving 80 + 80 - 128 = 32 frames
     // in aip's internal buffer.
     processedTime = nextTime;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(4 * frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(4 * frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -187,7 +187,7 @@ TEST(TestAudioInputProcessing, Buffering)
   {
     // Need (nextTime - processedTime) = 384 - 384 = 0 frames this round.
     processedTime = nextTime;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(5 * frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(5 * frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -206,7 +206,7 @@ TEST(TestAudioInputProcessing, Buffering)
     // frames the internal buffer to output, leaving 32 + 2*80 - 128 = 64 frames
     // in aip's internal buffer.
     processedTime = nextTime;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(6 * frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(6 * frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -224,7 +224,7 @@ TEST(TestAudioInputProcessing, Buffering)
     // Need (nextTime - processedTime) = 512 - 512 = 0 frames this round.
     // No buffering in pass-through mode
     processedTime = nextTime;
-    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(7 * frames);
+    nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(7 * frames, WEBAUDIO_BLOCK_SIZE);
 
     AudioSegment input;
     generator.Generate(input, nextTime - processedTime);
@@ -384,7 +384,7 @@ TEST(TestAudioInputProcessing, Downmixing)
   aip->Start(graph);
 
   processedTime = 0;
-  nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames);
+  nextTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames, WEBAUDIO_BLOCK_SIZE);
 
   {
     AudioSegment input;
@@ -428,7 +428,7 @@ TEST(TestAudioInputProcessing, Downmixing)
 
   AudioSegment input, output;
   processedTime = nextTime;
-  nextTime += MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames);
+  nextTime += MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames, WEBAUDIO_BLOCK_SIZE);
   generator.Generate(input, nextTime - processedTime);
 
   aip->Process(track, processedTime, nextTime, &input, &output);
@@ -786,7 +786,7 @@ TEST(TestAudioInputProcessing, PlatformProcessingSetSinkId)
   EXPECT_FALSE(aip->IsPassThrough(graph));
 
   // Changing to primary device for AEC should enable passthrough.
-  const GraphTime frames = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(100);
+  const GraphTime frames = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(100, WEBAUDIO_BLOCK_SIZE);
   AudioGenerator<AudioDataValue> generator(channels, rate);
 
   graph->ForceOutputDeviceForAEC(CubebUtils::AudioDeviceID(1));

@@ -320,7 +320,7 @@ TEST(TestAudioTrackGraph, StreamName)
 TEST(TestAudioTrackGraph, OfflineDestruction)
 {
   RefPtr graph = static_cast<MediaTrackGraphImpl*>(
-      MediaTrackGraph::CreateNonRealtimeInstance(48000));
+      MediaTrackGraph::CreateNonRealtimeInstance(48000, WEBAUDIO_BLOCK_SIZE));
   // Add and remove a dummy track to trigger graph shutdown.
   RefPtr dummyTrack = new MockProcessedMediaTrack(graph->GraphRate());
   graph->AddTrack(dummyTrack);
@@ -2569,13 +2569,14 @@ void TestCrossGraphPort(uint32_t aInputRate, uint32_t aOutputRate,
       media::TimeUnit::FromSeconds(0.05).ToBase(aInputRate);
   const media::TimeUnit inputStepSize(
       MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
-          step.ToTicksAtRate(aInputRate)),
+          step.ToTicksAtRate(aInputRate), WEBAUDIO_BLOCK_SIZE),
       aInputRate);
   const media::TimeUnit outputStepSize =
       media::TimeUnit(MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
                           step.ToBase(aOutputRate)
                               .MultDouble(aDriftFactor)
-                              .ToTicksAtRate(aOutputRate)),
+                              .ToTicksAtRate(aOutputRate),
+                          WEBAUDIO_BLOCK_SIZE),
                       aOutputRate)
           .ToBase(aInputRate);
   const uint32_t expectedPreSilence =

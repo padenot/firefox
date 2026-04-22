@@ -122,16 +122,17 @@ void DeviceInputTrackManager::Remove(DeviceInputTrack* aTrack) {
 
 struct MediaTrackGraphImpl::Lookup final {
   HashNumber Hash() const {
-    return HashGeneric(mWindowID, mSampleRate, mOutputDeviceID);
+    return HashGeneric(mWindowID, mSampleRate, mOutputDeviceID, mBlockSize);
   }
   const uint64_t mWindowID;
   const TrackRate mSampleRate;
   const CubebUtils::AudioDeviceID mOutputDeviceID;
+  const uint32_t mBlockSize;
 };
 
 // Implicit to support GraphHashSet.lookup(*graph).
 MOZ_IMPLICIT MediaTrackGraphImpl::operator MediaTrackGraphImpl::Lookup() const {
-  return {mWindowID, mSampleRate, PrimaryOutputDeviceID()};
+  return {mWindowID, mSampleRate, PrimaryOutputDeviceID(), mBlockSize};
 }
 
 namespace {
@@ -143,7 +144,8 @@ struct GraphHasher {  // for HashSet
   static bool match(const MediaTrackGraphImpl* aGraph, const Lookup& aLookup) {
     return aGraph->mWindowID == aLookup.mWindowID &&
            aGraph->GraphRate() == aLookup.mSampleRate &&
-           aGraph->PrimaryOutputDeviceID() == aLookup.mOutputDeviceID;
+           aGraph->PrimaryOutputDeviceID() == aLookup.mOutputDeviceID &&
+           aGraph->BlockSize() == aLookup.mBlockSize;
   }
 };
 
@@ -1194,18 +1196,17 @@ void MediaTrackGraphImpl::PrepareUpdatesToMainThreadState(bool aFinalUpdate) {
   }
 }
 
-GraphTime MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(GraphTime aTime) {
-  if (aTime % WEBAUDIO_BLOCK_SIZE == 0) {
+GraphTime MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(GraphTime aTime,
+                                                        uint32_t aBlockSize) {
+  if (aTime % aBlockSize == 0) {
     return aTime;
   }
-  return RoundUpToNextAudioBlock(aTime);
+  return RoundUpToNextAudioBlock(aTime, aBlockSize);
 }
 
-GraphTime MediaTrackGraphImpl::RoundUpToNextAudioBlock(GraphTime aTime) {
-  uint64_t block = aTime >> WEBAUDIO_BLOCK_SIZE_BITS;
-  uint64_t nextBlock = block + 1;
-  GraphTime nextTime = nextBlock << WEBAUDIO_BLOCK_SIZE_BITS;
-  return nextTime;
+GraphTime MediaTrackGraphImpl::RoundUpToNextAudioBlock(GraphTime aTime,
+                                                       uint32_t aBlockSize) {
+  return (aTime / aBlockSize + 1) * aBlockSize;
 }
 
 void MediaTrackGraphImpl::ProduceDataForTracksBlockByBlock(
@@ -1218,7 +1219,7 @@ void MediaTrackGraphImpl::ProduceDataForTracksBlockByBlock(
     // Microtask checkpoints are in between render quanta.
     nsAutoMicroTask mt;
 
-    GraphTime next = RoundUpToNextAudioBlock(mProcessedTime);
+    GraphTime next = RoundUpToNextAudioBlock(mProcessedTime, mBlockSize);
     for (uint32_t i = mFirstCycleBreaker; i < mTracks.Length(); ++i) {
       auto nt = static_cast<AudioNodeTrack*>(mTracks[i]);
       MOZ_ASSERT(nt->AsAudioNodeTrack());
@@ -2465,7 +2466,7 @@ void MediaTrackGraphImpl::IncrementOutputDeviceRefCnt(
                 /*aShouldResistFingerprinting*/ false));
   MediaTrackGraph* newGraph = MediaTrackGraphImpl::GetInstance(
       MediaTrackGraph::AUDIO_THREAD_DRIVER, mWindowID, sampleRate, aDeviceID,
-      GetMainThreadSerialEventTarget());
+      GetMainThreadSerialEventTarget(), mBlockSize);
   // CreateCrossGraphReceiver wants the sample rate of this graph.
   RefPtr receiver = newGraph->CreateCrossGraphReceiver(mSampleRate);
   receiver->AddAudioOutput(nullptr, aDeviceID, sampleRate);
@@ -3360,8 +3361,9 @@ void ProcessedMediaTrack::DestroyImpl() {
 MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
                                          TrackRate aSampleRate,
                                          AudioDeviceID aPrimaryOutputDeviceID,
-                                         nsISerialEventTarget* aMainThread)
-    : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID),
+                                         nsISerialEventTarget* aMainThread,
+                                         uint32_t aBlockSize)
+    : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID, aBlockSize),
       mWindowID(aWindowID),
       mFirstCycleBreaker(0)
       // An offline graph is not initially processing.
@@ -3464,12 +3466,12 @@ void MediaTrackGraphImpl::Destroy() {
 /* static */
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstanceIfExists(
     uint64_t aWindowID, TrackRate aSampleRate,
-    AudioDeviceID aPrimaryOutputDeviceID) {
+    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
 
-  GraphHashSet::Ptr p =
-      Graphs()->lookup({aWindowID, aSampleRate, aPrimaryOutputDeviceID});
+  GraphHashSet::Ptr p = Graphs()->lookup(
+      {aWindowID, aSampleRate, aPrimaryOutputDeviceID, aBlockSize});
   return p ? *p : nullptr;
 }
 
@@ -3478,28 +3480,29 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstanceIfExists(
 /* static */
 MediaTrackGraph* MediaTrackGraph::GetInstanceIfExists(
     nsPIDOMWindowInner* aWindow, TrackRate aSampleRate,
-    AudioDeviceID aPrimaryOutputDeviceID) {
+    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize) {
   TrackRate sampleRate =
       aSampleRate ? aSampleRate
                   : CubebUtils::PreferredSampleRate(
                         aWindow->AsGlobal()->ShouldResistFingerprinting(
                             RFPTarget::AudioSampleRate));
   return MediaTrackGraphImpl::GetInstanceIfExists(
-      aWindow->WindowID(), sampleRate, aPrimaryOutputDeviceID);
+      aWindow->WindowID(), sampleRate, aPrimaryOutputDeviceID, aBlockSize);
 }
 
 /* static */
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
     GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
     TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
-    nsISerialEventTarget* aMainThread) {
+    nsISerialEventTarget* aMainThread, uint32_t aBlockSize) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
   MOZ_ASSERT(aGraphDriverRequested != OFFLINE_THREAD_DRIVER,
              "Use CreateNonRealtimeInstance() for offline graphs");
 
-  MediaTrackGraphImpl* graph =
-      GetInstanceIfExists(aWindowID, aSampleRate, aPrimaryOutputDeviceID);
+  MediaTrackGraphImpl* graph = GetInstanceIfExists(aWindowID, aSampleRate,
+                                                   aPrimaryOutputDeviceID,
+                                                   aBlockSize);
   if (graph) {  // graph already exists
     return graph;
   }
@@ -3512,11 +3515,11 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
   // In a real time graph, the number of output channels is determined by
   // the underlying number of channel of the default audio output device.
   uint32_t channelCount = CubebUtils::MaxNumberOfChannels();
-  graph = new MediaTrackGraphImpl(aWindowID, aSampleRate,
-                                  aPrimaryOutputDeviceID, aMainThread);
+  graph = new MediaTrackGraphImpl(aWindowID, aSampleRate, aPrimaryOutputDeviceID,
+                                  aMainThread, aBlockSize);
   graph->Init(aGraphDriverRequested, runType, channelCount);
   MOZ_ALWAYS_TRUE(Graphs()->putNew(
-      {aWindowID, aSampleRate, aPrimaryOutputDeviceID}, graph));
+      {aWindowID, aSampleRate, aPrimaryOutputDeviceID, aBlockSize}, graph));
 
   LOG(LogLevel::Debug, ("Starting up MediaTrackGraph %p for window 0x%" PRIx64,
                         graph, aWindowID));
@@ -3527,7 +3530,8 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
 /* static */
 MediaTrackGraph* MediaTrackGraph::GetInstance(
     GraphDriverType aGraphDriverRequested, nsPIDOMWindowInner* aWindow,
-    TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID) {
+    TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
+    uint32_t aBlockSize) {
   TrackRate sampleRate =
       aSampleRate ? aSampleRate
                   : CubebUtils::PreferredSampleRate(
@@ -3535,18 +3539,18 @@ MediaTrackGraph* MediaTrackGraph::GetInstance(
                             RFPTarget::AudioSampleRate));
   return MediaTrackGraphImpl::GetInstance(
       aGraphDriverRequested, aWindow->WindowID(), sampleRate,
-      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget());
+      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget(), aBlockSize);
 }
 
 MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
-    TrackRate aSampleRate) {
+    TrackRate aSampleRate, uint32_t aBlockSize) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
 
   nsISerialEventTarget* mainThread = GetMainThreadSerialEventTarget();
   // Offline graphs have 0 output channel count: they write the output to a
   // buffer, not an audio output track.
   MediaTrackGraphImpl* graph = new MediaTrackGraphImpl(
-      0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread);
+      0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread, aBlockSize);
   graph->Init(OFFLINE_THREAD_DRIVER, DIRECT_DRIVER, 0);
 
   LOG(LogLevel::Debug, ("Starting up Offline MediaTrackGraph %p", graph));
@@ -3555,8 +3559,8 @@ MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
 }
 
 MediaTrackGraph* MediaTrackGraph::CreateNonRealtimeInstance(
-    TrackRate aSampleRate) {
-  return MediaTrackGraphImpl::CreateNonRealtimeInstance(aSampleRate);
+    TrackRate aSampleRate, uint32_t aBlockSize) {
+  return MediaTrackGraphImpl::CreateNonRealtimeInstance(aSampleRate, aBlockSize);
 }
 
 void MediaTrackGraph::ForceShutDown() {

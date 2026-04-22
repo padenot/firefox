@@ -131,16 +131,18 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   explicit MediaTrackGraphImpl(uint64_t aWindowID, TrackRate aSampleRate,
                                CubebUtils::AudioDeviceID aOutputDeviceID,
-                               nsISerialEventTarget* aMainThread);
+                               nsISerialEventTarget* aMainThread,
+                               uint32_t aBlockSize);
 
   static MediaTrackGraphImpl* GetInstance(
       GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
       TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
-      nsISerialEventTarget* aMainThread);
+      nsISerialEventTarget* aMainThread, uint32_t aBlockSize);
   static MediaTrackGraphImpl* GetInstanceIfExists(
       uint64_t aWindowID, TrackRate aSampleRate,
-      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID);
-  static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate);
+      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize);
+  static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate,
+                                                    uint32_t aBlockSize);
   // For GraphHashSet:
   struct Lookup;
   operator Lookup() const;
@@ -151,6 +153,8 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   bool OnGraphThread() const override;
 
   bool Destroyed() const override;
+
+  uint32_t BlockSize() const override { return mBlockSize; }
 
 #ifdef DEBUG
   /**
@@ -421,14 +425,16 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
 
   /**
    * Returns smallest value of t such that t is a multiple of
-   * WEBAUDIO_BLOCK_SIZE and t >= aTime.
+   * aBlockSize and t >= aTime.
    */
-  static GraphTime RoundUpToEndOfAudioBlock(GraphTime aTime);
+  static GraphTime RoundUpToEndOfAudioBlock(GraphTime aTime,
+                                            uint32_t aBlockSize);
   /**
    * Returns smallest value of t such that t is a multiple of
-   * WEBAUDIO_BLOCK_SIZE and t > aTime.
+   * aBlockSize and t > aTime.
    */
-  static GraphTime RoundUpToNextAudioBlock(GraphTime aTime);
+  static GraphTime RoundUpToNextAudioBlock(GraphTime aTime,
+                                           uint32_t aBlockSize);
   /**
    * Produce data for all tracks >= aTrackIndex for the current time interval.
    * Advances block by block, each iteration producing data for all tracks

@@ -214,7 +214,8 @@ void ThreadedDriver::RunThread() {
 
 MediaTime SystemClockDriver::GetIntervalForIteration() {
   return MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
-      MillisecondsToMediaTime(MEDIA_GRAPH_TARGET_PERIOD_MS));
+      MillisecondsToMediaTime(MEDIA_GRAPH_TARGET_PERIOD_MS),
+      Graph()->BlockSize());
 }
 
 void ThreadedDriver::EnsureNextIteration() {
@@ -273,9 +274,10 @@ void OfflineClockDriver::RunThread() {
 }
 
 MediaTime OfflineClockDriver::GetIntervalForIteration() {
-  return MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(std::clamp<MediaTime>(
-      mEndTime - mStateComputedTime, 0,
-      MillisecondsToMediaTime(MEDIA_GRAPH_TARGET_PERIOD_MS)));
+  return MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
+      std::clamp<MediaTime>(mEndTime - mStateComputedTime, 0,
+                            MillisecondsToMediaTime(MEDIA_GRAPH_TARGET_PERIOD_MS)),
+      Graph()->BlockSize());
 }
 
 /* Helper to proxy the GraphInterface methods used by a running
@@ -334,6 +336,8 @@ class AudioCallbackDriver::FallbackWrapper : public GraphInterface {
     return mGraph->InDriverIteration(mOwner) && mOwner->OnFallback();
   }
 #endif
+  uint32_t BlockSize() const override { return mGraph->BlockSize(); }
+
   IterationResult OneIteration(GraphTime aStateComputedEnd,
                                MixerCallbackReceiver* aMixerReceiver) override {
     MOZ_ASSERT(!aMixerReceiver);
@@ -887,9 +891,10 @@ long AudioCallbackDriver::DataCallback(const AudioDataValue* aInputBuffer,
   uint32_t prefilledFrameCount = mScratchBuffer.Empty(mBuffer);
 
   if (mFirstCallbackIteration && !mTargetIterationTimeStamp.IsNull()) {
-    MediaTime renderingTime =
-        MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(SecondsToMediaTime(
-            (iterationStartTimeStamp - mTargetIterationTimeStamp).ToSeconds()));
+    MediaTime renderingTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
+        SecondsToMediaTime(
+            (iterationStartTimeStamp - mTargetIterationTimeStamp).ToSeconds()),
+        Graph()->BlockSize());
     // There is no previous iteration from which to carry over mScratchBuffer.
     MOZ_ASSERT(prefilledFrameCount == 0);
     if (renderingTime < aFrames) {
@@ -905,8 +910,8 @@ long AudioCallbackDriver::DataCallback(const AudioDataValue* aInputBuffer,
 
   // State computed time is decided by the audio callback's buffer length.
   GraphTime bufferEndGraphTime = mStateComputedTime + mBuffer.Available();
-  GraphTime nextStateComputedTime =
-      MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(bufferEndGraphTime);
+  GraphTime nextStateComputedTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
+      bufferEndGraphTime, Graph()->BlockSize());
   LOG(LogLevel::Verbose,
       ("%p: interval[%ld; %ld] (frames: %ld) (durationMS: %u) "
        "(duration ticks: %ld)",
