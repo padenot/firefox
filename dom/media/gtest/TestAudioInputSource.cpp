@@ -117,7 +117,7 @@ TEST(TestAudioInputSource, DataOutputBeforeStartAndAfterStop)
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
 
-  const TrackTime requestFrames = 2 * WEBAUDIO_BLOCK_SIZE;
+  const TrackTime requestFrames = 2 * MediaTrackGraph::kRenderQuantumFrames;
 
   auto listener = MakeRefPtr<MockEventListener>();
   EXPECT_CALL(*listener,

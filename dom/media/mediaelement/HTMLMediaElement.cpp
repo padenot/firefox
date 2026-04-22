@@ -4210,7 +4210,7 @@ already_AddRefed<DOMMediaStream> HTMLMediaElement::CaptureStreamInternal(
                      : MediaTrackGraph::SYSTEM_THREAD_DRIVER;
       graph = MediaTrackGraph::GetInstance(
           graphDriverType, window, MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
-          MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, WEBAUDIO_BLOCK_SIZE);
+          MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, MediaTrackGraph::kRenderQuantumFrames);
     }
     mTracksCaptured = MakeRefPtr<SharedDummyTrack>(
         graph->CreateSourceTrack(MediaSegment::AUDIO));
@@ -8061,7 +8061,7 @@ void HTMLMediaElement::AudioCaptureTrackChange(bool aCapture) {
     MediaTrackGraph* mtg = MediaTrackGraph::GetInstance(
         MediaTrackGraph::AUDIO_THREAD_DRIVER, window,
         MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
-        MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, WEBAUDIO_BLOCK_SIZE);
+        MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, MediaTrackGraph::kRenderQuantumFrames);
     RefPtr<DOMMediaStream> stream = CaptureStreamInternal(
         StreamCaptureBehavior::CONTINUE_WHEN_ENDED,
         StreamCaptureType::CAPTURE_AUDIO, AudioOutputConfig::Needed, mtg);

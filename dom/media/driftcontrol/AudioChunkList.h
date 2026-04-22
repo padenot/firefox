@@ -54,7 +54,8 @@ class AudioChunkList {
    * `aTotalDuration`. Memory allocation takes place.
    */
   AudioChunkList(uint32_t aTotalDuration, uint32_t aChannels,
-                 const PrincipalHandle& aPrincipalHandle);
+                 const PrincipalHandle& aPrincipalHandle,
+                 uint32_t aChunkCapacity = 128u);
   AudioChunkList(const AudioChunkList&) = delete;
   AudioChunkList(AudioChunkList&&) = delete;
   ~AudioChunkList() = default;
@@ -114,7 +115,7 @@ class AudioChunkList {
   const PrincipalHandle mPrincipalHandle;
   nsTArray<AudioChunk> mChunks;
   uint32_t mIndex = 0;
-  uint32_t mChunkCapacity = WEBAUDIO_BLOCK_SIZE;
+  uint32_t mChunkCapacity = 128u;
   AudioSampleFormat mSampleFormat = AUDIO_FORMAT_SILENCE;
 };
 

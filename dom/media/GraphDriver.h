@@ -733,7 +733,7 @@ class AudioCallbackDriver final : public GraphDriver,
    * need to keep at most two block in the SpillBuffer, because we always round
    * up to block boundaries during an iteration.
    * This is only ever accessed on the audio callback thread. */
-  SpillBuffer<AudioDataValue, WEBAUDIO_BLOCK_SIZE * 2> mScratchBuffer;
+  SpillBuffer<AudioDataValue, 256> mScratchBuffer;
   /* Wrapper to ensure we write exactly the number of frames we need in the
    * audio buffer cubeb passes us. This is only ever accessed on the audio
    * callback thread. */

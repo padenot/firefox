@@ -17,7 +17,7 @@ class MockGraphInterface : public GraphInterface {
   NS_DECL_THREADSAFE_ISUPPORTS
   explicit MockGraphInterface(TrackRate aSampleRate)
       : mSampleRate(aSampleRate) {}
-  uint32_t BlockSize() const override { return WEBAUDIO_BLOCK_SIZE; }
+  uint32_t BlockSize() const override { return 128u; }
   MOCK_METHOD(void, NotifyInputStopped, ());
   MOCK_METHOD(void, NotifyInputData,
               (const AudioDataValue*, size_t, TrackRate, uint32_t, uint32_t));

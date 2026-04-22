@@ -250,7 +250,7 @@ class NativeInputTrack final : public DeviceInputTrack {
 
   // Graph thread only members:
   // Indicate whether we append extra frames in mPendingData. The extra number
-  // of frames is in [0, WEBAUDIO_BLOCK_SIZE] range.
+  // of frames is in [0, Graph()->BlockSize()] range.
   bool mIsBufferingAppended = false;
   // Queue the audio input data coming from NotifyInputData.
   AudioSegment mPendingData;

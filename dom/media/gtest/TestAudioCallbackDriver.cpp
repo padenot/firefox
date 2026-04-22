@@ -65,6 +65,7 @@ void TestSlowStart(const TrackRate aRate) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
 
   RefPtr<AudioCallbackDriver> driver;
   auto graph = MakeRefPtr<NiceMock<MockGraphInterface>>(aRate);
+  const uint32_t blockSize = graph->BlockSize();
   EXPECT_CALL(*graph, NotifyInputStopped).Times(0);
 
   nsIThread* mainThread = NS_GetCurrentThread();
@@ -92,7 +93,7 @@ void TestSlowStart(const TrackRate aRate) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
         EXPECT_EQ(
             PR_ROUNDUP(
                 inputFrameCount + aAlreadyBuffered - *firstAlreadyBuffered,
-                WEBAUDIO_BLOCK_SIZE),
+                blockSize),
             static_cast<int64_t>(graph->StateComputedTime() - *audioStart))
             << "Input should be behind state time, due to the delayed start. "
             << "inputFrameCount=" << inputFrameCount
@@ -124,14 +125,14 @@ void TestSlowStart(const TrackRate aRate) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
     // An iteration is always rounded upwards to the next full block.
     const GraphTime tenMillisIteration =
         MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(tenMillis,
-                                                      WEBAUDIO_BLOCK_SIZE);
+                                                      blockSize);
     // The iteration may be smaller because up to an extra block may have been
     // processed and buffered.
     const GraphTime tenMillisMinIteration =
-        tenMillisIteration - WEBAUDIO_BLOCK_SIZE;
+        tenMillisIteration - blockSize;
     // An iteration must be at least one audio block.
     const GraphTime minIteration =
-        std::max<GraphTime>(WEBAUDIO_BLOCK_SIZE, tenMillisMinIteration);
+        std::max<GraphTime>(blockSize, tenMillisMinIteration);
     EXPECT_GE(aFrames, minIteration)
         << "Fallback driver iteration >= 10ms, modulo an audio block";
     EXPECT_LT(aFrames, static_cast<size_t>(aRate))
@@ -160,7 +161,7 @@ void TestSlowStart(const TrackRate aRate) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   EXPECT_EQ(inputFrameCount, processedFrameCount);
   EXPECT_EQ(
       graph->StateComputedTime() - *audioStart,
-      PR_ROUNDUP(inputFrameCount - *firstAlreadyBuffered, WEBAUDIO_BLOCK_SIZE))
+      PR_ROUNDUP(inputFrameCount - *firstAlreadyBuffered, blockSize))
       << "Graph progresses while audio driver runs. "
       << "stateComputedTime=" << graph->StateComputedTime()
       << ", inputFrameCount=" << inputFrameCount

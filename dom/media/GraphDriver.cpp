@@ -546,7 +546,7 @@ void AudioCallbackDriver::Init(const nsCString& aStreamName) {
 
   mBuffer = AudioCallbackBufferWrapper<AudioDataValue>(mOutputChannelCount);
   mScratchBuffer =
-      SpillBuffer<AudioDataValue, WEBAUDIO_BLOCK_SIZE * 2>(mOutputChannelCount);
+      SpillBuffer<AudioDataValue, 256>(mOutputChannelCount);
 
   output.channels = mOutputChannelCount;
   AudioConfig::ChannelLayout::ChannelMap channelMap =
@@ -580,10 +580,11 @@ void AudioCallbackDriver::Init(const nsCString& aStreamName) {
   // It's not useful for the graph to run with a block size lower than the Web
   // Audio API block size, but increasingly devices report that they can do
   // audio latencies lower than that.
-  if (latencyFrames < WEBAUDIO_BLOCK_SIZE) {
+  uint32_t blockSize = Graph()->BlockSize();
+  if (latencyFrames < blockSize) {
     LOG(LogLevel::Debug,
-        ("Latency clamped to %d from %d", WEBAUDIO_BLOCK_SIZE, latencyFrames));
-    latencyFrames = WEBAUDIO_BLOCK_SIZE;
+        ("Latency clamped to %d from %d", blockSize, latencyFrames));
+    latencyFrames = blockSize;
   }
   LOG(LogLevel::Debug, ("Effective latency in frames: %d", latencyFrames));
 

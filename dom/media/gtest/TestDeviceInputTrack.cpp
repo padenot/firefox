@@ -24,7 +24,7 @@ namespace {
 class MockGraphImpl : public MediaTrackGraphImpl {
  public:
   explicit MockGraphImpl(TrackRate aRate)
-      : MediaTrackGraphImpl(0, aRate, nullptr, NS_GetCurrentThread()) {
+      : MediaTrackGraphImpl(0, aRate, nullptr, NS_GetCurrentThread(), 128u) {
     ON_CALL(*this, OnGraphThread).WillByDefault(Return(true));
   }
 
@@ -177,6 +177,7 @@ TEST_F(TestDeviceInputTrack, DeviceInputConsumerTrack) {
 
 TEST_F(TestDeviceInputTrack, NativeInputTrackData) {
   const uint32_t flags = 0;
+  const uint32_t blockSize = mGraph->BlockSize();
   const CubebUtils::AudioDeviceID deviceId = (void*)1;
 
   AudioGenerator<AudioDataValue> generator(mChannels, mRate);
@@ -199,13 +200,13 @@ TEST_F(TestDeviceInputTrack, NativeInputTrackData) {
   track->NotifyInputData(mGraph.get(), buffer.Elements(), nrFrames, mRate,
                          mChannels, 0);
 
-  track->ProcessInput(0, WEBAUDIO_BLOCK_SIZE + nrFrames, flags);
+  track->ProcessInput(0, blockSize + nrFrames, flags);
   EXPECT_EQ(static_cast<size_t>(track->GetEnd()),
-            static_cast<size_t>(WEBAUDIO_BLOCK_SIZE) + nrFrames);
+            static_cast<size_t>(blockSize) + nrFrames);
 
   // Check pre-buffering: null data with PRINCIPAL_HANDLE_NONE principal
   AudioSegment preBuffering;
-  preBuffering.AppendSlice(*track->GetData(), 0, WEBAUDIO_BLOCK_SIZE);
+  preBuffering.AppendSlice(*track->GetData(), 0, blockSize);
   EXPECT_TRUE(preBuffering.IsNull());
   for (AudioSegment::ConstChunkIterator iter(preBuffering); !iter.IsEnded();
        iter.Next()) {
@@ -215,8 +216,8 @@ TEST_F(TestDeviceInputTrack, NativeInputTrackData) {
 
   // Check rest of the data
   AudioSegment data;
-  data.AppendSlice(*track->GetData(), WEBAUDIO_BLOCK_SIZE,
-                   WEBAUDIO_BLOCK_SIZE + nrFrames);
+  data.AppendSlice(*track->GetData(), blockSize,
+                   blockSize + nrFrames);
   nsTArray<AudioDataValue> interleaved;
   size_t sampleCount = data.WriteToInterleavedBuffer(interleaved, mChannels);
   EXPECT_EQ(sampleCount, bufferSize);
@@ -354,6 +355,7 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
 
   // Graph settings
   const uint32_t flags = 0;
+  const uint32_t blockSize = mGraph->BlockSize();
   const GraphTime frames = 440;
 
   // Non native input settings
@@ -374,7 +376,7 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
   // Make sure we get null data if the track is not started yet.
   GraphTime current = 0;
   GraphTime next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
-      frames, WEBAUDIO_BLOCK_SIZE);
+      frames, blockSize);
   ASSERT_NE(current, next);  // Make sure we have data produced in ProcessInput.
 
   track->ProcessInput(current, next, flags);
@@ -388,7 +390,7 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
 
   current = next;
   next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(2 * frames,
-                                                       WEBAUDIO_BLOCK_SIZE);
+                                                       blockSize);
   ASSERT_NE(current, next);  // Make sure we have data produced in ProcessInput.
 
   auto listener = MakeRefPtr<MockEventListener>();
@@ -429,7 +431,7 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
   // Stop the track and make sure it produces null data again.
   current = next;
   next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(3 * frames,
-                                                       WEBAUDIO_BLOCK_SIZE);
+                                                       blockSize);
   ASSERT_NE(current, next);  // Make sure we have data produced in ProcessInput.
 
   DispatchFunction([&] { track->StopAudio(); });

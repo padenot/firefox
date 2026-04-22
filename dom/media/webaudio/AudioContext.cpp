@@ -283,7 +283,7 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 
   WEB_AUDIO_API_LOG("AudioContext sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
-      new AudioContext(window, false, 2, 0, sampleRate, WEBAUDIO_BLOCK_SIZE);
+      new AudioContext(window, false, 2, 0, sampleRate, MediaTrackGraph::kRenderQuantumFrames);
 
   RegisterWeakMemoryReporter(object);
 
@@ -342,7 +342,7 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 
   RefPtr<AudioContext> object =
       new AudioContext(window, true, aNumberOfChannels, aLength, aSampleRate,
-                       WEBAUDIO_BLOCK_SIZE);
+                       MediaTrackGraph::kRenderQuantumFrames);
 
   RegisterWeakMemoryReporter(object);
 

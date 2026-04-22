@@ -7,8 +7,10 @@
 namespace mozilla {
 
 AudioChunkList::AudioChunkList(uint32_t aTotalDuration, uint32_t aChannels,
-                               const PrincipalHandle& aPrincipalHandle)
-    : mPrincipalHandle(aPrincipalHandle) {
+                               const PrincipalHandle& aPrincipalHandle,
+                               uint32_t aChunkCapacity)
+    : mPrincipalHandle(aPrincipalHandle),
+      mChunkCapacity(aChunkCapacity) {
   uint32_t numOfChunks = aTotalDuration / mChunkCapacity;
   if (aTotalDuration % mChunkCapacity) {
     ++numOfChunks;

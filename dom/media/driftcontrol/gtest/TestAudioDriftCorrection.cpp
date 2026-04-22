@@ -19,7 +19,7 @@ void testAudioCorrection(int32_t aSourceRate, int32_t aTargetRate,
   const uint32_t frequency = 100;
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
-  AudioDriftCorrection ad(aSourceRate, aTargetRate, testPrincipal);
+  AudioDriftCorrection ad(aSourceRate, aTargetRate, testPrincipal, 128u);
 
   uint8_t numChannels = 1;
   AudioGenerator<AudioDataValue> tone(numChannels, aSourceRate, frequency);
@@ -143,7 +143,7 @@ TEST(TestAudioDriftCorrection, NotEnoughFrames)
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
   AudioDriftCorrection ad(sampleRateTransmitter, sampleRateReceiver,
-                          testPrincipal);
+                          testPrincipal, 128u);
   const uint32_t targetFrames = sampleRateReceiver / 100;
 
   AudioGenerator<AudioDataValue> tone(1, sampleRateTransmitter, frequency);
@@ -181,7 +181,7 @@ TEST(TestAudioDriftCorrection, CrashInAudioResampler)
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
   AudioDriftCorrection ad(sampleRateTransmitter, sampleRateReceiver,
-                          testPrincipal);
+                          testPrincipal, 128u);
   const uint32_t targetFrames = sampleRateReceiver / 100;
 
   for (uint32_t i = 0; i < 100; ++i) {
@@ -208,7 +208,7 @@ TEST(TestAudioDriftCorrection, HighLatencyProducerLowLatencyConsumer)
   constexpr uint32_t sampleRate = 48000;
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
-  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal);
+  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal, 128u);
 
   uint32_t numBlocksProduced = 0;
   for (uint32_t i = 0; i < (sampleRate / 1000) * 500; i += receiverBlockSize) {
@@ -235,7 +235,7 @@ TEST(TestAudioDriftCorrection, LargerTransmitterBlockSizeThanDesiredBuffering)
   constexpr uint32_t sampleRate = 48000;
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
-  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal);
+  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal, 128u);
 
   uint32_t numBlocksTransmitted = 0;
   for (uint32_t i = 0; i < (sampleRate / 1000) * 500; i += receiverBlockSize) {
@@ -271,7 +271,7 @@ TEST(TestAudioDriftCorrection, LargerReceiverBlockSizeThanDesiredBuffering)
   constexpr uint32_t sampleRate = 48000;
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
-  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal);
+  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal, 128u);
 
   AudioSegment inSegment;
   for (uint32_t i = 0; i < (sampleRate / 1000) * 500;
@@ -310,7 +310,7 @@ TEST(TestAudioDriftCorrection, DynamicInputBufferSizeChanges)
   constexpr uint32_t frequencyHz = 100;
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
-  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal);
+  AudioDriftCorrection ad(sampleRate, sampleRate, testPrincipal, 128u);
 
   AudioGenerator<AudioDataValue> tone(1, sampleRate, frequencyHz);
   AudioVerifier<AudioDataValue> inToneVerifier(sampleRate, frequencyHz);
@@ -411,7 +411,7 @@ TEST(TestAudioDriftCorrection, DriftStepResponse)
   const PrincipalHandle testPrincipal =
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
   AudioGenerator<AudioDataValue> tone(1, nominalRate, 440);
-  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal);
+  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal, 128u);
   for (uint32_t i = 0; i < interval * iterations; i += interval / 100) {
     AudioSegment inSegment;
     tone.Generate(inSegment, inputInterval / 100);
@@ -437,7 +437,7 @@ TEST(TestAudioDriftCorrection, DriftStepResponseUnderrun)
   uint32_t inputRate = nominalRate * 1005 / 1000;  // 0.5% drift
   uint32_t inputInterval = inputRate;
   AudioGenerator<AudioDataValue> tone(1, nominalRate, 440);
-  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal);
+  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal, 128u);
   for (uint32_t i = 0; i < interval * iterations; i += interval / 100) {
     AudioSegment inSegment;
     tone.Generate(inSegment, inputInterval / 100);
@@ -471,7 +471,7 @@ TEST(TestAudioDriftCorrection, DriftStepResponseUnderrunHighLatencyInput)
   uint32_t inputRate1 = nominalRate * 1005 / 1000;  // 0.5% drift
   uint32_t inputInterval1 = inputRate1;
   AudioGenerator<AudioDataValue> tone(1, nominalRate, 440);
-  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal);
+  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal, 128u);
   for (uint32_t i = 0; i < interval * iterations; i += interval / 100) {
     AudioSegment inSegment;
     if (i > 0 && i % interval == 0) {
@@ -533,7 +533,7 @@ TEST(TestAudioDriftCorrection, DriftStepResponseOverrun)
       MakePrincipalHandle(nsContentUtils::GetSystemPrincipal());
 
   AudioGenerator<AudioDataValue> tone(1, nominalRate, 440);
-  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal);
+  AudioDriftCorrection ad(nominalRate, nominalRate, testPrincipal, 128u);
 
   for (uint32_t i = 0; i < interval * iterations; i += interval / 100) {
     AudioSegment inSegment;

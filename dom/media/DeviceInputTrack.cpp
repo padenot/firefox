@@ -483,7 +483,7 @@ void NativeInputTrack::NotifyInputData(MediaTrackGraph* aGraph,
     // First time we see live frames getting added. Use what's already buffered
     // in the driver's scratch buffer as a starting point.
     MOZ_ASSERT(mPendingData.IsEmpty());
-    constexpr TrackTime buffering = WEBAUDIO_BLOCK_SIZE;
+    const TrackTime buffering = Graph()->BlockSize();
     const TrackTime remaining =
         buffering - static_cast<TrackTime>(aAlreadyBuffered);
     mPendingData.AppendNullData(remaining);

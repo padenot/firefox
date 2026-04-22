@@ -19,7 +19,7 @@ MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   MozPromiseHolder<GenericPromise> doneHolder;
   RefPtr<GenericPromise> done = doneHolder.Ensure(__func__);
   {
-    GraphTime length = WEBAUDIO_BLOCK_SIZE / 4;  // < WEBAUDIO_BLOCK_SIZE
+    GraphTime length = 128u / 4;  // < 128u
     auto EnsureNextIteration = [&](GraphTime aTime) {
       driver->EnsureNextIteration();
     };
@@ -33,7 +33,7 @@ MOZ_CAN_RUN_SCRIPT_BOUNDARY {
           driver->SetTickCountToRender(length);
           driver->EnsureNextIteration();
         });
-    EXPECT_CALL(*graph, MockIteration(WEBAUDIO_BLOCK_SIZE))
+    EXPECT_CALL(*graph, MockIteration(128u))
         // Rendering iteration
         .WillOnce(EnsureNextIteration)
         // Time should not advance after rendering.
