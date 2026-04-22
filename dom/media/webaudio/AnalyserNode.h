@@ -73,6 +73,8 @@ class AnalyserNode final : public AudioNode {
   double mSmoothingTimeConstant;
   size_t mCurrentChunk = 0;
   AlignedTArray<float> mOutputBuffer;
+  const uint32_t mChunkCount;
+  const uint32_t mBlockSize;
 };
 
 }  // namespace mozilla::dom

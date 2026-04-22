@@ -35,8 +35,7 @@ namespace WebCore {
 // removed from the |impulseP| impulse response, and this value  is returned.
 // The |length| of the passed in |impulseP| must be must be a power of 2.
 static float extractAverageGroupDelay(float* impulseP, size_t length) {
-  // Check for power-of-2.
-  MOZ_ASSERT(length && (length & (length - 1)) == 0);
+  MOZ_ASSERT(length && (length % 2 == 0));
 
   FFTBlock estimationFrame(length, 1.f / length);
   estimationFrame.PerformFFT(impulseP);

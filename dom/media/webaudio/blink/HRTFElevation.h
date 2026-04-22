@@ -72,7 +72,7 @@ class HRTFElevation {
   // Total number of azimuths after interpolation.
   static const unsigned NumberOfTotalAzimuths;
 
-  static size_t fftSizeForSampleRate(float sampleRate);
+  static size_t fftSizeForSampleRate(float sampleRate, size_t blockSize);
 
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 

@@ -80,7 +80,8 @@ static float calculateNormalizationScale(const nsTArray<const float*>& response,
 
 Reverb::Reverb(const AudioChunk& impulseResponse, size_t maxFFTSize,
                bool useBackgroundThreads, bool normalize, float sampleRate,
-               bool* aAllocationFailure) {
+               bool* aAllocationFailure, size_t blockSize)
+    : m_blockSize(blockSize) {
   MOZ_ASSERT(aAllocationFailure);
   size_t impulseResponseBufferLength = impulseResponse.mDuration;
   float scale = impulseResponse.mVolume;
@@ -158,7 +159,7 @@ bool Reverb::initialize(const nsTArray<const float*>& impulseResponseBuffer,
     }
     m_convolvers.AppendElement(std::move(convolver));
 
-    convolverRenderPhase += WEBAUDIO_BLOCK_SIZE;
+    convolverRenderPhase += m_blockSize;
   }
 
   // For "True" stereo processing we allocate a temporary buffer to avoid
@@ -166,7 +167,7 @@ bool Reverb::initialize(const nsTArray<const float*>& impulseResponseBuffer,
   // memory in a real-time thread.
   if (numResponseChannels == 4) {
     m_tempBuffer.AllocateChannels(2);
-    WriteZeroesToAudioBlock(&m_tempBuffer, 0, WEBAUDIO_BLOCK_SIZE);
+    WriteZeroesToAudioBlock(&m_tempBuffer, 0, m_blockSize);
   }
   return true;
 }

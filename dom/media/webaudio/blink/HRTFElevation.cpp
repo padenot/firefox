@@ -61,36 +61,26 @@ size_t HRTFElevation::sizeOfIncludingThis(
   return amount;
 }
 
-size_t HRTFElevation::fftSizeForSampleRate(float sampleRate) {
+size_t HRTFElevation::fftSizeForSampleRate(float sampleRate, size_t blockSize) {
   // The IRCAM HRTF impulse responses were 512 sample-frames @44.1KHz,
   // but these have been truncated to 256 samples.
   // An FFT-size of twice impulse response size is used (for convolution).
-  // So for sample rates of 44.1KHz an FFT size of 512 is good.
-  // We double the FFT-size only for sample rates at least double this.
   // If the FFT size is too large then the impulse response will be padded
   // with zeros without the fade-out provided by HRTFKernel.
   MOZ_ASSERT(sampleRate > 1.0 && sampleRate < 1048576.0);
 
-  // This is the size if we were to use all raw response samples.
   unsigned resampledLength =
       floorf(ResponseFrameSize * sampleRate / rawSampleRate);
-  // Keep things semi-sane, with max FFT size of 1024.
-  unsigned size = std::min(resampledLength, 1023U);
-  // Ensure a minimum of 2 * WEBAUDIO_BLOCK_SIZE (with the size++ below) for
-  // FFTConvolver and set the 8 least significant bits for rounding up to
-  // the next power of 2 below.
-  size |= 2 * WEBAUDIO_BLOCK_SIZE - 1;
-  // Round up to the next power of 2, making the FFT size no more than twice
-  // the impulse response length.  This doubles size for values that are
-  // already powers of 2.  This works by filling in alls bit to right of the
-  // most significant bit.  The most significant bit is no greater than
-  // 1 << 9, and the least significant 8 bits were already set above, so
-  // there is at most one bit to add.
-  size |= (size >> 1);
-  size++;
-  MOZ_ASSERT((size & (size - 1)) == 0);
+  // Cap at 512 samples — same effective halfSize limit as the old 1024-cap
+  // after power-of-2 rounding.
+  resampledLength = std::min(resampledLength, 512U);
 
-  return size;
+  // Smallest fftSize that is a multiple of 2*blockSize and >= 2*resampledLength.
+  // This ensures halfSize = fftSize/2 satisfies:
+  //   halfSize % blockSize == 0  (FFTConvolver OLA invariant, any quantum size)
+  //   halfSize >= resampledLength  (sufficient zero-padding for linear convolution)
+  size_t k = (resampledLength + blockSize - 1) / blockSize;
+  return k * 2 * blockSize;
 }
 
 nsReturnRef<HRTFKernel> HRTFElevation::calculateKernelForAzimuthElevation(
@@ -115,7 +105,8 @@ nsReturnRef<HRTFKernel> HRTFElevation::calculateKernelForAzimuthElevation(
 
   // Note that depending on the fftSize returned by the panner, we may be
   // truncating the impulse response.
-  const size_t resampledResponseLength = fftSizeForSampleRate(sampleRate) / 2;
+  const size_t resampledResponseLength =
+      fftSizeForSampleRate(sampleRate, WEBAUDIO_BLOCK_SIZE) / 2;
 
   AutoTArray<AudioDataValue, 2 * ResponseFrameSize> resampled;
   if (sampleRate == rawSampleRate) {

@@ -57,7 +57,7 @@ class ReverbConvolver {
   ReverbConvolver(const float* impulseResponseData,
                   size_t impulseResponseLength, size_t maxFFTSize,
                   size_t convolverRenderPhase, bool useBackgroundThreads,
-                  bool* aAllocationFailure);
+                  bool* aAllocationFailure, size_t blockSize);
   ~ReverbConvolver();
 
   void process(const float* sourceChannelData, float* destinationChannelData);
@@ -88,6 +88,7 @@ class ReverbConvolver {
   bool m_useBackgroundThreads;
   std::atomic<bool> m_wantsToExit;
   std::atomic<bool> m_moreInputBuffered;
+  size_t m_blockSize;
 };
 
 }  // namespace WebCore

@@ -53,7 +53,7 @@ class Reverb {
   // used.
   Reverb(const mozilla::AudioChunk& impulseResponseBuffer, size_t maxFFTSize,
          bool useBackgroundThreads, bool normalize, float sampleRate,
-         bool* aAllocationFailure);
+         bool* aAllocationFailure, size_t blockSize);
 
   void process(const mozilla::AudioBlock* sourceBus,
                mozilla::AudioBlock* destinationBus);
@@ -68,6 +68,7 @@ class Reverb {
                   bool useBackgroundThreads);
 
   size_t m_impulseResponseLength;
+  size_t m_blockSize;
 
   nsTArray<UniquePtr<ReverbConvolver> > m_convolvers;
 

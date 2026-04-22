@@ -34,15 +34,16 @@
 #include "nsDebug.h"
 
 using mozilla::AudioBufferCopyChannelWithScale;
-using mozilla::WEBAUDIO_BLOCK_SIZE;
 
 namespace WebCore {
 
 DynamicsCompressor::DynamicsCompressor(float sampleRate,
-                                       unsigned numberOfChannels)
+                                       unsigned numberOfChannels,
+                                       uint32_t blockSize)
     : m_numberOfChannels(numberOfChannels),
       m_sampleRate(sampleRate),
       m_compressor(sampleRate, numberOfChannels) {
+  m_sourceWithVolume.SetLength(blockSize);
   // Uninitialized state - for parameter recalculation.
   m_lastFilterStageRatio = -1;
   m_lastAnchor = -1;
@@ -163,7 +164,7 @@ void DynamicsCompressor::process(const AudioBlock* sourceChunk,
   MOZ_ASSERT(numberOfChannels == m_numberOfChannels && numberOfSourceChannels);
 
   if (numberOfChannels != m_numberOfChannels || !numberOfSourceChannels) {
-    destinationChunk->SetNull(WEBAUDIO_BLOCK_SIZE);
+    destinationChunk->SetNull(m_sourceWithVolume.Length());
     return;
   }
 
@@ -206,8 +207,7 @@ void DynamicsCompressor::process(const AudioBlock* sourceChunk,
     setEmphasisParameters(filterStageGain, anchor, filterStageRatio);
   }
 
-  float sourceWithVolume[WEBAUDIO_BLOCK_SIZE + 4];
-  float* alignedSourceWithVolume = ALIGNED16(sourceWithVolume);
+  float* alignedSourceWithVolume = m_sourceWithVolume.Elements();
   ASSERT_ALIGNED16(alignedSourceWithVolume);
 
   // Apply pre-emphasis filter.
@@ -220,7 +220,7 @@ void DynamicsCompressor::process(const AudioBlock* sourceChunk,
       sourceData = m_sourceChannels[i];
     } else {
       AudioBufferCopyChannelWithScale(m_sourceChannels[i], sourceChunk->mVolume,
-                                     alignedSourceWithVolume);
+                                     alignedSourceWithVolume, framesToProcess);
       sourceData = alignedSourceWithVolume;
     }
 

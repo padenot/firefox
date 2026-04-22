@@ -15,11 +15,6 @@
 namespace mozilla {
 
 static const uint32_t MAX_FFT_SIZE = 32768;
-static const size_t CHUNK_COUNT = MAX_FFT_SIZE >> WEBAUDIO_BLOCK_SIZE_BITS;
-static_assert(MAX_FFT_SIZE == CHUNK_COUNT * WEBAUDIO_BLOCK_SIZE,
-              "MAX_FFT_SIZE must be a multiple of WEBAUDIO_BLOCK_SIZE");
-static_assert((CHUNK_COUNT & (CHUNK_COUNT - 1)) == 0,
-              "CHUNK_COUNT must be power of 2 for remainder behavior");
 
 namespace dom {
 
@@ -46,7 +41,8 @@ class AnalyserNodeEngine final : public AudioNodeEngine {
   };
 
  public:
-  explicit AnalyserNodeEngine(AnalyserNode* aNode) : AudioNodeEngine(aNode) {
+  AnalyserNodeEngine(AnalyserNode* aNode, uint32_t aChunkCount)
+      : AudioNodeEngine(aNode), mChunkCount(aChunkCount) {
     MOZ_ASSERT(NS_IsMainThread());
   }
 
@@ -70,7 +66,7 @@ class AnalyserNodeEngine final : public AudioNodeEngine {
 
     } else {
       // This many null chunks will be required to empty AnalyserNode::mChunks.
-      mChunksToProcess = CHUNK_COUNT;
+      mChunksToProcess = mChunkCount;
     }
 
     RefPtr<TransferBuffer> transfer =
@@ -85,6 +81,7 @@ class AnalyserNodeEngine final : public AudioNodeEngine {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
 
+  const uint32_t mChunkCount;
   uint32_t mChunksToProcess = 0;
 };
 
@@ -124,15 +121,18 @@ AnalyserNode::AnalyserNode(AudioContext* aContext)
       mAnalysisBlock(2048),
       mMinDecibels(-100.),
       mMaxDecibels(-30.),
-      mSmoothingTimeConstant(.8) {
-  mTrack =
-      AudioNodeTrack::Create(aContext, new AnalyserNodeEngine(this),
-                             AudioNodeTrack::NO_TRACK_FLAGS, aContext->Graph());
+      mSmoothingTimeConstant(.8),
+      mChunkCount((MAX_FFT_SIZE + aContext->RenderQuantumSize() - 1) /
+                  aContext->RenderQuantumSize()),
+      mBlockSize(aContext->RenderQuantumSize()) {
+  mTrack = AudioNodeTrack::Create(
+      aContext, new AnalyserNodeEngine(this, mChunkCount),
+      AudioNodeTrack::NO_TRACK_FLAGS, aContext->Graph());
 
   // Enough chunks must be recorded to handle the case of fftSize being
   // increased to maximum immediately before getFloatTimeDomainData() is
   // called, for example.
-  (void)mChunks.SetLength(CHUNK_COUNT, fallible);
+  (void)mChunks.SetLength(mChunkCount, fallible);
 
   AllocateBuffer();
 }
@@ -336,7 +336,7 @@ void AnalyserNode::AppendChunk(const AudioChunk& aChunk) {
   }
 
   ++mCurrentChunk;
-  mChunks[mCurrentChunk & (CHUNK_COUNT - 1)] = aChunk;
+  mChunks[mCurrentChunk % mChunkCount] = aChunk;
 }
 
 // Reads into aData the oldest aLength samples of the fftSize most recent
@@ -350,16 +350,16 @@ void AnalyserNode::GetTimeDomainData(float* aData, size_t aLength) {
     return;
   }
 
-  size_t readChunk =
-      mCurrentChunk - ((fftSize - 1) >> WEBAUDIO_BLOCK_SIZE_BITS);
-  size_t readIndex = (0 - fftSize) & (WEBAUDIO_BLOCK_SIZE - 1);
-  MOZ_ASSERT(readIndex == 0 || readIndex + fftSize == WEBAUDIO_BLOCK_SIZE);
+  size_t readChunk = mCurrentChunk - ((fftSize - 1) / mBlockSize);
+  // Offset within the first chunk: how far into it the fftSize window starts.
+  size_t readIndex = (mBlockSize - fftSize % mBlockSize) % mBlockSize;
 
   for (size_t writeIndex = 0; writeIndex < aLength;) {
-    const AudioChunk& chunk = mChunks[readChunk & (CHUNK_COUNT - 1)];
+    const AudioChunk& chunk = mChunks[readChunk % mChunkCount];
     const size_t channelCount = chunk.ChannelCount();
+    // Limit copy to samples remaining in this chunk from readIndex onward.
     size_t copyLength =
-        std::min<size_t>(aLength - writeIndex, WEBAUDIO_BLOCK_SIZE);
+        std::min<size_t>(aLength - writeIndex, mBlockSize - readIndex);
     float* dataOut = &aData[writeIndex];
 
     if (channelCount == 0) {
@@ -380,6 +380,7 @@ void AnalyserNode::GetTimeDomainData(float* aData, size_t aLength) {
 
     readChunk++;
     writeIndex += copyLength;
+    readIndex = 0;  // subsequent chunks always start from the beginning
   }
 }
 

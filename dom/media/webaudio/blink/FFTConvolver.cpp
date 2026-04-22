@@ -34,9 +34,11 @@ using namespace mozilla;
 
 namespace WebCore {
 
-FFTConvolver::FFTConvolver(size_t fftSize, size_t renderPhase)
-    : m_frame(fftSize), m_readWriteIndex(renderPhase % (fftSize / 2)) {
-  MOZ_ASSERT(fftSize >= 2 * WEBAUDIO_BLOCK_SIZE);
+FFTConvolver::FFTConvolver(size_t fftSize, size_t blockSize, size_t renderPhase)
+    : m_frame(fftSize),
+      m_blockSize(blockSize),
+      m_readWriteIndex(renderPhase % (fftSize / 2)) {
+  MOZ_ASSERT(fftSize >= 2 * m_blockSize);
   m_inputBuffer.SetLength(fftSize);
   PodZero(m_inputBuffer.Elements(), fftSize);
   m_outputBuffer.SetLength(fftSize);
@@ -63,23 +65,20 @@ size_t FFTConvolver::sizeOfIncludingThis(
 const float* FFTConvolver::process(FFTBlock* fftKernel, const float* sourceP) {
   size_t halfSize = fftSize() / 2;
 
-  // WEBAUDIO_BLOCK_SIZE must be an exact multiple of halfSize,
-  // halfSize must be a multiple of WEBAUDIO_BLOCK_SIZE
-  // and > WEBAUDIO_BLOCK_SIZE.
-  MOZ_ASSERT(halfSize % WEBAUDIO_BLOCK_SIZE == 0 &&
-             WEBAUDIO_BLOCK_SIZE <= halfSize);
+  // blockSize must be an exact multiple of halfSize,
+  // halfSize must be a multiple of blockSize and > blockSize.
+  MOZ_ASSERT(halfSize % m_blockSize == 0 && m_blockSize <= halfSize);
 
   // Copy samples to input buffer (note contraint above!)
   float* inputP = m_inputBuffer.Elements();
 
   MOZ_ASSERT(sourceP && inputP &&
-             m_readWriteIndex + WEBAUDIO_BLOCK_SIZE <= m_inputBuffer.Length());
+             m_readWriteIndex + m_blockSize <= m_inputBuffer.Length());
 
-  memcpy(inputP + m_readWriteIndex, sourceP,
-         sizeof(float) * WEBAUDIO_BLOCK_SIZE);
+  memcpy(inputP + m_readWriteIndex, sourceP, sizeof(float) * m_blockSize);
 
   float* outputP = m_outputBuffer.Elements();
-  m_readWriteIndex += WEBAUDIO_BLOCK_SIZE;
+  m_readWriteIndex += m_blockSize;
 
   // Check if it's time to perform the next FFT
   if (m_readWriteIndex == halfSize) {
@@ -112,8 +111,7 @@ void FFTConvolver::reset() {
 }
 
 size_t FFTConvolver::latencyFrames() const {
-  return std::max<size_t>(fftSize() / 2, WEBAUDIO_BLOCK_SIZE) -
-         WEBAUDIO_BLOCK_SIZE;
+  return std::max<size_t>(fftSize() / 2, m_blockSize) - m_blockSize;
 }
 
 }  // namespace WebCore

@@ -29,6 +29,7 @@
 #ifndef DynamicsCompressor_h
 #define DynamicsCompressor_h
 
+#include "AlignedTArray.h"
 #include "DynamicsCompressorKernel.h"
 #include "ZeroPole.h"
 #include "mozilla/MemoryReporting.h"
@@ -71,7 +72,8 @@ class DynamicsCompressor {
     ParamLast
   };
 
-  DynamicsCompressor(float sampleRate, unsigned numberOfChannels);
+  DynamicsCompressor(float sampleRate, unsigned numberOfChannels,
+                     uint32_t blockSize);
 
   void process(const AudioBlock* sourceChunk, AudioBlock* destinationChunk,
                unsigned framesToProcess);
@@ -127,6 +129,8 @@ class DynamicsCompressor {
 
   // The core compressor.
   DynamicsCompressorKernel m_compressor;
+
+  AlignedTArray<float, 16> m_sourceWithVolume;
 };
 
 }  // namespace WebCore

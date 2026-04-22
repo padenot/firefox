@@ -16,10 +16,11 @@ class DelayBuffer final {
   typedef dom::ChannelInterpretation ChannelInterpretation;
 
  public:
-  explicit DelayBuffer(float aMaxDelayTicks)
+  DelayBuffer(float aMaxDelayTicks, uint32_t aBlockSize)
       // Round the maximum delay up to the next tick.
       : mMaxDelayTicks(std::ceil(aMaxDelayTicks)),
-        mCurrentChunk(0)
+        mCurrentChunk(0),
+        mBlockSize(aBlockSize)
   // mLastReadChunk is initialized in EnsureBuffer
 #ifdef DEBUG
         ,
@@ -31,15 +32,15 @@ class DelayBuffer final {
     // maximum delay.
     MOZ_ASSERT(aMaxDelayTicks <=
                float(std::numeric_limits<decltype(mMaxDelayTicks)>::max()));
+    mScratch.SetLength(aBlockSize);
   }
 
-  // Write a WEBAUDIO_BLOCK_SIZE block for aChannelCount channels.
+  // Write one block for aChannelCount channels.
   void Write(const AudioBlock& aInputChunk);
 
   // Read a block with an array of delays, in ticks, for each sample frame.
   // Each delay should be >= 0 and <= MaxDelayTicks().
-  void Read(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
-            AudioBlock* aOutputChunk,
+  void Read(const float* aPerFrameDelays, AudioBlock* aOutputChunk,
             ChannelInterpretation aChannelInterpretation);
   // Read a block with a constant delay. The delay should be >= 0 and
   // <= MaxDelayTicks().
@@ -50,8 +51,8 @@ class DelayBuffer final {
   // delays in ticks.  This is useful when delays are different on different
   // channels.  aOutputChunk must have already been allocated with at least as
   // many channels as were in any of the blocks passed to Write().
-  void ReadChannel(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
-                   AudioBlock* aOutputChunk, uint32_t aChannel,
+  void ReadChannel(const float* aPerFrameDelays, AudioBlock* aOutputChunk,
+                   uint32_t aChannel,
                    ChannelInterpretation aChannelInterpretation);
 
   // Advance the buffer pointer
@@ -70,9 +71,8 @@ class DelayBuffer final {
   size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const;
 
  private:
-  void ReadChannels(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
-                    AudioBlock* aOutputChunk, uint32_t aFirstChannel,
-                    uint32_t aNumChannelsToRead,
+  void ReadChannels(const float* aPerFrameDelays, AudioBlock* aOutputChunk,
+                    uint32_t aFirstChannel, uint32_t aNumChannelsToRead,
                     ChannelInterpretation aChannelInterpretation);
   bool EnsureBuffer();
   int PositionForDelay(int aDelay);
@@ -86,6 +86,8 @@ class DelayBuffer final {
   FallibleTArray<AudioChunk> mChunks;
   // Cached upmixed channel arrays, to avoid repeated allocations.
   CopyableAutoTArray<const float*, GUESS_AUDIO_CHANNELS> mUpmixChannels;
+  // Scratch buffer for the constant-delay Read() overload.
+  nsTArray<float> mScratch;
   // Maximum delay, in ticks
   int mMaxDelayTicks;
   // The current position in the circular buffer.  The next write will be to
@@ -93,6 +95,8 @@ class DelayBuffer final {
   int mCurrentChunk;
   // The chunk owning the pointers in mUpmixChannels
   int mLastReadChunk;
+  // Block size for this buffer, set at construction.
+  const uint32_t mBlockSize;
 #ifdef DEBUG
   bool mHaveWrittenBlock;
 #endif

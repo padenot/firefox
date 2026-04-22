@@ -39,12 +39,11 @@ void DelayBuffer::Write(const AudioBlock& aInputChunk) {
   mChunks[mCurrentChunk] = aInputChunk.AsAudioChunk();
 }
 
-void DelayBuffer::Read(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
-                       AudioBlock* aOutputChunk,
+void DelayBuffer::Read(const float* aPerFrameDelays, AudioBlock* aOutputChunk,
                        ChannelInterpretation aChannelInterpretation) {
   int chunkCount = mChunks.Length();
   if (!chunkCount) {
-    aOutputChunk->SetNull(WEBAUDIO_BLOCK_SIZE);
+    aOutputChunk->SetNull(mBlockSize);
     return;
   }
 
@@ -57,7 +56,7 @@ void DelayBuffer::Read(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
   // current position (including i).
   float minDelay = aPerFrameDelays[0];
   float maxDelay = minDelay;
-  for (unsigned i = 1; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+  for (unsigned i = 1; i < mBlockSize; ++i) {
     minDelay = std::min(minDelay, aPerFrameDelays[i] - i);
     maxDelay = std::max(maxDelay, aPerFrameDelays[i] - i);
   }
@@ -80,16 +79,16 @@ void DelayBuffer::Read(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
     ReadChannels(aPerFrameDelays, aOutputChunk, 0, channelCount,
                  aChannelInterpretation);
   } else {
-    aOutputChunk->SetNull(WEBAUDIO_BLOCK_SIZE);
+    aOutputChunk->SetNull(mBlockSize);
   }
 }
 
-void DelayBuffer::ReadChannel(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
+void DelayBuffer::ReadChannel(const float* aPerFrameDelays,
                               AudioBlock* aOutputChunk, uint32_t aChannel,
                               ChannelInterpretation aChannelInterpretation) {
   if (!mChunks.Length()) {
     float* outputChannel = aOutputChunk->ChannelFloatsForWrite(aChannel);
-    PodZero(outputChannel, WEBAUDIO_BLOCK_SIZE);
+    PodZero(outputChannel, mBlockSize);
     return;
   }
 
@@ -97,7 +96,7 @@ void DelayBuffer::ReadChannel(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
                aChannelInterpretation);
 }
 
-void DelayBuffer::ReadChannels(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
+void DelayBuffer::ReadChannels(const float* aPerFrameDelays,
                                AudioBlock* aOutputChunk, uint32_t aFirstChannel,
                                uint32_t aNumChannelsToRead,
                                ChannelInterpretation aChannelInterpretation) {
@@ -110,13 +109,13 @@ void DelayBuffer::ReadChannels(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
   }
 
   for (uint32_t channel = aFirstChannel; channel < readChannelsEnd; ++channel) {
-    PodZero(aOutputChunk->ChannelFloatsForWrite(channel), WEBAUDIO_BLOCK_SIZE);
+    PodZero(aOutputChunk->ChannelFloatsForWrite(channel), mBlockSize);
   }
 
-  for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+  for (unsigned i = 0; i < mBlockSize; ++i) {
     float currentDelay = aPerFrameDelays[i];
     MOZ_ASSERT(currentDelay >= 0.0f);
-    MOZ_ASSERT(currentDelay <= (mChunks.Length() - 1) * WEBAUDIO_BLOCK_SIZE);
+    MOZ_ASSERT(currentDelay <= (mChunks.Length() - 1) * (int)mBlockSize);
 
     // Interpolate two input frames in case the read position does not match
     // an integer index.
@@ -154,9 +153,8 @@ void DelayBuffer::ReadChannels(const float aPerFrameDelays[WEBAUDIO_BLOCK_SIZE],
 
 void DelayBuffer::Read(float aDelayTicks, AudioBlock* aOutputChunk,
                        ChannelInterpretation aChannelInterpretation) {
-  float computedDelay[WEBAUDIO_BLOCK_SIZE];
-  std::fill(std::begin(computedDelay), std::end(computedDelay), aDelayTicks);
-  Read(computedDelay, aOutputChunk, aChannelInterpretation);
+  std::fill(mScratch.begin(), mScratch.end(), aDelayTicks);
+  Read(mScratch.Elements(), aOutputChunk, aChannelInterpretation);
 }
 
 bool DelayBuffer::EnsureBuffer() {
@@ -165,8 +163,8 @@ bool DelayBuffer::EnsureBuffer() {
     // delay so that writing an input block does not overwrite the block that
     // would subsequently be read at maximum delay.  Also round up to the next
     // block size, so that no block of writes will need to wrap.
-    const int chunkCount = (mMaxDelayTicks + 2 * WEBAUDIO_BLOCK_SIZE - 1) >>
-                           WEBAUDIO_BLOCK_SIZE_BITS;
+    const int chunkCount =
+        (mMaxDelayTicks + 2 * (int)mBlockSize - 1) / (int)mBlockSize;
     if (!mChunks.SetLength(chunkCount, fallible)) {
       return false;
     }
@@ -177,19 +175,18 @@ bool DelayBuffer::EnsureBuffer() {
 }
 
 int DelayBuffer::PositionForDelay(int aDelay) {
-  // Adding mChunks.Length() keeps integers positive for defined and
-  // appropriate bitshift, remainder, and bitwise operations.
-  return ((mCurrentChunk + mChunks.Length()) * WEBAUDIO_BLOCK_SIZE) - aDelay;
+  // Adding mChunks.Length() keeps integers positive for defined remainder.
+  return ((mCurrentChunk + mChunks.Length()) * (int)mBlockSize) - aDelay;
 }
 
 int DelayBuffer::ChunkForPosition(int aPosition) {
   MOZ_ASSERT(aPosition >= 0);
-  return (aPosition >> WEBAUDIO_BLOCK_SIZE_BITS) % mChunks.Length();
+  return (aPosition / (int)mBlockSize) % mChunks.Length();
 }
 
 int DelayBuffer::OffsetForPosition(int aPosition) {
   MOZ_ASSERT(aPosition >= 0);
-  return aPosition & (WEBAUDIO_BLOCK_SIZE - 1);
+  return aPosition % (int)mBlockSize;
 }
 
 int DelayBuffer::ChunkForDelay(int aDelay) {

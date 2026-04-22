@@ -53,9 +53,8 @@ class ReverbConvolverStage {
   ReverbConvolverStage(const float* impulseResponse, size_t responseLength,
                        size_t reverbTotalLatency, size_t stageOffset,
                        size_t stageLength, size_t fftSize, size_t renderPhase,
-                       ReverbAccumulationBuffer*);
+                       ReverbAccumulationBuffer*, size_t blockSize);
 
-  // |source| must point to an array of WEBAUDIO_BLOCK_SIZE elements.
   void process(const float* source);
 
   void processInBackground(ReverbConvolver* convolver);
@@ -76,6 +75,7 @@ class ReverbConvolverStage {
   size_t m_postDelayLength;
 
   nsTArray<float> m_temporaryBuffer;
+  size_t m_blockSize;
 };
 
 }  // namespace WebCore

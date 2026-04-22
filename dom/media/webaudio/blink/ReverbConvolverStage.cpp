@@ -39,16 +39,17 @@ namespace WebCore {
 ReverbConvolverStage::ReverbConvolverStage(
     const float* impulseResponse, size_t, size_t reverbTotalLatency,
     size_t stageOffset, size_t stageLength, size_t fftSize, size_t renderPhase,
-    ReverbAccumulationBuffer* accumulationBuffer)
+    ReverbAccumulationBuffer* accumulationBuffer, size_t blockSize)
     : m_accumulationBuffer(accumulationBuffer),
       m_accumulationReadIndex(0),
-      m_inputReadIndex(0) {
+      m_inputReadIndex(0),
+      m_blockSize(blockSize) {
   MOZ_ASSERT(impulseResponse);
   MOZ_ASSERT(accumulationBuffer);
 
   m_fftKernel = MakeUnique<FFTBlock>(fftSize);
   m_fftKernel->PadAndMakeScaledDFT(impulseResponse + stageOffset, stageLength);
-  m_fftConvolver = MakeUnique<FFTConvolver>(fftSize, renderPhase);
+  m_fftConvolver = MakeUnique<FFTConvolver>(fftSize, m_blockSize, renderPhase);
 
   // The convolution stage at offset stageOffset needs to have a corresponding
   // delay to cancel out the offset.
@@ -92,7 +93,7 @@ void ReverbConvolverStage::process(const float* source) {
   const float* output = m_fftConvolver->process(m_fftKernel.get(), source);
 
   // Now accumulate into reverb's accumulation buffer.
-  m_accumulationBuffer->accumulate(output, WEBAUDIO_BLOCK_SIZE,
+  m_accumulationBuffer->accumulate(output, m_blockSize,
                                    &m_accumulationReadIndex, m_postDelayLength);
 }
 

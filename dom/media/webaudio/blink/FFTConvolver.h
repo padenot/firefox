@@ -45,10 +45,10 @@ class FFTConvolver {
   // |renderPhase| is the initial offset in the initially zero input buffer.
   // It is coordinated with the other stages, so they don't all do their
   // FFTs at the same time.
-  explicit FFTConvolver(size_t fftSize, size_t renderPhase = 0);
+  FFTConvolver(size_t fftSize, size_t blockSize, size_t renderPhase);
 
-  // Process WEBAUDIO_BLOCK_SIZE elements of array |sourceP| and return a
-  // pointer to an output array of the same size.
+  // Process blockSize elements of array |sourceP| and return a pointer to an
+  // output array of the same size.
   //
   // |fftKernel| must be pre-scaled for FFTBlock::GetInverseWithoutScaling().
   //
@@ -69,6 +69,7 @@ class FFTConvolver {
 
  private:
   FFTBlock m_frame;
+  size_t m_blockSize;
 
   // Buffer input until we get fftSize / 2 samples then do an FFT
   size_t m_readWriteIndex;

@@ -42,7 +42,8 @@ const float MaxDelayTimeSeconds = 0.002f;
 const int UninitializedAzimuth = -1;
 
 HRTFPanner::HRTFPanner(float sampleRate,
-                       already_AddRefed<HRTFDatabaseLoader> databaseLoader)
+                       already_AddRefed<HRTFDatabaseLoader> databaseLoader,
+                       size_t blockSize)
     : m_databaseLoader(databaseLoader),
       m_sampleRate(sampleRate),
       m_crossfadeSelection(CrossfadeSelection1),
@@ -52,12 +53,15 @@ HRTFPanner::HRTFPanner(float sampleRate,
       ,
       m_crossfadeX(0),
       m_crossfadeIncr(0),
-      m_convolverL1(HRTFElevation::fftSizeForSampleRate(sampleRate)),
-      m_convolverR1(m_convolverL1.fftSize()),
-      m_convolverL2(m_convolverL1.fftSize()),
-      m_convolverR2(m_convolverL1.fftSize()),
-      m_delayLine(MaxDelayTimeSeconds * sampleRate) {
+      m_convolverL1(HRTFElevation::fftSizeForSampleRate(sampleRate, blockSize),
+                    blockSize, 0),
+      m_convolverR1(m_convolverL1.fftSize(), blockSize, 0),
+      m_convolverL2(m_convolverL1.fftSize(), blockSize, 0),
+      m_convolverR2(m_convolverL1.fftSize(), blockSize, 0),
+      m_delayLine(MaxDelayTimeSeconds * sampleRate, blockSize) {
   MOZ_ASSERT(m_databaseLoader);
+  m_frameDelaysL.SetLength(blockSize);
+  m_frameDelaysR.SetLength(blockSize);
   MOZ_COUNT_CTOR(HRTFPanner);
 }
 
@@ -120,7 +124,7 @@ void HRTFPanner::pan(double desiredAzimuth, double elevation,
   unsigned numInputChannels = inputBus->IsNull() ? 0 : inputBus->ChannelCount();
 
   MOZ_ASSERT(numInputChannels <= 2);
-  MOZ_ASSERT(inputBus->GetDuration() == WEBAUDIO_BLOCK_SIZE);
+  MOZ_ASSERT(inputBus->GetDuration() == (TrackTime)m_frameDelaysL.Length());
 #endif
 
   bool isOutputGood =
@@ -226,14 +230,12 @@ void HRTFPanner::pan(double desiredAzimuth, double elevation,
              frameDelayR2 / sampleRate() < MaxDelayTimeSeconds);
 
   // Crossfade inter-aural delays based on transitions.
-  float frameDelaysL[WEBAUDIO_BLOCK_SIZE];
-  float frameDelaysR[WEBAUDIO_BLOCK_SIZE];
   {
     float x = m_crossfadeX;
     float incr = m_crossfadeIncr;
-    for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
-      frameDelaysL[i] = (1 - x) * frameDelayL1 + x * frameDelayL2;
-      frameDelaysR[i] = (1 - x) * frameDelayR1 + x * frameDelayR2;
+    for (unsigned i = 0; i < m_frameDelaysL.Length(); ++i) {
+      m_frameDelaysL[i] = (1 - x) * frameDelayL1 + x * frameDelayL2;
+      m_frameDelaysR[i] = (1 - x) * frameDelayR1 + x * frameDelayR2;
       x += incr;
     }
   }
@@ -242,9 +244,9 @@ void HRTFPanner::pan(double desiredAzimuth, double elevation,
   m_delayLine.Write(*inputBus);
   // "Speakers" means a mono input is read into both outputs (with possibly
   // different delays).
-  m_delayLine.ReadChannel(frameDelaysL, outputBus, 0,
+  m_delayLine.ReadChannel(m_frameDelaysL.Elements(), outputBus, 0,
                           ChannelInterpretation::Speakers);
-  m_delayLine.ReadChannel(frameDelaysR, outputBus, 1,
+  m_delayLine.ReadChannel(m_frameDelaysR.Elements(), outputBus, 1,
                           ChannelInterpretation::Speakers);
   m_delayLine.NextBlock();
 
@@ -277,7 +279,7 @@ void HRTFPanner::pan(double desiredAzimuth, double elevation,
     // Apply linear cross-fade.
     float x = m_crossfadeX;
     float incr = m_crossfadeIncr;
-    for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+    for (unsigned i = 0; i < m_frameDelaysL.Length(); ++i) {
       destinationL[i] = (1 - x) * convolutionDestinationL1[i] +
                         x * convolutionDestinationL2[i];
       destinationR[i] = (1 - x) * convolutionDestinationR1[i] +
@@ -308,8 +310,8 @@ void HRTFPanner::pan(double desiredAzimuth, double elevation,
       sourceL = convolutionDestinationL2;
       sourceR = convolutionDestinationR2;
     }
-    PodCopy(destinationL, sourceL, WEBAUDIO_BLOCK_SIZE);
-    PodCopy(destinationR, sourceR, WEBAUDIO_BLOCK_SIZE);
+    PodCopy(destinationL, sourceL, m_frameDelaysL.Length());
+    PodCopy(destinationR, sourceR, m_frameDelaysR.Length());
   }
 }
 

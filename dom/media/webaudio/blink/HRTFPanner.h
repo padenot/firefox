@@ -44,16 +44,10 @@ using mozilla::AudioBlock;
 class HRTFPanner {
  public:
   HRTFPanner(float sampleRate,
-             already_AddRefed<HRTFDatabaseLoader> databaseLoader);
-%%%%%%% diff from: tvvytpou 05959840 "Bug 2034508 - Use per-track scratch buffers in DelayNode. r?" (parents of squashed revision)
-\\\\\\\        to: mqzwquxu 52a59f6f "Bug 2034508 - Remove redundant aBlockSize parameter from PannerNode. r?" (squashed revision)
--  HRTFPanner(float sampleRate, already_AddRefed<HRTFDatabaseLoader> databaseLoader,
-+  HRTFPanner(float sampleRate,
-+             already_AddRefed<HRTFDatabaseLoader> databaseLoader,
-              size_t blockSize);
+             already_AddRefed<HRTFDatabaseLoader> databaseLoader,
+             size_t blockSize);
   ~HRTFPanner();
 
-  // chunk durations must be 128
   void pan(double azimuth, double elevation, const AudioBlock* inputBus,
            AudioBlock* outputBus);
   void reset();
@@ -121,6 +115,9 @@ class HRTFPanner {
   AudioFloatArray m_tempR1;
   AudioFloatArray m_tempL2;
   AudioFloatArray m_tempR2;
+
+  AudioFloatArray m_frameDelaysL;
+  AudioFloatArray m_frameDelaysR;
 };
 
 }  // namespace WebCore
