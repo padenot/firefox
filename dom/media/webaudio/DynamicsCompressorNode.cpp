@@ -39,8 +39,9 @@ class DynamicsCompressorNodeEngine final : public AudioNodeEngine {
         mRatio(12.f),
         mAttack(0.003f),
         mRelease(0.25f),
-        mCompressor(new DynamicsCompressor(mDestination->mSampleRate, 2,
-                                            aNode->Context()->RenderQuantumSize())) {}
+        mCompressor(
+            new DynamicsCompressor(mDestination->mSampleRate, 2,
+                                   aNode->Context()->RenderQuantumSize())) {}
 
   enum Parameters { THRESHOLD, KNEE, RATIO, ATTACK, RELEASE };
   void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {

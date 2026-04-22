@@ -340,9 +340,9 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
     return nullptr;
   }
 
-  RefPtr<AudioContext> object = new AudioContext(window, true, aNumberOfChannels,
-                                                aLength, aSampleRate,
-                                                WEBAUDIO_BLOCK_SIZE);
+  RefPtr<AudioContext> object =
+      new AudioContext(window, true, aNumberOfChannels, aLength, aSampleRate,
+                       WEBAUDIO_BLOCK_SIZE);
 
   RegisterWeakMemoryReporter(object);
 

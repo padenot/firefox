@@ -147,8 +147,7 @@ class OscillatorNodeEngine final : public AudioNodeEngine {
 
   // Returns true if the final frequency (and thus the phase increment) changed,
   // false otherwise. This allow some optimizations at callsite.
-  bool UpdateParametersIfNeeded(size_t aIndexInBlock,
-                                const float* aFrequency,
+  bool UpdateParametersIfNeeded(size_t aIndexInBlock, const float* aFrequency,
                                 const float* aDetune) {
     // Shortcut if frequency-related AudioParam are not automated, and we
     // already have computed the frequency information and related parameters.

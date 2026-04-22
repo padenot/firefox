@@ -373,7 +373,8 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
 
   // Make sure we get null data if the track is not started yet.
   GraphTime current = 0;
-  GraphTime next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(frames, WEBAUDIO_BLOCK_SIZE);
+  GraphTime next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
+      frames, WEBAUDIO_BLOCK_SIZE);
   ASSERT_NE(current, next);  // Make sure we have data produced in ProcessInput.
 
   track->ProcessInput(current, next, flags);
@@ -386,7 +387,8 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
   // Make sure we get the AudioInputSource's data once we start the track.
 
   current = next;
-  next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(2 * frames, WEBAUDIO_BLOCK_SIZE);
+  next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(2 * frames,
+                                                       WEBAUDIO_BLOCK_SIZE);
   ASSERT_NE(current, next);  // Make sure we have data produced in ProcessInput.
 
   auto listener = MakeRefPtr<MockEventListener>();
@@ -426,7 +428,8 @@ TEST_F(TestDeviceInputTrack, NonNativeInputTrackData) {
 
   // Stop the track and make sure it produces null data again.
   current = next;
-  next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(3 * frames, WEBAUDIO_BLOCK_SIZE);
+  next = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(3 * frames,
+                                                       WEBAUDIO_BLOCK_SIZE);
   ASSERT_NE(current, next);  // Make sure we have data produced in ProcessInput.
 
   DispatchFunction([&] { track->StopAudio(); });

@@ -275,8 +275,9 @@ void OfflineClockDriver::RunThread() {
 
 MediaTime OfflineClockDriver::GetIntervalForIteration() {
   return MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
-      std::clamp<MediaTime>(mEndTime - mStateComputedTime, 0,
-                            MillisecondsToMediaTime(MEDIA_GRAPH_TARGET_PERIOD_MS)),
+      std::clamp<MediaTime>(
+          mEndTime - mStateComputedTime, 0,
+          MillisecondsToMediaTime(MEDIA_GRAPH_TARGET_PERIOD_MS)),
       Graph()->BlockSize());
 }
 
@@ -910,8 +911,9 @@ long AudioCallbackDriver::DataCallback(const AudioDataValue* aInputBuffer,
 
   // State computed time is decided by the audio callback's buffer length.
   GraphTime bufferEndGraphTime = mStateComputedTime + mBuffer.Available();
-  GraphTime nextStateComputedTime = MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(
-      bufferEndGraphTime, Graph()->BlockSize());
+  GraphTime nextStateComputedTime =
+      MediaTrackGraphImpl::RoundUpToEndOfAudioBlock(bufferEndGraphTime,
+                                                    Graph()->BlockSize());
   LOG(LogLevel::Verbose,
       ("%p: interval[%ld; %ld] (frames: %ld) (durationMS: %u) "
        "(duration ticks: %ld)",

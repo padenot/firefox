@@ -182,7 +182,8 @@ void ConvolverNodeEngine::ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
   if (aInput.IsNull()) {
     if (mRemainingLeftOutput > 0) {
       mRemainingLeftOutput -= aTrack->BlockSize();
-      AllocateReverbInput(aInput, 1, aTrack->BlockSize());  // floats for silence
+      AllocateReverbInput(aInput, 1,
+                          aTrack->BlockSize());  // floats for silence
     } else {
       if (mRemainingLeftOutput != INT32_MIN) {
         mRemainingLeftOutput = INT32_MIN;
@@ -282,8 +283,7 @@ void ConvolverNodeEngine::ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
 
     if (mReverbInput.mVolume == 0.0f) {  // not yet set
       if (aInput.mVolume != 1.0f) {
-        AllocateReverbInput(aInput, inputChannelCount,
-                            aTrack->BlockSize());  // pre-multiply
+        AllocateReverbInput(aInput, inputChannelCount, aTrack->BlockSize());  // pre-multiply
       } else {
         mReverbInput = aInput;
       }

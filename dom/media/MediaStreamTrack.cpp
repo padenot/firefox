@@ -202,12 +202,12 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
     // like AddListener still work. Keeping the number of paths to a minimum
     // also helps prevent bugs elsewhere. We'll be ended through the
     // MediaStreamTrackSource soon enough.
-    auto graph = mInputTrack->IsDestroyed()
-                     ? MediaTrackGraph::GetInstanceIfExists(
-                           mWindow, mInputTrack->mSampleRate,
-                           MediaTrackGraph::DEFAULT_OUTPUT_DEVICE,
-                           WEBAUDIO_BLOCK_SIZE)
-                     : mInputTrack->Graph();
+    auto graph =
+        mInputTrack->IsDestroyed()
+            ? MediaTrackGraph::GetInstanceIfExists(
+                  mWindow, mInputTrack->mSampleRate,
+                  MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, WEBAUDIO_BLOCK_SIZE)
+            : mInputTrack->Graph();
     MOZ_DIAGNOSTIC_ASSERT(graph,
                           "A destroyed input track is only expected when "
                           "cloning, but since we're live there must be another "

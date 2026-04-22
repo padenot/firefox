@@ -563,9 +563,8 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
     float* dest = JS_GetFloat32ArrayData(float32Arrays, &isShared, nogc);
     MOZ_ASSERT(!isShared);  // Was created as unshared
 
-    size_t frames = mParamTimelines[i].mTimeline.HasSimpleValue()
-                        ? 1
-                        : aTrack->BlockSize();
+    size_t frames =
+        mParamTimelines[i].mTimeline.HasSimpleValue() ? 1 : aTrack->BlockSize();
     mParamTimelines[i].mTimeline.GetValuesAtTime(tick, dest, frames,
                                                  aTrack->BlockSize());
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1616599

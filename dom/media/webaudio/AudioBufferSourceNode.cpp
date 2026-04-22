@@ -356,8 +356,8 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
                       uint32_t* aOffsetWithinBlock, TrackTime* aCurrentPosition,
                       TrackTime aMaxPos, uint32_t aBlockSize) {
     MOZ_ASSERT(*aCurrentPosition < aMaxPos);
-    uint32_t numFrames = std::min<TrackTime>(
-        aBlockSize - *aOffsetWithinBlock, aMaxPos - *aCurrentPosition);
+    uint32_t numFrames = std::min<TrackTime>(aBlockSize - *aOffsetWithinBlock,
+                                             aMaxPos - *aCurrentPosition);
     if (numFrames == aBlockSize || !aChannels) {
       aOutput->SetNull(aBlockSize);
     } else {
@@ -474,13 +474,14 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     if (simplePlaybackRate) {
       playbackRate = mPlaybackRateTimeline.GetValue();
     } else {
-      playbackRate =
-          mPlaybackRateTimeline.GetComplexValueAtTime(aTrackPosition, aBlockSize);
+      playbackRate = mPlaybackRateTimeline.GetComplexValueAtTime(aTrackPosition,
+                                                                 aBlockSize);
     }
     if (simpleDetune) {
       detune = mDetuneTimeline.GetValue();
     } else {
-      detune = mDetuneTimeline.GetComplexValueAtTime(aTrackPosition, aBlockSize);
+      detune =
+          mDetuneTimeline.GetComplexValueAtTime(aTrackPosition, aBlockSize);
     }
 
     int32_t outRate = ComputeFinalOutSampleRate(playbackRate, detune);
