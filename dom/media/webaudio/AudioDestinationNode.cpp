@@ -99,7 +99,7 @@ class OfflineDestinationNodeEngine final : public AudioNodeEngine {
     // Record our input buffer
     MOZ_ASSERT(mWriteIndex < mLength, "How did this happen?");
     const uint32_t duration =
-        std::min(WEBAUDIO_BLOCK_SIZE, mLength - mWriteIndex);
+        std::min(aTrack->BlockSize(), mLength - mWriteIndex);
     const uint32_t inputChannelCount = aInput.ChannelCount();
     for (uint32_t i = 0; i < outputChannelCount; ++i) {
       float* outputData = mBuffer->GetDataForWrite(i) + mWriteIndex;
@@ -108,10 +108,10 @@ class OfflineDestinationNodeEngine final : public AudioNodeEngine {
       } else {
         const float* inputBuffer =
             static_cast<const float*>(aInput.mChannelData[i]);
-        if (duration == WEBAUDIO_BLOCK_SIZE && IS_ALIGNED16(inputBuffer)) {
+        if (duration == aTrack->BlockSize() && IS_ALIGNED16(inputBuffer)) {
           // Use the optimized version of the copy with scale operation
-          AudioBlockCopyChannelWithScale(inputBuffer, aInput.mVolume,
-                                         outputData);
+          AudioBlockCopyChannelWithScale(inputBuffer, aInput.mVolume, outputData,
+                                         duration);
         } else {
           if (aInput.mVolume == 1.0f) {
             PodCopy(outputData, inputBuffer, duration);
@@ -301,7 +301,8 @@ AudioDestinationNode::AudioDestinationNode(AudioContext* aContext,
   // MediaTrackGraph
   MediaTrackGraph* graph = MediaTrackGraph::GetInstance(
       MediaTrackGraph::AUDIO_THREAD_DRIVER, aContext->GetOwnerWindow(),
-      aContext->SampleRate(), MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
+      aContext->SampleRate(), MediaTrackGraph::DEFAULT_OUTPUT_DEVICE,
+      aContext->RenderQuantumSize());
   AudioNodeEngine* engine = new DestinationNodeEngine(this);
 
   mTrack = AudioNodeTrack::Create(aContext, engine, kTrackFlags, graph);
@@ -382,8 +383,8 @@ AudioNodeTrack* AudioDestinationNode::Track() {
 
   // GetParentObject can return nullptr here when the document has been
   // unlinked.
-  MediaTrackGraph* graph =
-      MediaTrackGraph::CreateNonRealtimeInstance(context->SampleRate());
+  MediaTrackGraph* graph = MediaTrackGraph::CreateNonRealtimeInstance(
+      context->SampleRate(), context->RenderQuantumSize());
   AudioNodeEngine* engine = new OfflineDestinationNodeEngine(this);
 
   mTrack = AudioNodeTrack::Create(context, engine, kTrackFlags, graph);

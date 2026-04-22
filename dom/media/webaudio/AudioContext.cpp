@@ -148,13 +148,14 @@ static float GetSampleRateForAudioContext(bool aIsOffline, float aSampleRate,
 
 AudioContext::AudioContext(nsPIDOMWindowInner* aWindow, bool aIsOffline,
                            uint32_t aNumberOfChannels, uint32_t aLength,
-                           float aSampleRate)
+                           float aSampleRate, uint32_t aRenderQuantumSize)
     : DOMEventTargetHelper(aWindow),
       mId(gAudioContextId++),
       mSampleRate(GetSampleRateForAudioContext(
           aIsOffline, aSampleRate,
           aWindow->AsGlobal()->ShouldResistFingerprinting(
               RFPTarget::AudioSampleRate))),
+      mRenderQuantumSize(aRenderQuantumSize),
       mAudioContextState(AudioContextState::Suspended),
       mNumberOfChannels(aNumberOfChannels),
       mRTPCallerType(aWindow->AsGlobal()->GetRTPCallerType()),
@@ -282,7 +283,7 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 
   WEB_AUDIO_API_LOG("AudioContext sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
-      new AudioContext(window, false, 2, 0, sampleRate);
+      new AudioContext(window, false, 2, 0, sampleRate, WEBAUDIO_BLOCK_SIZE);
 
   RegisterWeakMemoryReporter(object);
 
@@ -339,8 +340,9 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
     return nullptr;
   }
 
-  RefPtr<AudioContext> object =
-      new AudioContext(window, true, aNumberOfChannels, aLength, aSampleRate);
+  RefPtr<AudioContext> object = new AudioContext(window, true, aNumberOfChannels,
+                                                aLength, aSampleRate,
+                                                WEBAUDIO_BLOCK_SIZE);
 
   RegisterWeakMemoryReporter(object);
 

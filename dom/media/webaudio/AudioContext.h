@@ -133,8 +133,8 @@ class AudioContext final : public DOMEventTargetHelper,
                            public nsIMemoryReporter,
                            public RelativeTimeline {
   AudioContext(nsPIDOMWindowInner* aParentWindow, bool aIsOffline,
-               uint32_t aNumberOfChannels = 0, uint32_t aLength = 0,
-               float aSampleRate = 0.0f);
+               uint32_t aNumberOfChannels, uint32_t aLength, float aSampleRate,
+               uint32_t aRenderQuantumSize);
   ~AudioContext();
 
  public:
@@ -179,6 +179,8 @@ class AudioContext final : public DOMEventTargetHelper,
   AudioDestinationNode* Destination() const { return mDestination; }
 
   float SampleRate() const { return mSampleRate; }
+
+  uint32_t RenderQuantumSize() const { return mRenderQuantumSize; }
 
   bool ShouldSuspendNewTrack() const {
     return mTracksAreSuspended || mCloseCalled;
@@ -387,6 +389,7 @@ class AudioContext final : public DOMEventTargetHelper,
   // Note that it's important for mSampleRate to be initialized before
   // mDestination, as mDestination's constructor needs to access it!
   const float mSampleRate;
+  const uint32_t mRenderQuantumSize;
   AudioContextState mAudioContextState;
   RefPtr<AudioDestinationNode> mDestination;
   RefPtr<AudioListener> mListener;
