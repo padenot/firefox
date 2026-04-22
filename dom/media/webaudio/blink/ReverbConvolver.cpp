@@ -136,8 +136,8 @@ ReverbConvolver::ReverbConvolver(const float* impulseResponseData,
       // performs its FFT at block 7.  The FFTs of size 2048 are
       // performed in blocks 3 + 8 * n and size 1024 at 1 + 4 * n.
       const uint32_t phaseLookup[] = {14, 0, 10, 4};
-      stagePhase = WEBAUDIO_BLOCK_SIZE *
-                   phaseLookup[m_stages.Length() % std::size(phaseLookup)];
+      stagePhase =
+          m_blockSize * phaseLookup[m_stages.Length() % std::size(phaseLookup)];
     } else if (fftSize > maxFFTSize) {
       fftSize = maxFFTSize;
       // A prime offset spreads out FFTs in a way that all

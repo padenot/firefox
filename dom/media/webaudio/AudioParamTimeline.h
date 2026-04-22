@@ -46,10 +46,11 @@ class AudioParamTimeline : public AudioEventTimeline {
 
   template <class TimeType>
   float GetValueAtTime(TimeType aTime);
+  float GetValueAtTime(int64_t aTime, uint32_t aBlockSize);
 
   // Prefer this method over GetValueAtTime() only if HasSimpleValue() is
   // known false.
-  float GetComplexValueAtTime(int64_t aTime);
+  float GetComplexValueAtTime(int64_t aTime, uint32_t aBlockSize);
   float GetComplexValueAtTime(double aTime) = delete;
 
   template <typename TimeType>
@@ -71,7 +72,8 @@ class AudioParamTimeline : public AudioEventTimeline {
   // otherwise it should always be zero.  aSize is meant to be used when
   // getting the value of an a-rate AudioParam for each tick inside an
   // AudioNodeEngine implementation.
-  void GetValuesAtTime(int64_t aTime, float* aBuffer, const size_t aSize);
+  void GetValuesAtTime(int64_t aTime, float* aBuffer, const size_t aSize,
+                       uint32_t aBlockSize);
   void GetValuesAtTime(double aTime, float* aBuffer,
                        const size_t aSize) = delete;
 
@@ -100,16 +102,26 @@ inline float AudioParamTimeline::GetValueAtTime(double aTime) {
 
 template <>
 inline float AudioParamTimeline::GetValueAtTime(int64_t aTime) {
-  // Use GetValuesAtTime() for a-rate parameters.
-  MOZ_ASSERT(aTime % WEBAUDIO_BLOCK_SIZE == 0);
   if (HasSimpleValue()) {
     return GetValue();
   }
-  return GetComplexValueAtTime(aTime);
+  return BaseClass::GetValueAtTime(aTime) +
+         (mTrack ? AudioNodeInputValue(0) : 0.0f);
 }
 
-inline float AudioParamTimeline::GetComplexValueAtTime(int64_t aTime) {
-  MOZ_ASSERT(aTime % WEBAUDIO_BLOCK_SIZE == 0);
+inline float AudioParamTimeline::GetValueAtTime(int64_t aTime,
+                                                uint32_t aBlockSize) {
+  // Use GetValuesAtTime() for a-rate parameters.
+  MOZ_ASSERT(aTime % aBlockSize == 0);
+  if (HasSimpleValue()) {
+    return GetValue();
+  }
+  return GetComplexValueAtTime(aTime, aBlockSize);
+}
+
+inline float AudioParamTimeline::GetComplexValueAtTime(int64_t aTime,
+                                                       uint32_t aBlockSize) {
+  MOZ_ASSERT(aTime % aBlockSize == 0);
 
   // Mix the value of the AudioParam itself with that of the AudioNode inputs.
   return BaseClass::GetValueAtTime(aTime) +
@@ -117,16 +129,17 @@ inline float AudioParamTimeline::GetComplexValueAtTime(int64_t aTime) {
 }
 
 inline void AudioParamTimeline::GetValuesAtTime(int64_t aTime, float* aBuffer,
-                                                const size_t aSize) {
+                                                const size_t aSize,
+                                                uint32_t aBlockSize) {
   MOZ_ASSERT(aBuffer);
-  MOZ_ASSERT(aSize <= WEBAUDIO_BLOCK_SIZE);
+  MOZ_ASSERT(aSize <= aBlockSize);
   MOZ_ASSERT(aSize == 1 || !HasSimpleValue());
 
   // Mix the value of the AudioParam itself with that of the AudioNode inputs.
   BaseClass::GetValuesAtTime(aTime, aBuffer, aSize);
   if (mTrack) {
-    uint32_t blockOffset = aTime % WEBAUDIO_BLOCK_SIZE;
-    MOZ_ASSERT(blockOffset + aSize <= WEBAUDIO_BLOCK_SIZE);
+    uint32_t blockOffset = aTime % aBlockSize;
+    MOZ_ASSERT(blockOffset + aSize <= aBlockSize);
     for (size_t i = 0; i < aSize; ++i) {
       aBuffer[i] += AudioNodeInputValue(blockOffset + i);
     }

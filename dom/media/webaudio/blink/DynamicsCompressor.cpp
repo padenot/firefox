@@ -33,7 +33,7 @@
 #include "AudioNodeEngine.h"
 #include "nsDebug.h"
 
-using mozilla::AudioBlockCopyChannelWithScale;
+using mozilla::AudioBufferCopyChannelWithScale;
 using mozilla::WEBAUDIO_BLOCK_SIZE;
 
 namespace WebCore {
@@ -219,7 +219,7 @@ void DynamicsCompressor::process(const AudioBlock* sourceChunk,
       // Fast path, the volume scale doesn't need to get taken into account
       sourceData = m_sourceChannels[i];
     } else {
-      AudioBlockCopyChannelWithScale(m_sourceChannels[i], sourceChunk->mVolume,
+      AudioBufferCopyChannelWithScale(m_sourceChannels[i], sourceChunk->mVolume,
                                      alignedSourceWithVolume);
       sourceData = alignedSourceWithVolume;
     }

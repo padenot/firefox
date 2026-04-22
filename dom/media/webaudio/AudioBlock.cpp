@@ -131,7 +131,6 @@ bool AudioBlock::CanWrite() {
 }
 
 void AudioBlock::AllocateChannels(uint32_t aChannelCount) {
-  MOZ_ASSERT(mDuration == WEBAUDIO_BLOCK_SIZE);
 
   if (mBufferIsDownstreamRef) {
     // This is not our buffer to re-use.

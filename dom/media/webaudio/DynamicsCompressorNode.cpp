@@ -39,7 +39,8 @@ class DynamicsCompressorNodeEngine final : public AudioNodeEngine {
         mRatio(12.f),
         mAttack(0.003f),
         mRelease(0.25f),
-        mCompressor(new DynamicsCompressor(mDestination->mSampleRate, 2)) {}
+        mCompressor(new DynamicsCompressor(mDestination->mSampleRate, 2,
+                                            aNode->Context()->RenderQuantumSize())) {}
 
   enum Parameters { THRESHOLD, KNEE, RATIO, ATTACK, RELEASE };
   void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {
@@ -82,20 +83,21 @@ class DynamicsCompressorNodeEngine final : public AudioNodeEngine {
     if (mCompressor->numberOfChannels() != channelCount) {
       // Create a new compressor object with a new channel count
       mCompressor = MakeUnique<WebCore::DynamicsCompressor>(
-          aTrack->mSampleRate, aInput.ChannelCount());
+          aTrack->mSampleRate, aInput.ChannelCount(), aTrack->BlockSize());
     }
 
     TrackTime pos = mDestination->GraphTimeToTrackTime(aFrom);
+    uint32_t blockSize = aTrack->BlockSize();
     mCompressor->setParameterValue(DynamicsCompressor::ParamThreshold,
-                                   mThreshold.GetValueAtTime(pos));
+                                   mThreshold.GetValueAtTime(pos, blockSize));
     mCompressor->setParameterValue(DynamicsCompressor::ParamKnee,
-                                   mKnee.GetValueAtTime(pos));
+                                   mKnee.GetValueAtTime(pos, blockSize));
     mCompressor->setParameterValue(DynamicsCompressor::ParamRatio,
-                                   mRatio.GetValueAtTime(pos));
+                                   mRatio.GetValueAtTime(pos, blockSize));
     mCompressor->setParameterValue(DynamicsCompressor::ParamAttack,
-                                   mAttack.GetValueAtTime(pos));
+                                   mAttack.GetValueAtTime(pos, blockSize));
     mCompressor->setParameterValue(DynamicsCompressor::ParamRelease,
-                                   mRelease.GetValueAtTime(pos));
+                                   mRelease.GetValueAtTime(pos, blockSize));
 
     aOutput->AllocateChannels(channelCount);
     mCompressor->process(&aInput, aOutput, aInput.GetDuration());

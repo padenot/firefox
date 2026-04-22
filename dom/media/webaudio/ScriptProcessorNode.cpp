@@ -90,10 +90,11 @@ class SharedBuffers final {
   };
 
  public:
-  explicit SharedBuffers(float aSampleRate)
+  SharedBuffers(float aSampleRate, uint32_t aBlockSize)
       : mOutputQueue("SharedBuffers::outputQueue"),
         mDelaySoFar(TRACK_TIME_MAX),
         mSampleRate(aSampleRate),
+        mBlockSize(aBlockSize),
         mLatency(0.0),
         mDroppingBuffers(false) {}
 
@@ -169,10 +170,10 @@ class SharedBuffers final {
     }
 
     for (uint32_t offset = 0; offset < aBuffer.mDuration;
-         offset += WEBAUDIO_BLOCK_SIZE) {
+         offset += mBlockSize) {
       AudioChunk& chunk = mOutputQueue.Produce();
       chunk = aBuffer;
-      chunk.SliceTo(offset, offset + WEBAUDIO_BLOCK_SIZE);
+      chunk.SliceTo(offset, offset + mBlockSize);
     }
   }
 
@@ -191,10 +192,10 @@ class SharedBuffers final {
         buffer = mOutputQueue.Consume();
       } else {
         // If we're out of buffers to consume, just output silence
-        buffer.SetNull(WEBAUDIO_BLOCK_SIZE);
+        buffer.SetNull(mBlockSize);
         if (mDelaySoFar != TRACK_TIME_MAX) {
           // Remember the delay that we just hit
-          mDelaySoFar += WEBAUDIO_BLOCK_SIZE;
+          mDelaySoFar += mBlockSize;
         }
       }
     }
@@ -225,6 +226,7 @@ class SharedBuffers final {
   TrackTime mDelaySoFar;
   // The samplerate of the context.
   const float mSampleRate;
+  const uint32_t mBlockSize;
   // The remaining members are main thread only.
   // This is the latency caused by the buffering. If this grows too high, we
   // will drop buffers until it is acceptable.
@@ -246,7 +248,8 @@ class ScriptProcessorNodeEngine final : public AudioNodeEngine {
                             uint32_t aNumberOfInputChannels)
       : AudioNodeEngine(aNode),
         mDestination(aDestination->Track()),
-        mSharedBuffers(new SharedBuffers(mDestination->mSampleRate)),
+        mSharedBuffers(new SharedBuffers(mDestination->mSampleRate,
+                                          aNode->Context()->RenderQuantumSize())),
         mBufferSize(aBufferSize),
         mInputChannelCount(aNumberOfInputChannels),
         mInputWriteIndex(0) {}
@@ -276,7 +279,7 @@ class ScriptProcessorNodeEngine final : public AudioNodeEngine {
     // onaudioprocess event. We also want to clear out the input and output
     // buffer queue, and output a null buffer.
     if (!mIsConnected) {
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
       mSharedBuffers->Flush();
       mInputWriteIndex = 0;
       return;
@@ -302,11 +305,11 @@ class ScriptProcessorNodeEngine final : public AudioNodeEngine {
       if (aInput.IsNull()) {
         PodZero(writeData, aInput.GetDuration());
       } else {
-        MOZ_ASSERT(aInput.GetDuration() == WEBAUDIO_BLOCK_SIZE, "sanity check");
+        MOZ_ASSERT(aInput.GetDuration() == aTrack->BlockSize(), "sanity check");
         MOZ_ASSERT(aInput.ChannelCount() == inputChannelCount);
-        AudioBlockCopyChannelWithScale(
+        AudioBufferCopyChannelWithScale(
             static_cast<const float*>(aInput.mChannelData[i]), aInput.mVolume,
-            writeData);
+            writeData, aTrack->BlockSize());
       }
     }
     mInputWriteIndex += aInput.GetDuration();
@@ -352,7 +355,7 @@ class ScriptProcessorNodeEngine final : public AudioNodeEngine {
     // we now have a full input buffer ready to be sent to the main thread.
     TrackTime playbackTick = mDestination->GraphTimeToTrackTime(aFrom);
     // Add the duration of the current sample
-    playbackTick += WEBAUDIO_BLOCK_SIZE;
+    playbackTick += aTrack->BlockSize();
     // Add the delay caused by the main thread
     playbackTick += mSharedBuffers->DelaySoFar();
     // Compute the playback time in the coordinate system of the destination
@@ -482,7 +485,8 @@ ScriptProcessorNode::ScriptProcessorNode(AudioContext* aContext,
                       4096)      // choose our own buffer size -- 4KB for now
       ,
       mNumberOfOutputChannels(aNumberOfOutputChannels) {
-  MOZ_ASSERT(BufferSize() % WEBAUDIO_BLOCK_SIZE == 0, "Invalid buffer size");
+  MOZ_ASSERT(BufferSize() % aContext->RenderQuantumSize() == 0,
+             "Invalid buffer size");
   ScriptProcessorNodeEngine* engine = new ScriptProcessorNodeEngine(
       this, aContext->Destination(), BufferSize(), aNumberOfInputChannels);
   mTrack = AudioNodeTrack::Create(

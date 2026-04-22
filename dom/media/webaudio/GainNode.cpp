@@ -52,12 +52,12 @@ class GainNodeEngine final : public AudioNodeEngine {
     TRACE("GainNodeEngine::ProcessBlock");
     if (aInput.IsNull()) {
       // If input is silent, so is the output
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
     } else if (mGain.HasSimpleValue()) {
       // Optimize the case where we only have a single value set as the volume
       float gain = mGain.GetValue();
       if (gain == 0.0f) {
-        aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+        aOutput->SetNull(aTrack->BlockSize());
       } else {
         *aOutput = aInput;
         aOutput->mVolume *= gain;
@@ -70,12 +70,12 @@ class GainNodeEngine final : public AudioNodeEngine {
 
       // Compute the gain values for the duration of the input AudioChunk
       TrackTime tick = mDestination->GraphTimeToTrackTime(aFrom);
-      float computedGain[WEBAUDIO_BLOCK_SIZE + 4];
-      float* alignedComputedGain = ALIGNED16(computedGain);
-      ASSERT_ALIGNED16(alignedComputedGain);
-      mGain.GetValuesAtTime(tick, alignedComputedGain, WEBAUDIO_BLOCK_SIZE);
+      auto alignedComputedGain = aTrack->GetScratch<float>(aTrack->BlockSize());
+      ASSERT_ALIGNED16(alignedComputedGain.data());
+      mGain.GetValuesAtTime(tick, alignedComputedGain.data(), aTrack->BlockSize(),
+                            aTrack->BlockSize());
 
-      for (size_t counter = 0; counter < WEBAUDIO_BLOCK_SIZE; ++counter) {
+      for (size_t counter = 0; counter < aTrack->BlockSize(); ++counter) {
         alignedComputedGain[counter] *= aInput.mVolume;
       }
 
@@ -84,8 +84,8 @@ class GainNodeEngine final : public AudioNodeEngine {
         const float* inputBuffer =
             static_cast<const float*>(aInput.mChannelData[channel]);
         float* buffer = aOutput->ChannelFloatsForWrite(channel);
-        AudioBlockCopyChannelWithScale(inputBuffer, alignedComputedGain,
-                                       buffer);
+        AudioBufferCopyChannelWithScale(inputBuffer, alignedComputedGain.data(),
+                                       buffer, aTrack->BlockSize());
       }
     }
   }

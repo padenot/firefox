@@ -30,12 +30,13 @@ class ChannelSplitterNodeEngine final : public AudioNodeEngine {
       if (i < aInput[0].ChannelCount()) {
         // Split out existing channels
         aOutput[i].AllocateChannels(1);
-        AudioBlockCopyChannelWithScale(
+        AudioBufferCopyChannelWithScale(
             static_cast<const float*>(aInput[0].mChannelData[i]),
-            aInput[0].mVolume, aOutput[i].ChannelFloatsForWrite(0));
+            aInput[0].mVolume, aOutput[i].ChannelFloatsForWrite(0),
+            aTrack->BlockSize());
       } else {
         // Pad with silent channels if needed
-        aOutput[i].SetNull(WEBAUDIO_BLOCK_SIZE);
+        aOutput[i].SetNull(aTrack->BlockSize());
       }
     }
   }

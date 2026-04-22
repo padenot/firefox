@@ -110,7 +110,7 @@ class OfflineDestinationNodeEngine final : public AudioNodeEngine {
             static_cast<const float*>(aInput.mChannelData[i]);
         if (duration == aTrack->BlockSize() && IS_ALIGNED16(inputBuffer)) {
           // Use the optimized version of the copy with scale operation
-          AudioBlockCopyChannelWithScale(inputBuffer, aInput.mVolume, outputData,
+          AudioBufferCopyChannelWithScale(inputBuffer, aInput.mVolume, outputData,
                                          duration);
         } else {
           if (aInput.mVolume == 1.0f) {

@@ -101,7 +101,8 @@ class PannerNodeEngine final : public AudioNodeEngine {
         HRTFDatabaseLoader::createAndLoadAsynchronouslyIfNecessary(
             NodeMainThread()->Context()->SampleRate());
     mHRTFPanner = MakeUnique<HRTFPanner>(
-        NodeMainThread()->Context()->SampleRate(), loader.forget());
+        NodeMainThread()->Context()->SampleRate(), loader.forget(),
+        NodeMainThread()->Context()->RenderQuantumSize());
   }
 
   void SetInt32Parameter(uint32_t aIndex, int32_t aParam) override {
@@ -176,7 +177,7 @@ class PannerNodeEngine final : public AudioNodeEngine {
       // the reference will need to be removed.
       if (mLeftOverData > 0 &&
           mPanningModelFunction == &PannerNodeEngine::HRTFPanningFunction) {
-        mLeftOverData -= WEBAUDIO_BLOCK_SIZE;
+        mLeftOverData -= aTrack->BlockSize();
       } else {
         if (mLeftOverData != INT_MIN) {
           mLeftOverData = INT_MIN;
@@ -188,7 +189,7 @@ class PannerNodeEngine final : public AudioNodeEngine {
                                           PlayingRefChangeHandler::RELEASE);
           aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
         }
-        aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+        aOutput->SetNull(aTrack->BlockSize());
         return;
       }
     } else if (mPanningModelFunction ==
@@ -203,7 +204,7 @@ class PannerNodeEngine final : public AudioNodeEngine {
     }
 
     TrackTime tick = mDestination->GraphTimeToTrackTime(aFrom);
-    (this->*mPanningModelFunction)(aInput, aOutput, tick);
+    (this->*mPanningModelFunction)(aInput, aOutput, tick, aTrack);
   }
 
   bool IsActive() const override { return mLeftOverData != INT_MIN; }
@@ -216,9 +217,9 @@ class PannerNodeEngine final : public AudioNodeEngine {
   double ComputeDistanceGain(const ThreeDPoint& position);
 
   void EqualPowerPanningFunction(const AudioBlock& aInput, AudioBlock* aOutput,
-                                 TrackTime tick);
+                                 TrackTime tick, AudioNodeTrack* aTrack);
   void HRTFPanningFunction(const AudioBlock& aInput, AudioBlock* aOutput,
-                           TrackTime tick);
+                           TrackTime tick, AudioNodeTrack* aTrack);
 
   float LinearGainFunction(double aDistance);
   float InverseGainFunction(double aDistance);
@@ -250,7 +251,8 @@ class PannerNodeEngine final : public AudioNodeEngine {
   RefPtr<AudioListenerEngine> mListenerEngine;
   using PanningModelFunction = void (PannerNodeEngine::*)(const AudioBlock&,
                                                           AudioBlock*,
-                                                          TrackTime);
+                                                          TrackTime,
+                                                          AudioNodeTrack*);
   PanningModelFunction mPanningModelFunction;
   using DistanceModelFunction = float (PannerNodeEngine::*)(double);
   DistanceModelFunction mDistanceModelFunction;
@@ -414,8 +416,8 @@ float PannerNodeEngine::ExponentialGainFunction(double aDistance) {
 }
 
 void PannerNodeEngine::HRTFPanningFunction(const AudioBlock& aInput,
-                                           AudioBlock* aOutput,
-                                           TrackTime tick) {
+                                           AudioBlock* aOutput, TrackTime tick,
+                                           AudioNodeTrack* aTrack) {
   // The output of this node is always stereo, no matter what the inputs are.
   aOutput->AllocateChannels(2);
 
@@ -450,7 +452,9 @@ ThreeDPoint PannerNodeEngine::ConvertAudioParamTimelineTo3DP(
 
 void PannerNodeEngine::EqualPowerPanningFunction(const AudioBlock& aInput,
                                                  AudioBlock* aOutput,
-                                                 TrackTime tick) {
+                                                 TrackTime tick,
+                                                 AudioNodeTrack* aTrack) {
+  uint32_t aBlockSize = aTrack->BlockSize();
   float azimuth, elevation, gainL, gainR, normalizedAzimuth, distanceGain,
       coneGain;
   int inputChannels = aInput.ChannelCount();
@@ -509,59 +513,67 @@ void PannerNodeEngine::EqualPowerPanningFunction(const AudioBlock& aInput,
     gainR = fdlibm_sin(0.5 * M_PI * normalizedAzimuth);
 
     // Compute the output.
-    ApplyStereoPanning(aInput, aOutput, gainL, gainR, azimuth <= 0);
+    ApplyStereoPanning(aInput, aOutput, gainL, gainR, azimuth <= 0, aBlockSize);
 
     aOutput->mVolume *= distanceGain * coneGain;
   } else {
-    float positionX[WEBAUDIO_BLOCK_SIZE];
-    float positionY[WEBAUDIO_BLOCK_SIZE];
-    float positionZ[WEBAUDIO_BLOCK_SIZE];
-    float orientationX[WEBAUDIO_BLOCK_SIZE];
-    float orientationY[WEBAUDIO_BLOCK_SIZE];
-    float orientationZ[WEBAUDIO_BLOCK_SIZE];
+    auto positionXSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto positionYSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto positionZSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto orientationXSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto orientationYSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto orientationZSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto alignedPanningLSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto alignedPanningRSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto alignedGainSpan = aTrack->GetScratch<float>(aBlockSize);
+    auto onLeftSpan = aTrack->GetScratch<bool>(aBlockSize);
+    float* positionX = positionXSpan.data();
+    float* positionY = positionYSpan.data();
+    float* positionZ = positionZSpan.data();
+    float* orientationX = orientationXSpan.data();
+    float* orientationY = orientationYSpan.data();
+    float* orientationZ = orientationZSpan.data();
+    float* alignedPanningL = alignedPanningLSpan.data();
+    float* alignedPanningR = alignedPanningRSpan.data();
+    float* alignedGain = alignedGainSpan.data();
+    bool* onLeft = onLeftSpan.data();
 
-    if (!mPositionX.HasSimpleValue()) {
-      mPositionX.GetValuesAtTime(tick, positionX, WEBAUDIO_BLOCK_SIZE);
-    } else {
-      positionX[0] = mPositionX.GetValue();
-    }
-    if (!mPositionY.HasSimpleValue()) {
-      mPositionY.GetValuesAtTime(tick, positionY, WEBAUDIO_BLOCK_SIZE);
-    } else {
-      positionY[0] = mPositionY.GetValue();
-    }
-    if (!mPositionZ.HasSimpleValue()) {
-      mPositionZ.GetValuesAtTime(tick, positionZ, WEBAUDIO_BLOCK_SIZE);
-    } else {
-      positionZ[0] = mPositionZ.GetValue();
-    }
-    if (!mOrientationX.HasSimpleValue()) {
-      mOrientationX.GetValuesAtTime(tick, orientationX, WEBAUDIO_BLOCK_SIZE);
-    } else {
-      orientationX[0] = mOrientationX.GetValue();
-    }
-    if (!mOrientationY.HasSimpleValue()) {
-      mOrientationY.GetValuesAtTime(tick, orientationY, WEBAUDIO_BLOCK_SIZE);
-    } else {
-      orientationY[0] = mOrientationY.GetValue();
-    }
-    if (!mOrientationZ.HasSimpleValue()) {
-      mOrientationZ.GetValuesAtTime(tick, orientationZ, WEBAUDIO_BLOCK_SIZE);
-    } else {
-      orientationZ[0] = mOrientationZ.GetValue();
-    }
-
-    float buffer[3 * WEBAUDIO_BLOCK_SIZE + 4];
-    alignas(16) bool onLeft[WEBAUDIO_BLOCK_SIZE];
-
-    float* alignedPanningL = ALIGNED16(buffer);
-    float* alignedPanningR = alignedPanningL + WEBAUDIO_BLOCK_SIZE;
-    float* alignedGain = alignedPanningR + WEBAUDIO_BLOCK_SIZE;
     ASSERT_ALIGNED16(alignedPanningL);
     ASSERT_ALIGNED16(alignedPanningR);
     ASSERT_ALIGNED16(alignedGain);
 
-    for (size_t counter = 0; counter < WEBAUDIO_BLOCK_SIZE; ++counter) {
+    if (!mPositionX.HasSimpleValue()) {
+      mPositionX.GetValuesAtTime(tick, positionX, aBlockSize, aBlockSize);
+    } else {
+      positionX[0] = mPositionX.GetValue();
+    }
+    if (!mPositionY.HasSimpleValue()) {
+      mPositionY.GetValuesAtTime(tick, positionY, aBlockSize, aBlockSize);
+    } else {
+      positionY[0] = mPositionY.GetValue();
+    }
+    if (!mPositionZ.HasSimpleValue()) {
+      mPositionZ.GetValuesAtTime(tick, positionZ, aBlockSize, aBlockSize);
+    } else {
+      positionZ[0] = mPositionZ.GetValue();
+    }
+    if (!mOrientationX.HasSimpleValue()) {
+      mOrientationX.GetValuesAtTime(tick, orientationX, aBlockSize, aBlockSize);
+    } else {
+      orientationX[0] = mOrientationX.GetValue();
+    }
+    if (!mOrientationY.HasSimpleValue()) {
+      mOrientationY.GetValuesAtTime(tick, orientationY, aBlockSize, aBlockSize);
+    } else {
+      orientationY[0] = mOrientationY.GetValue();
+    }
+    if (!mOrientationZ.HasSimpleValue()) {
+      mOrientationZ.GetValuesAtTime(tick, orientationZ, aBlockSize, aBlockSize);
+    } else {
+      orientationZ[0] = mOrientationZ.GetValue();
+    }
+
+    for (size_t counter = 0; counter < aBlockSize; ++counter) {
       ThreeDPoint position(
           mPositionX.HasSimpleValue() ? positionX[0] : positionX[counter],
           mPositionY.HasSimpleValue() ? positionY[0] : positionY[counter],
@@ -616,13 +628,13 @@ void PannerNodeEngine::EqualPowerPanningFunction(const AudioBlock& aInput,
 
     // Apply the panning to the output buffer
     ApplyStereoPanning(aInput, aOutput, alignedPanningL, alignedPanningR,
-                       onLeft);
+                       onLeft, aBlockSize);
 
     // Apply the input volume, cone and distance gain to the output buffer.
     float* outputL = aOutput->ChannelFloatsForWrite(0);
     float* outputR = aOutput->ChannelFloatsForWrite(1);
-    AudioBlockInPlaceScale(outputL, alignedGain);
-    AudioBlockInPlaceScale(outputR, alignedGain);
+    AudioBufferInPlaceScale(outputL, alignedGain, aBlockSize);
+    AudioBufferInPlaceScale(outputR, alignedGain, aBlockSize);
   }
 }
 

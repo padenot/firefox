@@ -123,8 +123,9 @@ void HRTFPanner::pan(double desiredAzimuth, double elevation,
   MOZ_ASSERT(inputBus->GetDuration() == WEBAUDIO_BLOCK_SIZE);
 #endif
 
-  bool isOutputGood = outputBus && outputBus->ChannelCount() == 2 &&
-                      outputBus->GetDuration() == WEBAUDIO_BLOCK_SIZE;
+  bool isOutputGood =
+      outputBus && outputBus->ChannelCount() == 2 &&
+      outputBus->GetDuration() == (TrackTime)m_frameDelaysL.Length();
   MOZ_ASSERT(isOutputGood);
 
   if (!isOutputGood) {

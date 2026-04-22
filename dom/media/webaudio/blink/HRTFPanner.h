@@ -45,6 +45,12 @@ class HRTFPanner {
  public:
   HRTFPanner(float sampleRate,
              already_AddRefed<HRTFDatabaseLoader> databaseLoader);
+%%%%%%% diff from: tvvytpou 05959840 "Bug 2034508 - Use per-track scratch buffers in DelayNode. r?" (parents of squashed revision)
+\\\\\\\        to: mqzwquxu 52a59f6f "Bug 2034508 - Remove redundant aBlockSize parameter from PannerNode. r?" (squashed revision)
+-  HRTFPanner(float sampleRate, already_AddRefed<HRTFDatabaseLoader> databaseLoader,
++  HRTFPanner(float sampleRate,
++             already_AddRefed<HRTFDatabaseLoader> databaseLoader,
+              size_t blockSize);
   ~HRTFPanner();
 
   // chunk durations must be 128

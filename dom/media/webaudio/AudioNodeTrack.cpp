@@ -76,6 +76,9 @@ already_AddRefed<AudioNodeTrack> AudioNodeTrack::Create(
 
   RefPtr<AudioNodeTrack> track =
       new AudioNodeTrack(aEngine, aFlags, aGraph->GraphRate());
+
+  uint32_t blockSize = aGraph->BlockSize();
+
   if (node) {
     track->SetChannelMixingParametersImpl(node->ChannelCount(),
                                           node->ChannelCountModeValue(),
@@ -298,7 +301,7 @@ void AudioNodeTrack::ObtainInputBlock(AudioBlock& aTmpChunk,
   uint32_t inputChunkCount = inputChunks.Length();
   if (inputChunkCount == 0 ||
       (inputChunkCount == 1 && inputChunks[0]->ChannelCount() == 0)) {
-    aTmpChunk.SetNull(WEBAUDIO_BLOCK_SIZE);
+    aTmpChunk.SetNull(BlockSize());
     return;
   }
 
@@ -309,13 +312,12 @@ void AudioNodeTrack::ObtainInputBlock(AudioBlock& aTmpChunk,
   }
 
   if (outputChannelCount == 0) {
-    aTmpChunk.SetNull(WEBAUDIO_BLOCK_SIZE);
+    aTmpChunk.SetNull(BlockSize());
     return;
   }
 
   aTmpChunk.AllocateChannels(outputChannelCount);
   DownmixBufferType downmixBuffer;
-  ASSERT_ALIGNED16(downmixBuffer.Elements());
 
   for (uint32_t i = 0; i < inputChunkCount; ++i) {
     AccumulateInputChunk(i, *inputChunks[i], &aTmpChunk, &downmixBuffer);
@@ -334,13 +336,15 @@ void AudioNodeTrack::AccumulateInputChunk(uint32_t aInputIndex,
     float* outputData = aBlock->ChannelFloatsForWrite(c);
     if (inputData) {
       if (aInputIndex == 0) {
-        AudioBlockCopyChannelWithScale(inputData, aChunk.mVolume, outputData);
+        AudioBufferCopyChannelWithScale(inputData, aChunk.mVolume, outputData,
+                                       BlockSize());
       } else {
-        AudioBlockAddChannelWithScale(inputData, aChunk.mVolume, outputData);
+        AudioBufferAddWithScale(inputData, aChunk.mVolume, outputData,
+                                      BlockSize());
       }
     } else {
       if (aInputIndex == 0) {
-        PodZero(outputData, WEBAUDIO_BLOCK_SIZE);
+        PodZero(outputData, BlockSize());
       }
     }
   }
@@ -370,13 +374,13 @@ void AudioNodeTrack::UpMixDownMixChunk(const AudioBlock* aChunk,
     if (mChannelInterpretation == ChannelInterpretation::Speakers) {
       AutoTArray<float*, GUESS_AUDIO_CHANNELS> outputChannels;
       outputChannels.SetLength(aOutputChannelCount);
-      aDownmixBuffer.SetLength(aOutputChannelCount * WEBAUDIO_BLOCK_SIZE);
+      aDownmixBuffer.SetLength(aOutputChannelCount * BlockSize());
       for (uint32_t j = 0; j < aOutputChannelCount; ++j) {
-        outputChannels[j] = &aDownmixBuffer[j * WEBAUDIO_BLOCK_SIZE];
+        outputChannels[j] = &aDownmixBuffer[j * BlockSize()];
       }
 
       AudioChannelsDownMix<float, float>(aOutputChannels, outputChannels,
-                                         WEBAUDIO_BLOCK_SIZE);
+                                         BlockSize());
 
       aOutputChannels.SetLength(aOutputChannelCount);
       for (uint32_t j = 0; j < aOutputChannels.Length(); ++j) {
@@ -394,7 +398,7 @@ void AudioNodeTrack::UpMixDownMixChunk(const AudioBlock* aChunk,
 // AudioNodeTracks.
 void AudioNodeTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
                                   uint32_t aFlags) {
-  MOZ_ASSERT(aTo - aFrom == WEBAUDIO_BLOCK_SIZE);
+  MOZ_ASSERT(aTo - aFrom == BlockSize());
   uint16_t outputCount = mLastChunks.Length();
   MOZ_ASSERT(outputCount == std::max(uint16_t(1), mEngine->OutputCount()));
 
@@ -408,14 +412,18 @@ void AudioNodeTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
   } else if (InMutedCycle()) {
     mInputChunks.Clear();
     for (uint16_t i = 0; i < outputCount; ++i) {
-      mLastChunks[i].SetNull(WEBAUDIO_BLOCK_SIZE);
+      mLastChunks[i].SetNull(BlockSize());
     }
   } else {
     // We need to generate at least one input
     uint16_t maxInputs = std::max(uint16_t(1), mEngine->InputCount());
     mInputChunks.SetLength(maxInputs);
     for (uint16_t i = 0; i < maxInputs; ++i) {
+      mInputChunks[i].SetDuration(BlockSize());
       ObtainInputBlock(mInputChunks[i], i);
+    }
+    for (uint16_t i = 0; i < outputCount; ++i) {
+      mLastChunks[i].SetDuration(BlockSize());
     }
     bool finished = false;
     if (mPassThrough) {
@@ -434,7 +442,7 @@ void AudioNodeTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
       }
     }
     for (uint16_t i = 0; i < outputCount; ++i) {
-      NS_ASSERTION(mLastChunks[i].GetDuration() == WEBAUDIO_BLOCK_SIZE,
+      NS_ASSERTION(mLastChunks[i].GetDuration() == BlockSize(),
                    "Invalid WebAudio chunk size");
     }
     if (finished && !mMarkAsEndedAfterThisBlock) {
@@ -446,7 +454,7 @@ void AudioNodeTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
 
     if (mDisabledMode != DisabledTrackMode::ENABLED) {
       for (uint32_t i = 0; i < outputCount; ++i) {
-        mLastChunks[i].SetNull(WEBAUDIO_BLOCK_SIZE);
+        mLastChunks[i].SetNull(BlockSize());
       }
     }
   }
@@ -473,14 +481,15 @@ void AudioNodeTrack::ProduceOutputBeforeInput(GraphTime aFrom) {
   MOZ_ASSERT(mLastChunks.Length() == 1);
 
   if (!mIsActive) {
-    mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
+    mLastChunks[0].SetNull(BlockSize());
   } else {
     AudioScratchAllocator::Scope scratch(Graph()->AudioScratch());
+    mLastChunks[0].SetDuration(BlockSize());
     mEngine->ProduceBlockBeforeInput(this, aFrom, &mLastChunks[0]);
-    NS_ASSERTION(mLastChunks[0].GetDuration() == WEBAUDIO_BLOCK_SIZE,
+    NS_ASSERTION(mLastChunks[0].GetDuration() == BlockSize(),
                  "Invalid WebAudio chunk size");
     if (mDisabledMode != DisabledTrackMode::ENABLED) {
-      mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
+      mLastChunks[0].SetNull(BlockSize());
     }
   }
 }
@@ -565,7 +574,7 @@ void AudioNodeTrack::CheckForInactive() {
   mIsActive = false;
   mInputChunks.Clear();  // not required for foreseeable future
   for (auto& chunk : mLastChunks) {
-    chunk.SetNull(WEBAUDIO_BLOCK_SIZE);
+    chunk.SetNull(BlockSize());
   }
   if (!(mFlags & EXTERNAL_OUTPUT)) {
     IncrementSuspendCount();

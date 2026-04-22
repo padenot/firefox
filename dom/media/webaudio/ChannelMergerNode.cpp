@@ -34,7 +34,7 @@ class ChannelMergerNodeEngine final : public AudioNodeEngine {
       allNull &= aInput[i].IsNull();
     }
     if (allNull) {
-      aOutput[0].SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput[0].SetNull(aTrack->BlockSize());
       return;
     }
 
@@ -43,11 +43,11 @@ class ChannelMergerNodeEngine final : public AudioNodeEngine {
     for (size_t i = 0; i < channelCount; ++i) {
       float* output = aOutput[0].ChannelFloatsForWrite(i);
       if (aInput[i].IsNull()) {
-        PodZero(output, WEBAUDIO_BLOCK_SIZE);
+        PodZero(output, aTrack->BlockSize());
       } else {
-        AudioBlockCopyChannelWithScale(
+        AudioBufferCopyChannelWithScale(
             static_cast<const float*>(aInput[i].mChannelData[0]),
-            aInput[i].mVolume, output);
+            aInput[i].mVolume, output, aTrack->BlockSize());
       }
     }
   }

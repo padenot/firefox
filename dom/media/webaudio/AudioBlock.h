@@ -19,7 +19,7 @@ namespace mozilla {
 class AudioBlock : private AudioChunk {
  public:
   AudioBlock() {
-    mDuration = WEBAUDIO_BLOCK_SIZE;
+    mDuration = 0;
     mBufferFormat = AUDIO_FORMAT_SILENCE;
   }
   // No effort is made in constructors to ensure that mBufferIsDownstreamRef
@@ -28,9 +28,7 @@ class AudioBlock : private AudioChunk {
   // The custom copy constructor is required so as not to set
   // mBufferIsDownstreamRef without notifying AudioBlockBuffer.
   AudioBlock(const AudioBlock& aBlock) : AudioChunk(aBlock.AsAudioChunk()) {}
-  explicit AudioBlock(const AudioChunk& aChunk) : AudioChunk(aChunk) {
-    MOZ_ASSERT(aChunk.mDuration == WEBAUDIO_BLOCK_SIZE);
-  }
+  explicit AudioBlock(const AudioChunk& aChunk) : AudioChunk(aChunk) {}
   ~AudioBlock();
 
   using AudioChunk::ChannelCount;
@@ -51,10 +49,6 @@ class AudioBlock : private AudioChunk {
     return this;
   }
 
-  /**
-   * Allocates, if necessary, aChannelCount buffers of WEBAUDIO_BLOCK_SIZE float
-   * samples for writing.
-   */
   void AllocateChannels(uint32_t aChannelCount);
 
   /**
@@ -70,12 +64,14 @@ class AudioBlock : private AudioChunk {
   ThreadSharedObject* GetBuffer() const { return mBuffer; }
   void SetBuffer(ThreadSharedObject* aNewBuffer);
   void SetNull(TrackTime aDuration) {
-    MOZ_ASSERT(aDuration == WEBAUDIO_BLOCK_SIZE);
     SetBuffer(nullptr);
     mChannelData.Clear();
     mVolume = 1.0f;
     mBufferFormat = AUDIO_FORMAT_SILENCE;
+    mDuration = aDuration;
   }
+
+  void SetDuration(TrackTime aDuration) { mDuration = aDuration; }
 
   AudioBlock& operator=(const AudioBlock& aBlock) {
     // Instead of just copying, mBufferIsDownstreamRef must be first cleared
@@ -84,7 +80,6 @@ class AudioBlock : private AudioChunk {
     return *this = aBlock.AsAudioChunk();
   }
   AudioBlock& operator=(const AudioChunk& aChunk) {
-    MOZ_ASSERT(aChunk.mDuration == WEBAUDIO_BLOCK_SIZE);
     SetBuffer(aChunk.mBuffer);
     mChannelData = aChunk.mChannelData;
     mVolume = aChunk.mVolume;

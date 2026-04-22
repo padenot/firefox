@@ -150,9 +150,9 @@ bool Reverb::initialize(const nsTArray<const float*>& impulseResponseBuffer,
     size_t length = impulseResponseBufferLength;
 
     bool allocationFailure;
-    UniquePtr<ReverbConvolver> convolver(
-        new ReverbConvolver(channel, length, maxFFTSize, convolverRenderPhase,
-                            useBackgroundThreads, &allocationFailure));
+    UniquePtr<ReverbConvolver> convolver(new ReverbConvolver(
+        channel, length, maxFFTSize, convolverRenderPhase, useBackgroundThreads,
+        &allocationFailure, m_blockSize));
     if (allocationFailure) {
       return false;
     }
@@ -175,12 +175,12 @@ void Reverb::process(const AudioBlock* sourceBus, AudioBlock* destinationBus) {
   // Do a fairly comprehensive sanity check.
   // If these conditions are satisfied, all of the source and destination
   // pointers will be valid for the various matrixing cases.
-  bool isSafeToProcess =
-      sourceBus && destinationBus && sourceBus->ChannelCount() > 0 &&
-      destinationBus->mChannelData.Length() > 0 &&
-      WEBAUDIO_BLOCK_SIZE <= MaxFrameSize &&
-      WEBAUDIO_BLOCK_SIZE <= size_t(sourceBus->GetDuration()) &&
-      WEBAUDIO_BLOCK_SIZE <= size_t(destinationBus->GetDuration());
+  bool isSafeToProcess = sourceBus && destinationBus &&
+                         sourceBus->ChannelCount() > 0 &&
+                         destinationBus->mChannelData.Length() > 0 &&
+                         m_blockSize <= MaxFrameSize &&
+                         m_blockSize <= size_t(sourceBus->GetDuration()) &&
+                         m_blockSize <= size_t(destinationBus->GetDuration());
 
   MOZ_ASSERT(isSafeToProcess);
   if (!isSafeToProcess) return;

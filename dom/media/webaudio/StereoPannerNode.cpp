@@ -102,7 +102,7 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
 
     if (aInput.IsNull()) {
       // If input is silent, so is the output
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
     } else if (mPan.HasSimpleValue()) {
       float panning = mPan.GetValue();
       // If the panning is 0.0, we can simply copy the input to the
@@ -116,30 +116,31 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
         float gainL, gainR;
 
         GetGainValuesForPanning(panning, monoToStereo, gainL, gainR);
-        ApplyStereoPanning(aInput, aOutput, gainL, gainR, panning <= 0);
+        ApplyStereoPanning(aInput, aOutput, gainL, gainR, panning <= 0,
+                           aTrack->BlockSize());
       }
     } else {
-      float computedGain[2 * WEBAUDIO_BLOCK_SIZE + 4];
-      alignas(16) bool onLeft[WEBAUDIO_BLOCK_SIZE];
-
-      float values[WEBAUDIO_BLOCK_SIZE];
       TrackTime tick = mDestination->GraphTimeToTrackTime(aFrom);
-      mPan.GetValuesAtTime(tick, values, WEBAUDIO_BLOCK_SIZE);
+      auto values = aTrack->GetScratch<float>(aTrack->BlockSize());
+      auto alignedComputedGain = aTrack->GetScratch<float>(2 * aTrack->BlockSize());
+      ASSERT_ALIGNED16(alignedComputedGain.data());
+      auto onLeft = aTrack->GetScratch<bool>(aTrack->BlockSize());
+      mPan.GetValuesAtTime(tick, values.data(), aTrack->BlockSize(),
+                           aTrack->BlockSize());
 
-      float* alignedComputedGain = ALIGNED16(computedGain);
-      ASSERT_ALIGNED16(alignedComputedGain);
-      for (size_t counter = 0; counter < WEBAUDIO_BLOCK_SIZE; ++counter) {
+      for (size_t counter = 0; counter < aTrack->BlockSize(); ++counter) {
         float left, right;
         GetGainValuesForPanning(values[counter], monoToStereo, left, right);
 
         alignedComputedGain[counter] = left;
-        alignedComputedGain[WEBAUDIO_BLOCK_SIZE + counter] = right;
+        alignedComputedGain[aTrack->BlockSize() + counter] = right;
         onLeft[counter] = values[counter] <= 0;
       }
 
       // Apply the gain to the output buffer
-      ApplyStereoPanning(aInput, aOutput, alignedComputedGain,
-                         &alignedComputedGain[WEBAUDIO_BLOCK_SIZE], onLeft);
+      ApplyStereoPanning(aInput, aOutput, alignedComputedGain.data(),
+                         alignedComputedGain.data() + aTrack->BlockSize(),
+                         onLeft.data(), aTrack->BlockSize());
     }
   }
 

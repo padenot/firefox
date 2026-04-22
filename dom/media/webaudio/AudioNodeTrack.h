@@ -28,8 +28,7 @@ class ThreadSharedFloatArrayBufferList;
 class AudioNodeEngine;
 class AudioNodeExternalInputTrack;
 
-typedef AlignedAutoTArray<float, GUESS_AUDIO_CHANNELS * WEBAUDIO_BLOCK_SIZE, 16>
-    DownmixBufferType;
+typedef AlignedTArray<float, 16> DownmixBufferType;
 
 /**
  * An AudioNodeTrack produces one audio track with ID AUDIO_TRACK.
@@ -153,6 +152,9 @@ class AudioNodeTrack : public ProcessedMediaTrack {
     return ((mFlags & NEED_MAIN_THREAD_ENDED) && mEnded) ||
            (mFlags & NEED_MAIN_THREAD_CURRENT_TIME);
   }
+
+  // Graph thread only
+  uint32_t BlockSize() const { return Graph()->BlockSize(); }
 
   // Any thread
   AudioNodeEngine* Engine() { return mEngine.get(); }

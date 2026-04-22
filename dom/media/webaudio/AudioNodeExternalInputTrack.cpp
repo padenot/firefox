@@ -87,14 +87,14 @@ static void CopyChunkToBlock(AudioChunk& aInput, AudioBlock* aBlock,
  */
 static void ConvertSegmentToAudioBlock(AudioSegment* aSegment,
                                        AudioBlock* aBlock,
-                                       int32_t aFallbackChannelCount) {
-  NS_ASSERTION(aSegment->GetDuration() == WEBAUDIO_BLOCK_SIZE,
-               "Bad segment duration");
+                                       int32_t aFallbackChannelCount,
+                                       uint32_t aBlockSize) {
+  NS_ASSERTION(aSegment->GetDuration() == aBlockSize, "Bad segment duration");
 
   {
     AudioSegment::ChunkIterator ci(*aSegment);
     NS_ASSERTION(!ci.IsEnded(), "Should be at least one chunk!");
-    if (ci->GetDuration() == WEBAUDIO_BLOCK_SIZE &&
+    if (ci->GetDuration() == aBlockSize &&
         (ci->IsNull() || ci->mBufferFormat == AUDIO_FORMAT_FLOAT32)) {
       bool aligned = true;
       for (size_t i = 0; i < ci->mChannelData.Length(); ++i) {
@@ -112,7 +112,7 @@ static void ConvertSegmentToAudioBlock(AudioSegment* aSegment,
     }
   }
 
-  aBlock->AllocateChannels(aFallbackChannelCount);
+  aBlock->AllocateChannels(aFallbackChannelCount, aBlockSize);
 
   uint32_t duration = 0;
   for (AudioSegment::ChunkIterator ci(*aSegment); !ci.IsEnded(); ci.Next()) {
@@ -145,7 +145,7 @@ void AudioNodeExternalInputTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
   // GC stuff can result in our input track being destroyed before this track.
   // Handle that.
   if (!IsEnabled() || mInputs.IsEmpty() || mPassThrough) {
-    mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
+    mLastChunks[0].SetNull(BlockSize());
     return;
   }
 
@@ -210,7 +210,8 @@ void AudioNodeExternalInputTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
     ASSERT_ALIGNED16(downmixBuffer.Elements());
     for (auto& audioSegment : audioSegments) {
       AudioBlock tmpChunk;
-      ConvertSegmentToAudioBlock(&audioSegment, &tmpChunk, inputChannels);
+      ConvertSegmentToAudioBlock(&audioSegment, &tmpChunk, inputChannels,
+                                 BlockSize());
       if (!tmpChunk.IsNull()) {
         if (accumulateIndex == 0) {
           mLastChunks[0].AllocateChannels(inputChannels);
@@ -222,7 +223,7 @@ void AudioNodeExternalInputTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
     }
   }
   if (accumulateIndex == 0) {
-    mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
+    mLastChunks[0].SetNull(BlockSize());
   }
 }
 

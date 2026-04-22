@@ -7,6 +7,7 @@
 #include "AlignmentUtils.h"
 #include "AudioDestinationNode.h"
 #include "AudioNodeEngine.h"
+#include "AudioNodeTrack.h"
 #include "PlayingRefChangeHandler.h"
 #include "Tracing.h"
 #include "blink/IIRFilter.h"
@@ -30,9 +31,8 @@ class IIRFilterNodeEngine final : public AudioNodeEngine {
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
     TRACE("IIRFilterNodeEngine::ProcessBlock");
-    float inputBuffer[WEBAUDIO_BLOCK_SIZE + 4];
-    float* alignedInputBuffer = ALIGNED16(inputBuffer);
-    ASSERT_ALIGNED16(alignedInputBuffer);
+    auto alignedInputBuffer = aTrack->GetScratch<float>(aTrack->BlockSize());
+    ASSERT_ALIGNED16(alignedInputBuffer.data());
 
     if (aInput.IsNull()) {
       if (!mIIRFilters.IsEmpty()) {
@@ -52,11 +52,11 @@ class IIRFilterNodeEngine final : public AudioNodeEngine {
                                           PlayingRefChangeHandler::RELEASE);
           aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
 
-          aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+          aOutput->SetNull(aTrack->BlockSize());
           return;
         }
 
-        PodZero(alignedInputBuffer, WEBAUDIO_BLOCK_SIZE);
+        PodZero(alignedInputBuffer.data(), aTrack->BlockSize());
       }
     } else if (mIIRFilters.Length() != aInput.ChannelCount()) {
       if (mIIRFilters.IsEmpty()) {
@@ -83,13 +83,14 @@ class IIRFilterNodeEngine final : public AudioNodeEngine {
     for (uint32_t i = 0; i < numberOfChannels; ++i) {
       const float* input;
       if (aInput.IsNull()) {
-        input = alignedInputBuffer;
+        input = alignedInputBuffer.data();
       } else {
         input = static_cast<const float*>(aInput.mChannelData[i]);
         if (aInput.mVolume != 1.0) {
-          AudioBlockCopyChannelWithScale(input, aInput.mVolume,
-                                         alignedInputBuffer);
-          input = alignedInputBuffer;
+          AudioBufferCopyChannelWithScale(input, aInput.mVolume,
+                                         alignedInputBuffer.data(),
+                                         aTrack->BlockSize());
+          input = alignedInputBuffer.data();
         }
       }
 

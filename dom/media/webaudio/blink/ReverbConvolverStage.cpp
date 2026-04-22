@@ -79,8 +79,7 @@ size_t ReverbConvolverStage::sizeOfIncludingThis(
 
 void ReverbConvolverStage::processInBackground(ReverbConvolver* convolver) {
   ReverbInputBuffer* inputBuffer = convolver->inputBuffer();
-  float* source =
-      inputBuffer->directReadFrom(&m_inputReadIndex, WEBAUDIO_BLOCK_SIZE);
+  float* source = inputBuffer->directReadFrom(&m_inputReadIndex, m_blockSize);
   process(source);
 }
 

@@ -299,7 +299,7 @@ void WorkletNodeEngine::ConstructProcessor(
   for (size_t i = 0; i < mParamTimelines.Length(); i++) {
     auto& float32ArraysRef = mParameters.mFloat32Arrays;
     float32ArraysRef[i].init(cx);
-    JSObject* array = JS_NewFloat32Array(cx, WEBAUDIO_BLOCK_SIZE);
+    JSObject* array = JS_NewFloat32Array(cx, aTrack->BlockSize());
     if (NS_WARN_IF(!array)) {
       SendProcessorError(aTrack, cx);
       return;
@@ -366,7 +366,7 @@ enum class ArrayElementInit { None, Zero };
 // https://github.com/WebAudio/web-audio-api/issues/1933
 static bool PrepareBufferArrays(JSContext* aCx, Span<const AudioBlock> aBlocks,
                                 WorkletNodeEngine::Ports* aPorts,
-                                ArrayElementInit aInit) {
+                                ArrayElementInit aInit, uint32_t aBlockSize) {
   MOZ_ASSERT(aBlocks.Length() == aPorts->mPorts.length());
   for (size_t i = 0; i < aBlocks.Length(); ++i) {
     size_t channelCount = aBlocks[i].ChannelCount();
@@ -375,9 +375,9 @@ static bool PrepareBufferArrays(JSContext* aCx, Span<const AudioBlock> aBlocks,
     auto& float32ArraysRef = portRef.mFloat32Arrays;
     for (auto& channelRef : float32ArraysRef) {
       size_t length = JS_GetTypedArrayLength(channelRef);
-      if (length != WEBAUDIO_BLOCK_SIZE) {
+      if (length != aBlockSize) {
         // Script has detached array buffers.  Create new objects.
-        JSObject* array = JS_NewFloat32Array(aCx, WEBAUDIO_BLOCK_SIZE);
+        JSObject* array = JS_NewFloat32Array(aCx, aBlockSize);
         if (NS_WARN_IF(!array)) {
           return false;
         }
@@ -389,7 +389,7 @@ static bool PrepareBufferArrays(JSContext* aCx, Span<const AudioBlock> aBlocks,
         float* elementData =
             JS_GetFloat32ArrayData(channelRef, &isShared, nogc);
         MOZ_ASSERT(!isShared);  // Was created as unshared
-        std::fill_n(elementData, WEBAUDIO_BLOCK_SIZE, 0.0f);
+        std::fill_n(elementData, aBlockSize, 0.0f);
       }
     }
     // Enlarge if necessary...
@@ -397,7 +397,7 @@ static bool PrepareBufferArrays(JSContext* aCx, Span<const AudioBlock> aBlocks,
       return false;
     }
     while (float32ArraysRef.length() < channelCount) {
-      JSObject* array = JS_NewFloat32Array(aCx, WEBAUDIO_BLOCK_SIZE);
+      JSObject* array = JS_NewFloat32Array(aCx, aBlockSize);
       if (NS_WARN_IF(!array)) {
         return false;
       }
@@ -459,7 +459,7 @@ void WorkletNodeEngine::ProduceSilence(AudioNodeTrack* aTrack,
     aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
   }
   for (AudioBlock& output : aOutput) {
-    output.SetNull(WEBAUDIO_BLOCK_SIZE);
+    output.SetNull(aTrack->BlockSize());
   }
 }
 
@@ -515,8 +515,10 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
   JS::Rooted<JS::Value> process(cx);
   if (!JS_GetProperty(cx, mProcessor, "process", &process) ||
       !process.isObject() || !JS::IsCallable(&process.toObject()) ||
-      !PrepareBufferArrays(cx, aInput, &mInputs, ArrayElementInit::None) ||
-      !PrepareBufferArrays(cx, aOutput, &mOutputs, ArrayElementInit::Zero)) {
+      !PrepareBufferArrays(cx, aInput, &mInputs, ArrayElementInit::None,
+                           aTrack->BlockSize()) ||
+      !PrepareBufferArrays(cx, aOutput, &mOutputs, ArrayElementInit::Zero,
+                           aTrack->BlockSize())) {
     // process() not callable or OOM.
     return;
   }
@@ -538,7 +540,8 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
       bool isShared;
       float* dest = JS_GetFloat32ArrayData(float32Arrays[c], &isShared, nogc);
       MOZ_ASSERT(!isShared);  // Was created as unshared
-      AudioBlockCopyChannelWithScale(channelData[c], volume, dest);
+      AudioBufferCopyChannelWithScale(channelData[c], volume, dest,
+                                     aTrack->BlockSize());
     }
   }
 
@@ -552,7 +555,7 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
     // AudioParam has been detached, error out. This is being worked on in
     // https://github.com/WebAudio/web-audio-api/issues/1933 and
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1619486
-    if (length != WEBAUDIO_BLOCK_SIZE) {
+    if (length != aTrack->BlockSize()) {
       return;
     }
     JS::AutoCheckCannotGC nogc;
@@ -560,12 +563,14 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
     float* dest = JS_GetFloat32ArrayData(float32Arrays, &isShared, nogc);
     MOZ_ASSERT(!isShared);  // Was created as unshared
 
-    size_t frames =
-        mParamTimelines[i].mTimeline.HasSimpleValue() ? 1 : WEBAUDIO_BLOCK_SIZE;
-    mParamTimelines[i].mTimeline.GetValuesAtTime(tick, dest, frames);
+    size_t frames = mParamTimelines[i].mTimeline.HasSimpleValue()
+                        ? 1
+                        : aTrack->BlockSize();
+    mParamTimelines[i].mTimeline.GetValuesAtTime(tick, dest, frames,
+                                                 aTrack->BlockSize());
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1616599
     if (frames == 1) {
-      std::fill_n(dest + 1, WEBAUDIO_BLOCK_SIZE - 1, dest[0]);
+      std::fill_n(dest + 1, aTrack->BlockSize() - 1, dest[0]);
     }
   }
 
@@ -586,7 +591,7 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
     const auto& float32Arrays = mOutputs.mPorts[o].mFloat32Arrays;
     for (size_t c = 0; c < channelCount; ++c) {
       size_t length = JS_GetTypedArrayLength(float32Arrays[c]);
-      if (length != WEBAUDIO_BLOCK_SIZE) {
+      if (length != aTrack->BlockSize()) {
         // ArrayBuffer has been detached.  Behavior is unspecified.
         // https://github.com/WebAudio/web-audio-api/issues/1933 and
         // https://bugzilla.mozilla.org/show_bug.cgi?id=1619486
@@ -597,7 +602,7 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
       const float* src =
           JS_GetFloat32ArrayData(float32Arrays[c], &isShared, nogc);
       MOZ_ASSERT(!isShared);  // Was created as unshared
-      PodCopy(output->ChannelFloatsForWrite(c), src, WEBAUDIO_BLOCK_SIZE);
+      PodCopy(output->ChannelFloatsForWrite(c), src, aTrack->BlockSize());
     }
   }
 

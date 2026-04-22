@@ -79,20 +79,20 @@ class ConstantSourceNodeEngine final : public AudioNodeEngine {
 
     TrackTime ticks = mDestination->GraphTimeToTrackTime(aFrom);
     if (mStart == -1) {
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
       return;
     }
 
-    if (ticks + WEBAUDIO_BLOCK_SIZE <= mStart || ticks >= mStop ||
+    if (ticks + aTrack->BlockSize() <= mStart || ticks >= mStop ||
         mStop <= mStart) {
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
     } else {
       aOutput->AllocateChannels(1);
       float* output = aOutput->ChannelFloatsForWrite(0);
       uint32_t writeOffset = 0;
 
       if (ticks < mStart) {
-        MOZ_ASSERT(mStart - ticks <= WEBAUDIO_BLOCK_SIZE);
+        MOZ_ASSERT(mStart - ticks <= aTrack->BlockSize());
         uint32_t count = mStart - ticks;
         std::fill_n(output, count, 0.0f);
         writeOffset += count;
@@ -101,23 +101,23 @@ class ConstantSourceNodeEngine final : public AudioNodeEngine {
       MOZ_ASSERT(ticks + writeOffset >= mStart);
       MOZ_ASSERT(mStop - ticks >= writeOffset);
       uint32_t count =
-          std::min<TrackTime>(WEBAUDIO_BLOCK_SIZE, mStop - ticks) - writeOffset;
+          std::min<TrackTime>(aTrack->BlockSize(), mStop - ticks) - writeOffset;
 
       if (mOffset.HasSimpleValue()) {
         float value = mOffset.GetValue();
         std::fill_n(output + writeOffset, count, value);
       } else {
         mOffset.GetValuesAtTime(ticks + writeOffset, output + writeOffset,
-                                count);
+                                count, aTrack->BlockSize());
       }
 
       writeOffset += count;
 
-      std::fill_n(output + writeOffset, WEBAUDIO_BLOCK_SIZE - writeOffset,
+      std::fill_n(output + writeOffset, aTrack->BlockSize() - writeOffset,
                   0.0f);
     }
 
-    if (ticks + WEBAUDIO_BLOCK_SIZE >= mStop) {
+    if (ticks + aTrack->BlockSize() >= mStop) {
       // We've finished playing.
       *aFinished = true;
     }

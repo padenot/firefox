@@ -37,8 +37,10 @@ class DelayNodeEngine final : public AudioNodeEngine {
         mDelay(0.f)
         // Use a smoothing range of 20ms
         ,
-        mBuffer(
-            std::max(aMaxDelayTicks, static_cast<float>(WEBAUDIO_BLOCK_SIZE))),
+        mBuffer(std::max(aMaxDelayTicks,
+                         static_cast<float>(
+                             aNode->Context()->RenderQuantumSize())),
+                aNode->Context()->RenderQuantumSize()),
         mMaxDelay(aMaxDelayTicks),
         mHaveProducedBeforeInput(false),
         mLeftOverData(INT32_MIN) {}
@@ -75,7 +77,7 @@ class DelayNodeEngine final : public AudioNodeEngine {
       }
       mLeftOverData = mBuffer.MaxDelayTicks();
     } else if (mLeftOverData > 0) {
-      mLeftOverData -= WEBAUDIO_BLOCK_SIZE;
+      mLeftOverData -= aTrack->BlockSize();
     } else {
       if (mLeftOverData != INT32_MIN) {
         mLeftOverData = INT32_MIN;
@@ -88,7 +90,7 @@ class DelayNodeEngine final : public AudioNodeEngine {
             new PlayingRefChanged(aTrack, PlayingRefChanged::RELEASE);
         aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
       }
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
       return;
     }
 
@@ -121,26 +123,25 @@ class DelayNodeEngine final : public AudioNodeEngine {
       // If this DelayNode is in a cycle, make sure the delay value is at least
       // one block.
       TrackTime tick = mDestination->GraphTimeToTrackTime(aFrom);
-      float values[WEBAUDIO_BLOCK_SIZE];
-      mDelay.GetValuesAtTime(tick, values, WEBAUDIO_BLOCK_SIZE);
-
-      float computedDelay[WEBAUDIO_BLOCK_SIZE];
-      for (size_t counter = 0; counter < WEBAUDIO_BLOCK_SIZE; ++counter) {
+      auto values = aTrack->GetScratch<float>(aTrack->BlockSize());
+      auto computedDelay = aTrack->GetScratch<float>(aTrack->BlockSize());
+      mDelay.GetValuesAtTime(tick, values.data(), aTrack->BlockSize(),
+                             aTrack->BlockSize());
+      for (size_t counter = 0; counter < aTrack->BlockSize(); ++counter) {
         float delayAtTick = values[counter] * sampleRate;
-        float delayAtTickClamped =
+        computedDelay[counter] =
             std::max(minDelay, std::min(delayAtTick, maxDelay));
-        computedDelay[counter] = delayAtTickClamped;
       }
-      mBuffer.Read(computedDelay, aOutput, channelInterpretation);
+      mBuffer.Read(computedDelay.data(), aOutput, channelInterpretation);
     }
   }
 
   void ProduceBlockBeforeInput(AudioNodeTrack* aTrack, GraphTime aFrom,
                                AudioBlock* aOutput) override {
     if (mLeftOverData <= 0) {
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
     } else {
-      UpdateOutputBlock(aTrack, aFrom, aOutput, WEBAUDIO_BLOCK_SIZE);
+      UpdateOutputBlock(aTrack, aFrom, aOutput, aTrack->BlockSize());
     }
     mHaveProducedBeforeInput = true;
   }

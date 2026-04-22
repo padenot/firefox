@@ -124,9 +124,8 @@ class BiquadFilterNodeEngine final : public AudioNodeEngine {
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
     TRACE("BiquadFilterNode::ProcessBlock");
-    float inputBuffer[WEBAUDIO_BLOCK_SIZE + 4];
-    float* alignedInputBuffer = ALIGNED16(inputBuffer);
-    ASSERT_ALIGNED16(alignedInputBuffer);
+    auto alignedInputBuffer = aTrack->GetScratch<float>(aTrack->BlockSize());
+    ASSERT_ALIGNED16(alignedInputBuffer.data());
 
     if (aInput.IsNull()) {
       bool hasTail = false;
@@ -147,11 +146,11 @@ class BiquadFilterNodeEngine final : public AudioNodeEngine {
           aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
         }
 
-        aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+        aOutput->SetNull(aTrack->BlockSize());
         return;
       }
 
-      PodArrayZero(inputBuffer);
+      PodZero(alignedInputBuffer.data(), aTrack->BlockSize());
 
     } else if (mBiquads.Length() != aInput.ChannelCount()) {
       if (mBiquads.IsEmpty()) {
@@ -173,21 +172,23 @@ class BiquadFilterNodeEngine final : public AudioNodeEngine {
 
     TrackTime pos = mDestination->GraphTimeToTrackTime(aFrom);
 
-    double freq = mFrequency.GetValueAtTime(pos);
-    double q = mQ.GetValueAtTime(pos);
-    double gain = mGain.GetValueAtTime(pos);
-    double detune = mDetune.GetValueAtTime(pos);
+    uint32_t blockSize = aTrack->BlockSize();
+    double freq = mFrequency.GetValueAtTime(pos, blockSize);
+    double q = mQ.GetValueAtTime(pos, blockSize);
+    double gain = mGain.GetValueAtTime(pos, blockSize);
+    double detune = mDetune.GetValueAtTime(pos, blockSize);
 
     for (uint32_t i = 0; i < numberOfChannels; ++i) {
       const float* input;
       if (aInput.IsNull()) {
-        input = alignedInputBuffer;
+        input = alignedInputBuffer.data();
       } else {
         input = static_cast<const float*>(aInput.mChannelData[i]);
         if (aInput.mVolume != 1.0) {
-          AudioBlockCopyChannelWithScale(input, aInput.mVolume,
-                                         alignedInputBuffer);
-          input = alignedInputBuffer;
+          AudioBufferCopyChannelWithScale(input, aInput.mVolume,
+                                         alignedInputBuffer.data(),
+                                         aTrack->BlockSize());
+          input = alignedInputBuffer.data();
         }
       }
       SetParamsOnBiquad(mBiquads[i], aTrack->mSampleRate, mType, freq, q, gain,

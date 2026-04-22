@@ -204,8 +204,8 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     }
   }
 
-  // Borrow a full buffer of size WEBAUDIO_BLOCK_SIZE from the source buffer
-  // at offset aSourceOffset.  This avoids copying memory.
+  // Borrow a full buffer from the source buffer at offset aSourceOffset.
+  // This avoids copying memory.
   void BorrowFromInputBuffer(AudioBlock* aOutput, uint32_t aChannels) {
     aOutput->SetBuffer(mBuffer.mBuffer);
     aOutput->mChannelData.SetLength(aChannels);
@@ -347,19 +347,19 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
   /**
    * Fill aOutput with as many zero frames as we can, and advance
    * aOffsetWithinBlock and aCurrentPosition based on how many frames we write.
-   * This will never advance aOffsetWithinBlock past WEBAUDIO_BLOCK_SIZE or
+   * This will never advance aOffsetWithinBlock past aBlockSize or
    * aCurrentPosition past aMaxPos.  This function knows when it needs to
    * allocate the output buffer, and also optimizes the case where it can avoid
    * memory allocations.
    */
   void FillWithZeroes(AudioBlock* aOutput, uint32_t aChannels,
                       uint32_t* aOffsetWithinBlock, TrackTime* aCurrentPosition,
-                      TrackTime aMaxPos) {
+                      TrackTime aMaxPos, uint32_t aBlockSize) {
     MOZ_ASSERT(*aCurrentPosition < aMaxPos);
     uint32_t numFrames = std::min<TrackTime>(
-        WEBAUDIO_BLOCK_SIZE - *aOffsetWithinBlock, aMaxPos - *aCurrentPosition);
-    if (numFrames == WEBAUDIO_BLOCK_SIZE || !aChannels) {
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+        aBlockSize - *aOffsetWithinBlock, aMaxPos - *aCurrentPosition);
+    if (numFrames == aBlockSize || !aChannels) {
+      aOutput->SetNull(aBlockSize);
     } else {
       if (*aOffsetWithinBlock == 0) {
         aOutput->AllocateChannels(aChannels);
@@ -373,18 +373,18 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
   /**
    * Copy as many frames as possible from the source buffer to aOutput, and
    * advance aOffsetWithinBlock and aCurrentPosition based on how many frames
-   * we write.  This will never advance aOffsetWithinBlock past
-   * WEBAUDIO_BLOCK_SIZE, or aCurrentPosition past mStop.  It takes data from
-   * the buffer at aBufferOffset, and never takes more data than aBufferMax.
-   * This function knows when it needs to allocate the output buffer, and also
-   * optimizes the case where it can avoid memory allocations.
+   * we write.  This will never advance aOffsetWithinBlock past aBlockSize, or
+   * aCurrentPosition past mStop.  It takes data from the buffer at
+   * aBufferOffset, and never takes more data than aBufferMax.  This function
+   * knows when it needs to allocate the output buffer, and also optimizes the
+   * case where it can avoid memory allocations.
    */
   void CopyFromBuffer(AudioBlock* aOutput, uint32_t aChannels,
                       uint32_t* aOffsetWithinBlock, TrackTime* aCurrentPosition,
-                      uint32_t aBufferMax) {
+                      uint32_t aBufferMax, uint32_t aBlockSize) {
     MOZ_ASSERT(*aCurrentPosition < mStop);
     uint32_t availableInOutput = std::min<TrackTime>(
-        WEBAUDIO_BLOCK_SIZE - *aOffsetWithinBlock, mStop - *aCurrentPosition);
+        aBlockSize - *aOffsetWithinBlock, mStop - *aCurrentPosition);
     if (mResampler) {
       CopyFromInputBufferWithResampling(aOutput, aChannels, aOffsetWithinBlock,
                                         availableInOutput, aCurrentPosition,
@@ -393,7 +393,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     }
 
     if (aChannels == 0) {
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aBlockSize);
       // There is no attempt here to limit advance so that mBufferPosition is
       // limited to aBufferMax.  The only observable affect of skipping the
       // check would be in the precise timing of the ended event if the loop
@@ -416,7 +416,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         std::min(aBufferMax - mBufferPosition, availableInOutput);
 
     bool shouldBorrow = false;
-    if (numFrames == WEBAUDIO_BLOCK_SIZE &&
+    if (numFrames == aBlockSize &&
         mBuffer.mBufferFormat == AUDIO_FORMAT_FLOAT32) {
       shouldBorrow = true;
       for (uint32_t i = 0; i < aChannels; ++i) {
@@ -459,7 +459,8 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     return rate > 0 ? rate : mBufferSampleRate;
   }
 
-  void UpdateSampleRateIfNeeded(uint32_t aChannels, TrackTime aTrackPosition) {
+  void UpdateSampleRateIfNeeded(uint32_t aChannels, TrackTime aTrackPosition,
+                                uint32_t aBlockSize) {
     bool simplePlaybackRate = mPlaybackRateTimeline.HasSimpleValue();
     bool simpleDetune = mDetuneTimeline.HasSimpleValue();
 
@@ -474,12 +475,12 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
       playbackRate = mPlaybackRateTimeline.GetValue();
     } else {
       playbackRate =
-          mPlaybackRateTimeline.GetComplexValueAtTime(aTrackPosition);
+          mPlaybackRateTimeline.GetComplexValueAtTime(aTrackPosition, aBlockSize);
     }
     if (simpleDetune) {
       detune = mDetuneTimeline.GetValue();
     } else {
-      detune = mDetuneTimeline.GetComplexValueAtTime(aTrackPosition);
+      detune = mDetuneTimeline.GetComplexValueAtTime(aTrackPosition, aBlockSize);
     }
 
     int32_t outRate = ComputeFinalOutSampleRate(playbackRate, detune);
@@ -492,34 +493,35 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     TRACE("AudioBufferSourceNodeEngine::ProcessBlock");
     if (mBufferSampleRate == 0) {
       // start() has not yet been called or no buffer has yet been set
-      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
+      aOutput->SetNull(aTrack->BlockSize());
       return;
     }
 
     TrackTime streamPosition = mDestination->GraphTimeToTrackTime(aFrom);
     uint32_t channels = mBuffer.ChannelCount();
 
-    UpdateSampleRateIfNeeded(channels, streamPosition);
+    UpdateSampleRateIfNeeded(channels, streamPosition, aTrack->BlockSize());
 
+    const uint32_t blockSize = aTrack->BlockSize();
     uint32_t written = 0;
     while (true) {
       if ((mStop != TRACK_TIME_MAX && streamPosition >= mStop) ||
           (!mRemainingResamplerTail &&
            ((mBufferPosition >= mBuffer.GetDuration() && !mLoop) ||
             mRemainingFrames <= 0))) {
-        if (written != WEBAUDIO_BLOCK_SIZE) {
+        if (written != blockSize) {
           FillWithZeroes(aOutput, channels, &written, &streamPosition,
-                         TRACK_TIME_MAX);
+                         TRACK_TIME_MAX, blockSize);
         }
         *aFinished = true;
         break;
       }
-      if (written == WEBAUDIO_BLOCK_SIZE) {
+      if (written == blockSize) {
         break;
       }
       if (streamPosition < mBeginProcessing) {
         FillWithZeroes(aOutput, channels, &written, &streamPosition,
-                       mBeginProcessing);
+                       mBeginProcessing, blockSize);
         continue;
       }
 
@@ -539,7 +541,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
       }
 
       CopyFromBuffer(aOutput, channels, &written, &streamPosition,
-                     bufferLeft + mBufferPosition);
+                     bufferLeft + mBufferPosition, blockSize);
     }
   }
 

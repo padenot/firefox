@@ -54,19 +54,22 @@ class Resampler final {
         mUpSampler(nullptr),
         mDownSampler(nullptr),
         mChannels(0),
-        mSampleRate(0) {}
+        mSampleRate(0),
+        mBlockSize(0) {}
 
   ~Resampler() { Destroy(); }
 
-  void Reset(uint32_t aChannels, TrackRate aSampleRate, OverSampleType aType) {
+  void Reset(uint32_t aChannels, TrackRate aSampleRate, OverSampleType aType,
+             uint32_t aBlockSize) {
     if (aChannels == mChannels && aSampleRate == mSampleRate &&
-        aType == mType) {
+        aType == mType && aBlockSize == mBlockSize) {
       return;
     }
 
     mChannels = aChannels;
     mSampleRate = aSampleRate;
     mType = aType;
+    mBlockSize = aBlockSize;
 
     Destroy();
 
@@ -81,13 +84,13 @@ class Resampler final {
     mDownSampler =
         speex_resampler_init(aChannels, aSampleRate * ValueOf(aType),
                              aSampleRate, SPEEX_RESAMPLER_QUALITY_MIN, nullptr);
-    mBuffer.SetLength(WEBAUDIO_BLOCK_SIZE * ValueOf(aType));
+    mBuffer.SetLength(aBlockSize * ValueOf(aType));
   }
 
   float* UpSample(uint32_t aChannel, const float* aInputData,
                   uint32_t aBlocks) {
-    uint32_t inSamples = WEBAUDIO_BLOCK_SIZE;
-    uint32_t outSamples = WEBAUDIO_BLOCK_SIZE * aBlocks;
+    uint32_t inSamples = mBlockSize;
+    uint32_t outSamples = mBlockSize * aBlocks;
     float* outputData = mBuffer.Elements();
 
     MOZ_ASSERT(mBuffer.Length() == outSamples);
@@ -95,15 +98,14 @@ class Resampler final {
     WebAudioUtils::SpeexResamplerProcess(mUpSampler, aChannel, aInputData,
                                          &inSamples, outputData, &outSamples);
 
-    MOZ_ASSERT(inSamples == WEBAUDIO_BLOCK_SIZE &&
-               outSamples == WEBAUDIO_BLOCK_SIZE * aBlocks);
+    MOZ_ASSERT(inSamples == mBlockSize && outSamples == mBlockSize * aBlocks);
 
     return outputData;
   }
 
   void DownSample(uint32_t aChannel, float* aOutputData, uint32_t aBlocks) {
-    uint32_t inSamples = WEBAUDIO_BLOCK_SIZE * aBlocks;
-    uint32_t outSamples = WEBAUDIO_BLOCK_SIZE;
+    uint32_t inSamples = mBlockSize * aBlocks;
+    uint32_t outSamples = mBlockSize;
     const float* inputData = mBuffer.Elements();
 
     MOZ_ASSERT(mBuffer.Length() == inSamples);
@@ -111,8 +113,7 @@ class Resampler final {
     WebAudioUtils::SpeexResamplerProcess(mDownSampler, aChannel, inputData,
                                          &inSamples, aOutputData, &outSamples);
 
-    MOZ_ASSERT(inSamples == WEBAUDIO_BLOCK_SIZE * aBlocks &&
-               outSamples == WEBAUDIO_BLOCK_SIZE);
+    MOZ_ASSERT(inSamples == mBlockSize * aBlocks && outSamples == mBlockSize);
   }
 
   size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const {
@@ -142,6 +143,7 @@ class Resampler final {
   SpeexResamplerState* mDownSampler;
   uint32_t mChannels;
   TrackRate mSampleRate;
+  uint32_t mBlockSize;
   nsTArray<float> mBuffer;
 };
 
@@ -167,8 +169,9 @@ class WaveShaperNodeEngine final : public AudioNodeEngine {
   }
 
   template <uint32_t blocks>
-  void ProcessCurve(const float* aInputBuffer, float* aOutputBuffer) {
-    for (uint32_t j = 0; j < WEBAUDIO_BLOCK_SIZE * blocks; ++j) {
+  void ProcessCurve(const float* aInputBuffer, float* aOutputBuffer,
+                    uint32_t aBlockSize) {
+    for (uint32_t j = 0; j < aBlockSize * blocks; ++j) {
       // Index into the curve array based on the amplitude of the
       // incoming signal by using an amplitude range of [-1, 1] and
       // performing a linear interpolation of the neighbor values.
@@ -218,46 +221,46 @@ class WaveShaperNodeEngine final : public AudioNodeEngine {
       channelCount = 1;
     }
 
-    aOutput->AllocateChannels(channelCount);
+    aOutput->AllocateChannels(channelCount, aTrack->BlockSize());
+    auto alignedScaledInput = aTrack->GetScratch<float>(aTrack->BlockSize());
+    ASSERT_ALIGNED16(alignedScaledInput.data());
     for (uint32_t i = 0; i < channelCount; ++i) {
       const float* inputSamples;
-      float scaledInput[WEBAUDIO_BLOCK_SIZE + 4];
-      float* alignedScaledInput = ALIGNED16(scaledInput);
-      ASSERT_ALIGNED16(alignedScaledInput);
       if (!nullInput) {
         if (aInput.mVolume != 1.0f) {
-          AudioBlockCopyChannelWithScale(
+          AudioBufferCopyChannelWithScale(
               static_cast<const float*>(aInput.mChannelData[i]), aInput.mVolume,
-              alignedScaledInput);
-          inputSamples = alignedScaledInput;
+              alignedScaledInput.data(), aTrack->BlockSize());
+          inputSamples = alignedScaledInput.data();
         } else {
           inputSamples = static_cast<const float*>(aInput.mChannelData[i]);
         }
       } else {
-        PodZero(alignedScaledInput, WEBAUDIO_BLOCK_SIZE);
-        inputSamples = alignedScaledInput;
+        PodZero(alignedScaledInput.data(), aTrack->BlockSize());
+        inputSamples = alignedScaledInput.data();
       }
       float* outputBuffer = aOutput->ChannelFloatsForWrite(i);
       float* sampleBuffer;
 
+      const uint32_t blockSize = aTrack->BlockSize();
       switch (mType) {
         case OverSampleType::None:
           mResampler.Reset(channelCount, aTrack->mSampleRate,
-                           OverSampleType::None);
-          ProcessCurve<1>(inputSamples, outputBuffer);
+                           OverSampleType::None, blockSize);
+          ProcessCurve<1>(inputSamples, outputBuffer, blockSize);
           break;
         case OverSampleType::_2x:
           mResampler.Reset(channelCount, aTrack->mSampleRate,
-                           OverSampleType::_2x);
+                           OverSampleType::_2x, blockSize);
           sampleBuffer = mResampler.UpSample(i, inputSamples, 2);
-          ProcessCurve<2>(sampleBuffer, sampleBuffer);
+          ProcessCurve<2>(sampleBuffer, sampleBuffer, blockSize);
           mResampler.DownSample(i, outputBuffer, 2);
           break;
         case OverSampleType::_4x:
           mResampler.Reset(channelCount, aTrack->mSampleRate,
-                           OverSampleType::_4x);
+                           OverSampleType::_4x, blockSize);
           sampleBuffer = mResampler.UpSample(i, inputSamples, 4);
-          ProcessCurve<4>(sampleBuffer, sampleBuffer);
+          ProcessCurve<4>(sampleBuffer, sampleBuffer, blockSize);
           mResampler.DownSample(i, outputBuffer, 4);
           break;
         default:
