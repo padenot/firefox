@@ -15,13 +15,12 @@ struct Engine {
   static void AudioBufferAddWithScale(const float* aInput, float aScale,
                                       float* aOutput, uint32_t aSize);
 
-  static void AudioBlockCopyChannelWithScale(const float* aInput, float aScale,
-                                             float* aOutput);
+  static void AudioBufferCopyChannelWithScale(const float* aInput, float aScale,
+                                             float* aOutput, uint32_t aSize);
 
-  static void AudioBlockCopyChannelWithScale(
-      const float aInput[WEBAUDIO_BLOCK_SIZE],
-      const float aScale[WEBAUDIO_BLOCK_SIZE],
-      float aOutput[WEBAUDIO_BLOCK_SIZE]);
+  static void AudioBufferCopyChannelWithScale(const float* aInput,
+                                             const float* aScale,
+                                             float* aOutput, uint32_t aSize);
 
   static void AudioBufferInPlaceScale(float* aBlock, float aScale,
                                       uint32_t aSize);
@@ -29,11 +28,11 @@ struct Engine {
   static void AudioBufferInPlaceScale(float* aBlock, float* aScale,
                                       uint32_t aSize);
 
-  static void AudioBlockPanStereoToStereo(
-      const float aInputL[WEBAUDIO_BLOCK_SIZE],
-      const float aInputR[WEBAUDIO_BLOCK_SIZE], float aGainL, float aGainR,
-      bool aIsOnTheLeft, float aOutputL[WEBAUDIO_BLOCK_SIZE],
-      float aOutputR[WEBAUDIO_BLOCK_SIZE]);
+  static void AudioBufferPanStereoToStereo(const float* aInputL,
+                                          const float* aInputR, float aGainL,
+                                          float aGainR, bool aIsOnTheLeft,
+                                          float* aOutputL, float* aOutputR,
+                                          uint32_t aSize);
 
   static void BufferComplexMultiply(const float* aInput, const float* aScale,
                                     float* aOutput, uint32_t aSize);
@@ -42,13 +41,13 @@ struct Engine {
 
   static void NaNToZeroInPlace(float* aSamples, size_t aCount);
 
-  static void AudioBlockPanStereoToStereo(
-      const float aInputL[WEBAUDIO_BLOCK_SIZE],
-      const float aInputR[WEBAUDIO_BLOCK_SIZE],
-      const float aGainL[WEBAUDIO_BLOCK_SIZE],
-      const float aGainR[WEBAUDIO_BLOCK_SIZE],
-      const bool aIsOnTheLeft[WEBAUDIO_BLOCK_SIZE],
-      float aOutputL[WEBAUDIO_BLOCK_SIZE], float aOutputR[WEBAUDIO_BLOCK_SIZE]);
+  static void AudioBufferPanStereoToStereo(const float* aInputL,
+                                          const float* aInputR,
+                                          const float* aGainL,
+                                          const float* aGainR,
+                                          const bool* aIsOnTheLeft,
+                                          float* aOutputL, float* aOutputR,
+                                          uint32_t aSize);
 };
 
 }  // namespace mozilla

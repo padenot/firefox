@@ -69,20 +69,18 @@ void Engine<Arch>::AudioBufferAddWithScale(const float* aInput, float aScale,
 }
 
 template <class Arch>
-void Engine<Arch>::AudioBlockCopyChannelWithScale(const float* aInput,
-                                                  float aScale,
-                                                  float* aOutput) {
+void Engine<Arch>::AudioBufferCopyChannelWithScale(const float* aInput,
+                                                  float aScale, float* aOutput,
+                                                  uint32_t aSize) {
   MOZ_ASSERT(is_aligned<Arch>(aInput), "aInput is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aOutput), "aOutput is aligned");
-
-  MOZ_ASSERT((WEBAUDIO_BLOCK_SIZE % xsimd::batch<float, Arch>::size == 0),
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
              "requires tail processing");
 
   xsimd::batch<float, Arch> vgain = (aScale);
 
   MOZ_UNROLL(4)
-  for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE;
-       i += xsimd::batch<float, Arch>::size) {
+  for (unsigned i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
     auto vin = xsimd::batch<float, Arch>::load_aligned(&aInput[i]);
     auto vout = vin * vgain;
     vout.store_aligned(&aOutput[i]);
@@ -90,20 +88,18 @@ void Engine<Arch>::AudioBlockCopyChannelWithScale(const float* aInput,
 };
 
 template <class Arch>
-void Engine<Arch>::AudioBlockCopyChannelWithScale(
-    const float aInput[WEBAUDIO_BLOCK_SIZE],
-    const float aScale[WEBAUDIO_BLOCK_SIZE],
-    float aOutput[WEBAUDIO_BLOCK_SIZE]) {
+void Engine<Arch>::AudioBufferCopyChannelWithScale(const float* aInput,
+                                                  const float* aScale,
+                                                  float* aOutput,
+                                                  uint32_t aSize) {
   MOZ_ASSERT(is_aligned<Arch>(aInput), "aInput is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aOutput), "aOutput is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aScale), "aScale is aligned");
-
-  MOZ_ASSERT((WEBAUDIO_BLOCK_SIZE % xsimd::batch<float, Arch>::size == 0),
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
              "requires tail processing");
 
   MOZ_UNROLL(4)
-  for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE;
-       i += xsimd::batch<float, Arch>::size) {
+  for (unsigned i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
     auto vscaled = xsimd::batch<float, Arch>::load_aligned(&aScale[i]);
     auto vin = xsimd::batch<float, Arch>::load_aligned(&aInput[i]);
     auto vout = vin * vscaled;
@@ -148,17 +144,17 @@ void Engine<Arch>::AudioBufferInPlaceScale(float* aBlock, float* aScale,
 };
 
 template <class Arch>
-void Engine<Arch>::AudioBlockPanStereoToStereo(
-    const float aInputL[WEBAUDIO_BLOCK_SIZE],
-    const float aInputR[WEBAUDIO_BLOCK_SIZE], float aGainL, float aGainR,
-    bool aIsOnTheLeft, float aOutputL[WEBAUDIO_BLOCK_SIZE],
-    float aOutputR[WEBAUDIO_BLOCK_SIZE]) {
+void Engine<Arch>::AudioBufferPanStereoToStereo(const float* aInputL,
+                                               const float* aInputR,
+                                               float aGainL, float aGainR,
+                                               bool aIsOnTheLeft,
+                                               float* aOutputL, float* aOutputR,
+                                               uint32_t aSize) {
   MOZ_ASSERT(is_aligned<Arch>(aInputL), "aInputL is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aInputR), "aInputR is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aOutputL), "aOutputL is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aOutputR), "aOutputR is aligned");
-
-  MOZ_ASSERT((WEBAUDIO_BLOCK_SIZE % xsimd::batch<float, Arch>::size == 0),
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
              "requires tail processing");
 
   xsimd::batch<float, Arch> vgainl(aGainL);
@@ -166,8 +162,7 @@ void Engine<Arch>::AudioBlockPanStereoToStereo(
 
   if (aIsOnTheLeft) {
     MOZ_UNROLL(2)
-    for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE;
-         i += xsimd::batch<float, Arch>::size) {
+    for (unsigned i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
       auto vinl = xsimd::batch<float, Arch>::load_aligned(&aInputL[i]);
       auto vinr = xsimd::batch<float, Arch>::load_aligned(&aInputR[i]);
 
@@ -181,8 +176,7 @@ void Engine<Arch>::AudioBlockPanStereoToStereo(
     }
   } else {
     MOZ_UNROLL(2)
-    for (unsigned i = 0; i < WEBAUDIO_BLOCK_SIZE;
-         i += xsimd::batch<float, Arch>::size) {
+    for (unsigned i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
       auto vinl = xsimd::batch<float, Arch>::load_aligned(&aInputL[i]);
       auto vinr = xsimd::batch<float, Arch>::load_aligned(&aInputR[i]);
 
@@ -293,13 +287,10 @@ void Engine<Arch>::NaNToZeroInPlace(float* aSamples, size_t aCount) {
 };
 
 template <class Arch>
-void Engine<Arch>::AudioBlockPanStereoToStereo(
-    const float aInputL[WEBAUDIO_BLOCK_SIZE],
-    const float aInputR[WEBAUDIO_BLOCK_SIZE],
-    const float aGainL[WEBAUDIO_BLOCK_SIZE],
-    const float aGainR[WEBAUDIO_BLOCK_SIZE],
-    const bool aIsOnTheLeft[WEBAUDIO_BLOCK_SIZE],
-    float aOutputL[WEBAUDIO_BLOCK_SIZE], float aOutputR[WEBAUDIO_BLOCK_SIZE]) {
+void Engine<Arch>::AudioBufferPanStereoToStereo(
+    const float* aInputL, const float* aInputR, const float* aGainL,
+    const float* aGainR, const bool* aIsOnTheLeft, float* aOutputL,
+    float* aOutputR, uint32_t aSize) {
   MOZ_ASSERT(is_aligned<Arch>(aInputL), "aInputL is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aInputR), "aInputR is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aGainL), "aGainL is aligned");
@@ -307,13 +298,11 @@ void Engine<Arch>::AudioBlockPanStereoToStereo(
   MOZ_ASSERT(is_aligned<Arch>(aIsOnTheLeft), "aIsOnTheLeft is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aOutputL), "aOutputL is aligned");
   MOZ_ASSERT(is_aligned<Arch>(aOutputR), "aOutputR is aligned");
-
-  MOZ_ASSERT((WEBAUDIO_BLOCK_SIZE % xsimd::batch<float, Arch>::size == 0),
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
              "requires tail processing");
 
   MOZ_UNROLL(2)
-  for (uint32_t i = 0; i < WEBAUDIO_BLOCK_SIZE;
-       i += xsimd::batch<float, Arch>::size) {
+  for (uint32_t i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
     auto mask = xsimd::batch_bool<float, Arch>::load_aligned(&aIsOnTheLeft[i]);
 
     auto inputL = xsimd::batch<float, Arch>::load_aligned(&aInputL[i]);

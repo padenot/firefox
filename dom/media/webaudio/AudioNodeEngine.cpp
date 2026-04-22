@@ -42,7 +42,7 @@ ThreadSharedFloatArrayBufferList::Create(uint32_t aChannelCount, size_t aLength,
 
 void WriteZeroesToAudioBlock(AudioBlock* aChunk, uint32_t aStart,
                              uint32_t aLength) {
-  MOZ_ASSERT(aStart + aLength <= WEBAUDIO_BLOCK_SIZE);
+  MOZ_ASSERT(aStart + aLength <= aChunk->GetDuration());
   MOZ_ASSERT(!aChunk->IsNull(), "You should pass a non-null chunk");
   if (aLength == 0) {
     return;
@@ -101,34 +101,28 @@ void AudioBufferAddWithScale(const float* aInput, float aScale, float* aOutput,
   }
 }
 
-void AudioBlockAddChannelWithScale(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                                   float aScale,
-                                   float aOutput[WEBAUDIO_BLOCK_SIZE]) {
-  AudioBufferAddWithScale(aInput, aScale, aOutput, WEBAUDIO_BLOCK_SIZE);
-}
-
-void AudioBlockCopyChannelWithScale(const float* aInput, float aScale,
-                                    float* aOutput) {
+void AudioBufferCopyChannelWithScale(const float* aInput, float aScale,
+                                    float* aOutput, uint32_t aSize) {
   if (aScale == 1.0f) {
-    memcpy(aOutput, aInput, WEBAUDIO_BLOCK_SIZE * sizeof(float));
+    memcpy(aOutput, aInput, aSize * sizeof(float));
   } else {
 #ifdef USE_NEON
     if (mozilla::supports_neon()) {
-      Engine<xsimd::neon>::AudioBlockCopyChannelWithScale(aInput, aScale,
-                                                          aOutput);
+      Engine<xsimd::neon>::AudioBufferCopyChannelWithScale(aInput, aScale,
+                                                          aOutput, aSize);
       return;
     }
 #endif
 
 #ifdef USE_SSE2
     if (mozilla::supports_sse2()) {
-      Engine<xsimd::sse2>::AudioBlockCopyChannelWithScale(aInput, aScale,
-                                                          aOutput);
+      Engine<xsimd::sse2>::AudioBufferCopyChannelWithScale(aInput, aScale,
+                                                          aOutput, aSize);
       return;
     }
 #endif
 
-    for (uint32_t i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+    for (uint32_t i = 0; i < aSize; ++i) {
       aOutput[i] = aInput[i] * aScale;
     }
   }
@@ -181,37 +175,27 @@ float AudioBufferPeakValue(const float* aInput, uint32_t aSize) {
   return max;
 }
 
-void AudioBlockCopyChannelWithScale(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                                    const float aScale[WEBAUDIO_BLOCK_SIZE],
-                                    float aOutput[WEBAUDIO_BLOCK_SIZE]) {
+void AudioBufferCopyChannelWithScale(const float* aInput, const float* aScale,
+                                    float* aOutput, uint32_t aSize) {
 #ifdef USE_NEON
   if (mozilla::supports_neon()) {
-    Engine<xsimd::neon>::AudioBlockCopyChannelWithScale(aInput, aScale,
-                                                        aOutput);
+    Engine<xsimd::neon>::AudioBufferCopyChannelWithScale(aInput, aScale, aOutput,
+                                                        aSize);
     return;
   }
 #endif
 
 #ifdef USE_SSE2
   if (mozilla::supports_sse2()) {
-    Engine<xsimd::sse2>::AudioBlockCopyChannelWithScale(aInput, aScale,
-                                                        aOutput);
+    Engine<xsimd::sse2>::AudioBufferCopyChannelWithScale(aInput, aScale, aOutput,
+                                                        aSize);
     return;
   }
 #endif
 
-  for (uint32_t i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+  for (uint32_t i = 0; i < aSize; ++i) {
     aOutput[i] = aInput[i] * aScale[i];
   }
-}
-
-void AudioBlockInPlaceScale(float aBlock[WEBAUDIO_BLOCK_SIZE], float aScale) {
-  AudioBufferInPlaceScale(aBlock, aScale, WEBAUDIO_BLOCK_SIZE);
-}
-
-void AudioBlockInPlaceScale(float aBlock[WEBAUDIO_BLOCK_SIZE],
-                            float aScale[WEBAUDIO_BLOCK_SIZE]) {
-  AudioBufferInPlaceScale(aBlock, aScale, WEBAUDIO_BLOCK_SIZE);
 }
 
 void AudioBufferInPlaceScale(float* aBlock, float aScale, uint32_t aSize) {
@@ -257,32 +241,29 @@ void AudioBufferInPlaceScale(float* aBlock, float* aScale, uint32_t aSize) {
   }
 }
 
-void AudioBlockPanMonoToStereo(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                               float aGainL[WEBAUDIO_BLOCK_SIZE],
-                               float aGainR[WEBAUDIO_BLOCK_SIZE],
-                               float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                               float aOutputR[WEBAUDIO_BLOCK_SIZE]) {
-  AudioBlockCopyChannelWithScale(aInput, aGainL, aOutputL);
-  AudioBlockCopyChannelWithScale(aInput, aGainR, aOutputR);
+void AudioBufferPanMonoToStereo(const float* aInput, float* aGainL,
+                               float* aGainR, float* aOutputL, float* aOutputR,
+                               uint32_t aSize) {
+  AudioBufferCopyChannelWithScale(aInput, aGainL, aOutputL, aSize);
+  AudioBufferCopyChannelWithScale(aInput, aGainR, aOutputR, aSize);
 }
 
-void AudioBlockPanMonoToStereo(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                               float aGainL, float aGainR,
-                               float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                               float aOutputR[WEBAUDIO_BLOCK_SIZE]) {
-  AudioBlockCopyChannelWithScale(aInput, aGainL, aOutputL);
-  AudioBlockCopyChannelWithScale(aInput, aGainR, aOutputR);
+void AudioBufferPanMonoToStereo(const float* aInput, float aGainL, float aGainR,
+                               float* aOutputL, float* aOutputR,
+                               uint32_t aSize) {
+  AudioBufferCopyChannelWithScale(aInput, aGainL, aOutputL, aSize);
+  AudioBufferCopyChannelWithScale(aInput, aGainR, aOutputR, aSize);
 }
 
-void AudioBlockPanStereoToStereo(const float aInputL[WEBAUDIO_BLOCK_SIZE],
-                                 const float aInputR[WEBAUDIO_BLOCK_SIZE],
+void AudioBufferPanStereoToStereo(const float* aInputL, const float* aInputR,
                                  float aGainL, float aGainR, bool aIsOnTheLeft,
-                                 float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                                 float aOutputR[WEBAUDIO_BLOCK_SIZE]) {
+                                 float* aOutputL, float* aOutputR,
+                                 uint32_t aSize) {
 #ifdef USE_NEON
   if (mozilla::supports_neon()) {
-    Engine<xsimd::neon>::AudioBlockPanStereoToStereo(
-        aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR);
+    Engine<xsimd::neon>::AudioBufferPanStereoToStereo(
+        aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR,
+        aSize);
     return;
   }
 #endif
@@ -291,44 +272,42 @@ void AudioBlockPanStereoToStereo(const float aInputL[WEBAUDIO_BLOCK_SIZE],
   if (mozilla::supports_sse2()) {
 #  if defined(USE_SSE42) && defined(USE_FMA3)
     if (mozilla::supports_fma3() && mozilla::supports_sse4_2()) {
-      Engine<xsimd::fma3<xsimd::sse4_2>>::AudioBlockPanStereoToStereo(
-          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR);
+      Engine<xsimd::fma3<xsimd::sse4_2>>::AudioBufferPanStereoToStereo(
+          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR,
+          aSize);
     } else
 #  endif
     {
-      Engine<xsimd::sse2>::AudioBlockPanStereoToStereo(
-          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR);
+      Engine<xsimd::sse2>::AudioBufferPanStereoToStereo(
+          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR,
+          aSize);
     }
     return;
   }
 #endif
 
-  uint32_t i;
-
   if (aIsOnTheLeft) {
-    for (i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+    for (uint32_t i = 0; i < aSize; ++i) {
       aOutputL[i] = aInputL[i] + aInputR[i] * aGainL;
       aOutputR[i] = aInputR[i] * aGainR;
     }
   } else {
-    for (i = 0; i < WEBAUDIO_BLOCK_SIZE; ++i) {
+    for (uint32_t i = 0; i < aSize; ++i) {
       aOutputL[i] = aInputL[i] * aGainL;
       aOutputR[i] = aInputR[i] + aInputL[i] * aGainR;
     }
   }
 }
 
-void AudioBlockPanStereoToStereo(const float aInputL[WEBAUDIO_BLOCK_SIZE],
-                                 const float aInputR[WEBAUDIO_BLOCK_SIZE],
-                                 const float aGainL[WEBAUDIO_BLOCK_SIZE],
-                                 const float aGainR[WEBAUDIO_BLOCK_SIZE],
-                                 const bool aIsOnTheLeft[WEBAUDIO_BLOCK_SIZE],
-                                 float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                                 float aOutputR[WEBAUDIO_BLOCK_SIZE]) {
+void AudioBufferPanStereoToStereo(const float* aInputL, const float* aInputR,
+                                 const float* aGainL, const float* aGainR,
+                                 const bool* aIsOnTheLeft, float* aOutputL,
+                                 float* aOutputR, uint32_t aSize) {
 #ifdef USE_NEON
   if (mozilla::supports_neon()) {
-    Engine<xsimd::neon>::AudioBlockPanStereoToStereo(
-        aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR);
+    Engine<xsimd::neon>::AudioBufferPanStereoToStereo(aInputL, aInputR, aGainL,
+                                                     aGainR, aIsOnTheLeft,
+                                                     aOutputL, aOutputR, aSize);
     return;
   }
 #endif
@@ -337,20 +316,22 @@ void AudioBlockPanStereoToStereo(const float aInputL[WEBAUDIO_BLOCK_SIZE],
   if (mozilla::supports_sse2()) {
 #  if defined(USE_SSE42) && defined(USE_FMA3)
     if (mozilla::supports_fma3() && mozilla::supports_sse4_2()) {
-      Engine<xsimd::fma3<xsimd::sse2>>::AudioBlockPanStereoToStereo(
-          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR);
+      Engine<xsimd::fma3<xsimd::sse2>>::AudioBufferPanStereoToStereo(
+          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR,
+          aSize);
     } else
 #  endif
     {
-      Engine<xsimd::sse2>::AudioBlockPanStereoToStereo(
-          aInputL, aInputR, aGainL, aGainR, aIsOnTheLeft, aOutputL, aOutputR);
+      Engine<xsimd::sse2>::AudioBufferPanStereoToStereo(aInputL, aInputR, aGainL,
+                                                       aGainR, aIsOnTheLeft,
+                                                       aOutputL, aOutputR,
+                                                       aSize);
     }
     return;
   }
 #endif
 
-  uint32_t i;
-  for (i = 0; i < WEBAUDIO_BLOCK_SIZE; i++) {
+  for (uint32_t i = 0; i < aSize; i++) {
     if (aIsOnTheLeft[i]) {
       aOutputL[i] = aInputL[i] + aInputR[i] * aGainL[i];
       aOutputR[i] = aInputR[i] * aGainR[i];

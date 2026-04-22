@@ -152,26 +152,16 @@ void AudioBufferAddWithScale(const float* aInput, float aScale, float* aOutput,
                              uint32_t aSize);
 
 /**
- * Pointwise multiply-add operation. aScale == 1.0f should be optimized.
- */
-void AudioBlockAddChannelWithScale(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                                   float aScale,
-                                   float aOutput[WEBAUDIO_BLOCK_SIZE]);
-
-/**
  * Pointwise copy-scaled operation. aScale == 1.0f should be optimized.
- *
- * Buffer size is implicitly assumed to be WEBAUDIO_BLOCK_SIZE.
  */
-void AudioBlockCopyChannelWithScale(const float* aInput, float aScale,
-                                    float* aOutput);
+void AudioBufferCopyChannelWithScale(const float* aInput, float aScale,
+                                    float* aOutput, uint32_t aSize);
 
 /**
  * Vector copy-scaled operation.
  */
-void AudioBlockCopyChannelWithScale(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                                    const float aScale[WEBAUDIO_BLOCK_SIZE],
-                                    float aOutput[WEBAUDIO_BLOCK_SIZE]);
+void AudioBufferCopyChannelWithScale(const float* aInput, const float* aScale,
+                                    float* aOutput, uint32_t aSize);
 
 /**
  * Vector complex multiplication on arbitrary sized buffers.
@@ -187,18 +177,8 @@ float AudioBufferPeakValue(const float* aInput, uint32_t aSize);
 /**
  * In place gain. aScale == 1.0f should be optimized.
  */
-void AudioBlockInPlaceScale(float aBlock[WEBAUDIO_BLOCK_SIZE], float aScale);
-
-/**
- * In place gain. aScale == 1.0f should be optimized.
- */
 void AudioBufferInPlaceScale(float* aBlock, float aScale, uint32_t aSize);
 
-/**
- * a-rate in place gain.
- */
-void AudioBlockInPlaceScale(float aBlock[WEBAUDIO_BLOCK_SIZE],
-                            float aScale[WEBAUDIO_BLOCK_SIZE]);
 /**
  * a-rate in place gain.
  */
@@ -209,33 +189,26 @@ void AudioBufferInPlaceScale(float* aBlock, float* aScale, uint32_t aSize);
  * different gain value.
  * This algorithm is specified in the WebAudio spec.
  */
-void AudioBlockPanMonoToStereo(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                               float aGainL, float aGainR,
-                               float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                               float aOutputR[WEBAUDIO_BLOCK_SIZE]);
+void AudioBufferPanMonoToStereo(const float* aInput, float aGainL, float aGainR,
+                               float* aOutputL, float* aOutputR,
+                               uint32_t aSize);
 
-void AudioBlockPanMonoToStereo(const float aInput[WEBAUDIO_BLOCK_SIZE],
-                               float aGainL[WEBAUDIO_BLOCK_SIZE],
-                               float aGainR[WEBAUDIO_BLOCK_SIZE],
-                               float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                               float aOutputR[WEBAUDIO_BLOCK_SIZE]);
+void AudioBufferPanMonoToStereo(const float* aInput, float* aGainL,
+                               float* aGainR, float* aOutputL, float* aOutputR,
+                               uint32_t aSize);
 /**
  * Pan a stereo source according to right and left gain, and the position
  * (whether the listener is on the left of the source or not).
  * This algorithm is specified in the WebAudio spec.
  */
-void AudioBlockPanStereoToStereo(const float aInputL[WEBAUDIO_BLOCK_SIZE],
-                                 const float aInputR[WEBAUDIO_BLOCK_SIZE],
+void AudioBufferPanStereoToStereo(const float* aInputL, const float* aInputR,
                                  float aGainL, float aGainR, bool aIsOnTheLeft,
-                                 float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                                 float aOutputR[WEBAUDIO_BLOCK_SIZE]);
-void AudioBlockPanStereoToStereo(const float aInputL[WEBAUDIO_BLOCK_SIZE],
-                                 const float aInputR[WEBAUDIO_BLOCK_SIZE],
-                                 const float aGainL[WEBAUDIO_BLOCK_SIZE],
-                                 const float aGainR[WEBAUDIO_BLOCK_SIZE],
-                                 const bool aIsOnTheLeft[WEBAUDIO_BLOCK_SIZE],
-                                 float aOutputL[WEBAUDIO_BLOCK_SIZE],
-                                 float aOutputR[WEBAUDIO_BLOCK_SIZE]);
+                                 float* aOutputL, float* aOutputR,
+                                 uint32_t aSize);
+void AudioBufferPanStereoToStereo(const float* aInputL, const float* aInputR,
+                                 const float* aGainL, const float* aGainR,
+                                 const bool* aIsOnTheLeft, float* aOutputL,
+                                 float* aOutputR, uint32_t aSize);
 
 /**
  * Replace NaN by zeros in aSamples.
