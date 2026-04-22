@@ -25,7 +25,7 @@ namespace mozilla {
  * AUDIO_TRACK. This track has rate AudioContext::sIdealAudioRate
  * for regular audio contexts, and the rate requested by the web content
  * for offline audio contexts.
- * Each chunk in the track is a single block of WEBAUDIO_BLOCK_SIZE samples.
+ * Each chunk in the track is a single block of BlockSize() samples.
  * Note: This must be a different value than MEDIA_STREAM_DEST_TRACK_ID
  */
 

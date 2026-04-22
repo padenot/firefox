@@ -270,7 +270,7 @@ class AudioNodeEngine {
    * (the mixed data for input 0).
    * aInput is guaranteed to have float sample format (if it has samples at all)
    * and to have been resampled to the sampling rate for the track, and to have
-   * exactly WEBAUDIO_BLOCK_SIZE samples.
+   * exactly BlockSize() samples.
    * *aFinished is set to false by the caller. The callee must not set this to
    * true unless silent output is produced. If set to true, we'll finish the
    * track, consider this input inactive on any downstream nodes, and not

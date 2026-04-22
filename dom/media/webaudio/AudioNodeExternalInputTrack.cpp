@@ -82,7 +82,7 @@ static void CopyChunkToBlock(AudioChunk& aInput, AudioBlock* aBlock,
 
 /**
  * Converts the data in aSegment to a single chunk aBlock. aSegment must have
- * duration WEBAUDIO_BLOCK_SIZE. aFallbackChannelCount is a superset of the
+ * duration BlockSize(). aFallbackChannelCount is a superset of the
  * channels in every chunk of aSegment. aBlock must be float format or null.
  */
 static void ConvertSegmentToAudioBlock(AudioSegment* aSegment,

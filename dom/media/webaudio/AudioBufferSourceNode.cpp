@@ -242,9 +242,10 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
                                          uint32_t* aOffsetWithinBlock,
                                          uint32_t aAvailableInOutput,
                                          TrackTime* aCurrentPosition,
-                                         uint32_t aBufferMax) {
+                                         uint32_t aBufferMax,
+                                         uint32_t aBlockSize) {
     if (*aOffsetWithinBlock == 0) {
-      aOutput->AllocateChannels(aChannels);
+      aOutput->AllocateChannels(aChannels, aBlockSize);
     }
     SpeexResamplerState* resampler = mResampler;
     MOZ_ASSERT(aChannels > 0);
@@ -362,7 +363,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
       aOutput->SetNull(aBlockSize);
     } else {
       if (*aOffsetWithinBlock == 0) {
-        aOutput->AllocateChannels(aChannels);
+        aOutput->AllocateChannels(aChannels, aBlockSize);
       }
       WriteZeroesToAudioBlock(aOutput, *aOffsetWithinBlock, numFrames);
     }
@@ -388,7 +389,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     if (mResampler) {
       CopyFromInputBufferWithResampling(aOutput, aChannels, aOffsetWithinBlock,
                                         availableInOutput, aCurrentPosition,
-                                        aBufferMax);
+                                        aBufferMax, aBlockSize);
       return;
     }
 
@@ -431,7 +432,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
       BorrowFromInputBuffer(aOutput, aChannels);
     } else {
       if (*aOffsetWithinBlock == 0) {
-        aOutput->AllocateChannels(aChannels);
+        aOutput->AllocateChannels(aChannels, aBlockSize);
       }
       if (mBuffer.mBufferFormat == AUDIO_FORMAT_FLOAT32) {
         CopyFromInputBuffer<float>(aOutput, aChannels, *aOffsetWithinBlock,

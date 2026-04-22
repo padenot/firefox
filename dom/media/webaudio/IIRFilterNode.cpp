@@ -78,7 +78,7 @@ class IIRFilterNodeEngine final : public AudioNodeEngine {
     }
 
     uint32_t numberOfChannels = mIIRFilters.Length();
-    aOutput->AllocateChannels(numberOfChannels);
+    aOutput->AllocateChannels(numberOfChannels, aTrack->BlockSize());
 
     for (uint32_t i = 0; i < numberOfChannels; ++i) {
       const float* input;

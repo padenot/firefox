@@ -45,7 +45,8 @@ size_t HRTFDatabaseLoader::sizeOfLoaders(mozilla::MallocSizeOf aMallocSizeOf) {
 }
 
 already_AddRefed<HRTFDatabaseLoader>
-HRTFDatabaseLoader::createAndLoadAsynchronouslyIfNecessary(float sampleRate) {
+HRTFDatabaseLoader::createAndLoadAsynchronouslyIfNecessary(float sampleRate,
+                                                           size_t blockSize) {
   MOZ_ASSERT(NS_IsMainThread());
 
   RefPtr<HRTFDatabaseLoader> loader;
@@ -54,14 +55,15 @@ HRTFDatabaseLoader::createAndLoadAsynchronouslyIfNecessary(float sampleRate) {
     s_loaderMap = new nsTHashtable<LoaderByRateEntry>();
   }
 
-  LoaderByRateEntry* entry = s_loaderMap->PutEntry(sampleRate);
+  uint64_t key = LoaderByRateEntry::MakeKey(sampleRate, blockSize);
+  LoaderByRateEntry* entry = s_loaderMap->PutEntry(key);
   loader = entry->mLoader;
   if (loader) {  // existing entry
     MOZ_ASSERT(sampleRate == loader->databaseSampleRate());
     return loader.forget();
   }
 
-  loader = new HRTFDatabaseLoader(sampleRate);
+  loader = new HRTFDatabaseLoader(sampleRate, blockSize);
   entry->mLoader = loader;
 
   loader->loadAsynchronously();
@@ -69,11 +71,12 @@ HRTFDatabaseLoader::createAndLoadAsynchronouslyIfNecessary(float sampleRate) {
   return loader.forget();
 }
 
-HRTFDatabaseLoader::HRTFDatabaseLoader(float sampleRate)
+HRTFDatabaseLoader::HRTFDatabaseLoader(float sampleRate, size_t blockSize)
     : m_refCnt(0),
       m_threadLock("HRTFDatabaseLoader"),
       m_databaseLoaderThread(nullptr),
       m_databaseSampleRate(sampleRate),
+      m_blockSize(blockSize),
       m_databaseLoaded(false) {
   MOZ_ASSERT(NS_IsMainThread());
 }
@@ -86,7 +89,8 @@ HRTFDatabaseLoader::~HRTFDatabaseLoader() {
 
   if (s_loaderMap) {
     // Remove ourself from the map.
-    s_loaderMap->RemoveEntry(m_databaseSampleRate);
+    s_loaderMap->RemoveEntry(
+        LoaderByRateEntry::MakeKey(m_databaseSampleRate, m_blockSize));
     if (s_loaderMap->Count() == 0) {
       delete s_loaderMap;
       s_loaderMap = nullptr;
@@ -163,7 +167,7 @@ void HRTFDatabaseLoader::load() {
   MOZ_ASSERT(!NS_IsMainThread());
   MOZ_ASSERT(!m_hrtfDatabase.get(), "Called twice");
   // Load the default HRTF database.
-  m_hrtfDatabase = HRTFDatabase::create(m_databaseSampleRate);
+  m_hrtfDatabase = HRTFDatabase::create(m_databaseSampleRate, m_blockSize);
   m_databaseLoaded = true;
   // Notifies the main thread of completion.  See loadAsynchronously().
   Release();

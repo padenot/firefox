@@ -50,7 +50,8 @@ class HRTFElevation {
   // will be generated based on InterpolationFactor. Valid values for elevation
   // are -45 -> +90 in 15 degree increments.
   static nsReturnRef<HRTFElevation> createBuiltin(int elevation,
-                                                  float sampleRate);
+                                                  float sampleRate,
+                                                  size_t blockSize);
 
   // Given two HRTFElevations, and an interpolation factor x: 0 -> 1, returns an
   // interpolated HRTFElevation.
@@ -95,7 +96,7 @@ class HRTFElevation {
   // Valid values for elevation are -45 -> +90 in 15 degree increments.
   static nsReturnRef<HRTFKernel> calculateKernelForAzimuthElevation(
       int azimuth, int elevation, SpeexResamplerState* resampler,
-      float sampleRate);
+      float sampleRate, size_t blockSize);
 
   HRTFKernelList m_kernelListL;
   double m_elevationAngle;

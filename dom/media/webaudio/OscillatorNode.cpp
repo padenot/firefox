@@ -178,8 +178,6 @@ class OscillatorNodeEngine final : public AudioNodeEngine {
   void FillBounds(float* output, TrackTime ticks, uint32_t& start,
                   uint32_t& end, uint32_t aBlockSize) {
     MOZ_ASSERT(output);
-    static_assert(TrackTime(WEBAUDIO_BLOCK_SIZE) < UINT_MAX,
-                  "WEBAUDIO_BLOCK_SIZE overflows interator bounds.");
     start = 0;
     if (ticks < mStart) {
       start = mStart - ticks;
@@ -291,7 +289,7 @@ class OscillatorNodeEngine final : public AudioNodeEngine {
       ComputeSilence(aOutput, aTrack->BlockSize());
 
     } else {
-      aOutput->AllocateChannels(1);
+      aOutput->AllocateChannels(1, aTrack->BlockSize());
       float* output = aOutput->ChannelFloatsForWrite(0);
 
       uint32_t start, end;

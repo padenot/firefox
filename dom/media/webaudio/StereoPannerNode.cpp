@@ -65,15 +65,6 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
     aRightGain = fdlibm_sin(0.5 * M_PI * aPanning);
   }
 
-  void SetToSilentStereoBlock(AudioBlock* aChunk) {
-    for (uint32_t channel = 0; channel < 2; channel++) {
-      float* samples = aChunk->ChannelFloatsForWrite(channel);
-      for (uint32_t i = 0; i < WEBAUDIO_BLOCK_SIZE; i++) {
-        samples[i] = 0.f;
-      }
-    }
-  }
-
   void UpmixToStereoIfNeeded(const AudioBlock& aInput, AudioBlock* aOutput) {
     if (aInput.ChannelCount() == 2) {
       *aOutput = aInput;

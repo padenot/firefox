@@ -40,7 +40,7 @@ class HRTFKernel;
 
 class HRTFDatabase {
  public:
-  static nsReturnRef<HRTFDatabase> create(float sampleRate);
+  static nsReturnRef<HRTFDatabase> create(float sampleRate, size_t blockSize);
 
   // clang-format off
     // getKernelsFromAzimuthElevation() returns a left and right ear kernel, and an interpolated left and right frame delay for the given azimuth and elevation.
@@ -71,7 +71,7 @@ class HRTFDatabase {
   HRTFDatabase(const HRTFDatabase& other) = delete;
   void operator=(const HRTFDatabase& other) = delete;
 
-  explicit HRTFDatabase(float sampleRate);
+  explicit HRTFDatabase(float sampleRate, size_t blockSize);
 
   // Minimum and maximum elevation angles (inclusive) for a HRTFDatabase.
   static const int MinElevation;

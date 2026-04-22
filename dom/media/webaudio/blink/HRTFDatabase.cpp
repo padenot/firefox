@@ -41,18 +41,20 @@ const unsigned HRTFDatabase::InterpolationFactor = 1;
 const unsigned HRTFDatabase::NumberOfTotalElevations =
     NumberOfRawElevations * InterpolationFactor;
 
-nsReturnRef<HRTFDatabase> HRTFDatabase::create(float sampleRate) {
-  return nsReturnRef<HRTFDatabase>(new HRTFDatabase(sampleRate));
+nsReturnRef<HRTFDatabase> HRTFDatabase::create(float sampleRate,
+                                               size_t blockSize) {
+  return nsReturnRef<HRTFDatabase>(new HRTFDatabase(sampleRate, blockSize));
 }
 
-HRTFDatabase::HRTFDatabase(float sampleRate) : m_sampleRate(sampleRate) {
+HRTFDatabase::HRTFDatabase(float sampleRate, size_t blockSize)
+    : m_sampleRate(sampleRate) {
   m_elevations.SetLength(NumberOfTotalElevations);
 
   unsigned elevationIndex = 0;
   for (int elevation = MinElevation; elevation <= MaxElevation;
        elevation += RawElevationAngleSpacing) {
     nsAutoRef<HRTFElevation> hrtfElevation(
-        HRTFElevation::createBuiltin(elevation, sampleRate));
+        HRTFElevation::createBuiltin(elevation, sampleRate, blockSize));
     MOZ_ASSERT(hrtfElevation.get());
     if (!hrtfElevation.get()) return;
 

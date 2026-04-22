@@ -87,7 +87,7 @@ class ConstantSourceNodeEngine final : public AudioNodeEngine {
         mStop <= mStart) {
       aOutput->SetNull(aTrack->BlockSize());
     } else {
-      aOutput->AllocateChannels(1);
+      aOutput->AllocateChannels(1, aTrack->BlockSize());
       float* output = aOutput->ChannelFloatsForWrite(0);
       uint32_t writeOffset = 0;
 

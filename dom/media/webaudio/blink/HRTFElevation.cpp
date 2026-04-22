@@ -85,7 +85,7 @@ size_t HRTFElevation::fftSizeForSampleRate(float sampleRate, size_t blockSize) {
 
 nsReturnRef<HRTFKernel> HRTFElevation::calculateKernelForAzimuthElevation(
     int azimuth, int elevation, SpeexResamplerState* resampler,
-    float sampleRate) {
+    float sampleRate, size_t blockSize) {
   int elevationIndex = (elevation - firstElevation) / elevationSpacing;
   MOZ_ASSERT(elevationIndex >= 0 && elevationIndex <= numberOfElevations);
 
@@ -99,19 +99,29 @@ nsReturnRef<HRTFKernel> HRTFElevation::calculateKernelForAzimuthElevation(
   const int16_t (&impulse_response_data)[ResponseFrameSize] =
       irc_composite_c_r0195[elevationIndex].azimuths[azimuthIndex];
 
-  float response[ResponseFrameSize];
+  // Extra zero element guards against speex_resampler_process_float reading
+  // one past the end during its internal filter tail processing.
+  float response[ResponseFrameSize + 1] = {};
   ConvertAudioSamples(impulse_response_data, response, ResponseFrameSize);
   float* resampledResponse;
 
   // Note that depending on the fftSize returned by the panner, we may be
   // truncating the impulse response.
   const size_t resampledResponseLength =
-      fftSizeForSampleRate(sampleRate, WEBAUDIO_BLOCK_SIZE) / 2;
+      fftSizeForSampleRate(sampleRate, blockSize) / 2;
 
   AutoTArray<AudioDataValue, 2 * ResponseFrameSize> resampled;
   if (sampleRate == rawSampleRate) {
-    resampledResponse = response;
-    MOZ_ASSERT(resampledResponseLength == ResponseFrameSize);
+    if (resampledResponseLength == ResponseFrameSize) {
+      resampledResponse = response;
+    } else {
+      // resampledResponseLength > ResponseFrameSize: zero-pad the extra samples.
+      resampled.SetLength(resampledResponseLength);
+      PodCopy(resampled.Elements(), response, ResponseFrameSize);
+      PodZero(resampled.Elements() + ResponseFrameSize,
+              resampledResponseLength - ResponseFrameSize);
+      resampledResponse = resampled.Elements();
+    }
   } else {
     resampled.SetLength(resampledResponseLength);
     resampledResponse = resampled.Elements();
@@ -179,7 +189,8 @@ static int maxElevations[] = {
 };
 
 nsReturnRef<HRTFElevation> HRTFElevation::createBuiltin(int elevation,
-                                                        float sampleRate) {
+                                                        float sampleRate,
+                                                        size_t blockSize) {
   if (elevation < firstElevation ||
       elevation > firstElevation + numberOfElevations * elevationSpacing ||
       (elevation / elevationSpacing) * elevationSpacing != elevation)
@@ -214,7 +225,8 @@ nsReturnRef<HRTFElevation> HRTFElevation::createBuiltin(int elevation,
     int actualElevation = std::min(elevation, maxElevation);
 
     kernelListL[interpolatedIndex] = calculateKernelForAzimuthElevation(
-        rawIndex * AzimuthSpacing, actualElevation, resampler, sampleRate);
+        rawIndex * AzimuthSpacing, actualElevation, resampler, sampleRate,
+        blockSize);
 
     interpolatedIndex += InterpolationFactor;
   }

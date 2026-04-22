@@ -100,7 +100,7 @@ class DynamicsCompressorNodeEngine final : public AudioNodeEngine {
     mCompressor->setParameterValue(DynamicsCompressor::ParamRelease,
                                    mRelease.GetValueAtTime(pos, blockSize));
 
-    aOutput->AllocateChannels(channelCount);
+    aOutput->AllocateChannels(channelCount, aTrack->BlockSize());
     mCompressor->process(&aInput, aOutput, aInput.GetDuration());
 
     SendReductionParamToMainThread(

@@ -66,7 +66,7 @@ class GainNodeEngine final : public AudioNodeEngine {
       // First, compute a vector of gains for each track tick based on the
       // timeline at hand, and then for each channel, multiply the values
       // in the buffer with the gain vector.
-      aOutput->AllocateChannels(aInput.ChannelCount());
+      aOutput->AllocateChannels(aInput.ChannelCount(), aTrack->BlockSize());
 
       // Compute the gain values for the duration of the input AudioChunk
       TrackTime tick = mDestination->GraphTimeToTrackTime(aFrom);

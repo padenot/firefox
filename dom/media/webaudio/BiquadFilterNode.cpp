@@ -168,7 +168,7 @@ class BiquadFilterNodeEngine final : public AudioNodeEngine {
     }
 
     uint32_t numberOfChannels = mBiquads.Length();
-    aOutput->AllocateChannels(numberOfChannels);
+    aOutput->AllocateChannels(numberOfChannels, aTrack->BlockSize());
 
     TrackTime pos = mDestination->GraphTimeToTrackTime(aFrom);
 

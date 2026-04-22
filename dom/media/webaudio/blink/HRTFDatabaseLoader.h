@@ -29,6 +29,8 @@
 #ifndef HRTFDatabaseLoader_h
 #define HRTFDatabaseLoader_h
 
+#include <cstring>
+
 #include "HRTFDatabase.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Mutex.h"
@@ -50,7 +52,7 @@ class HRTFDatabaseLoader {
   // sample-rate and starts loading asynchronously (when created the first
   // time). Returns the HRTFDatabaseLoader. Must be called from the main thread.
   static already_AddRefed<HRTFDatabaseLoader>
-  createAndLoadAsynchronouslyIfNecessary(float sampleRate);
+  createAndLoadAsynchronouslyIfNecessary(float sampleRate, size_t blockSize);
 
   // AddRef and Release may be called from any thread.
   void AddRef() {
@@ -104,7 +106,7 @@ class HRTFDatabaseLoader {
 
  private:
   // Both constructor and destructor must be called from the main thread.
-  explicit HRTFDatabaseLoader(float sampleRate);
+  HRTFDatabaseLoader(float sampleRate, size_t blockSize);
   ~HRTFDatabaseLoader();
 
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
@@ -118,11 +120,18 @@ class HRTFDatabaseLoader {
   // main thread.
   void loadAsynchronously();
 
-  // Map from sample-rate to loader.
-  class LoaderByRateEntry : public nsFloatHashKey {
+  // Map from (sampleRate, blockSize) pair to loader.
+  class LoaderByRateEntry : public nsUint64HashKey {
    public:
+    // Encode sampleRate float bits in the upper 32 bits, blockSize in lower 32.
+    static uint64_t MakeKey(float sampleRate, size_t blockSize) {
+      uint32_t rateBits;
+      memcpy(&rateBits, &sampleRate, sizeof(rateBits));
+      return (uint64_t(rateBits) << 32) | uint32_t(blockSize);
+    }
+
     explicit LoaderByRateEntry(KeyTypePointer aKey)
-        : nsFloatHashKey(aKey),
+        : nsUint64HashKey(aKey),
           mLoader()  // so PutEntry() will zero-initialize
     {}
 
@@ -134,7 +143,7 @@ class HRTFDatabaseLoader {
     HRTFDatabaseLoader* MOZ_NON_OWNING_REF mLoader;
   };
 
-  // Keeps track of loaders on a per-sample-rate basis.
+  // Keeps track of loaders on a per-(sample-rate, block-size) basis.
   static nsTHashtable<LoaderByRateEntry>* s_loaderMap;  // singleton
 
   mozilla::Atomic<int> m_refCnt;
@@ -146,6 +155,7 @@ class HRTFDatabaseLoader {
   PRThread* m_databaseLoaderThread MOZ_GUARDED_BY(m_threadLock);
 
   float m_databaseSampleRate;
+  size_t m_blockSize;
   mozilla::Atomic<bool> m_databaseLoaded;
 };
 

@@ -99,7 +99,8 @@ class PannerNodeEngine final : public AudioNodeEngine {
     // HRTFDatabaseLoader needs to be fetched on the main thread.
     RefPtr<HRTFDatabaseLoader> loader =
         HRTFDatabaseLoader::createAndLoadAsynchronouslyIfNecessary(
-            NodeMainThread()->Context()->SampleRate());
+            NodeMainThread()->Context()->SampleRate(),
+            NodeMainThread()->Context()->RenderQuantumSize());
     mHRTFPanner = MakeUnique<HRTFPanner>(
         NodeMainThread()->Context()->SampleRate(), loader.forget(),
         NodeMainThread()->Context()->RenderQuantumSize());
@@ -419,7 +420,7 @@ void PannerNodeEngine::HRTFPanningFunction(const AudioBlock& aInput,
                                            AudioBlock* aOutput, TrackTime tick,
                                            AudioNodeTrack* aTrack) {
   // The output of this node is always stereo, no matter what the inputs are.
-  aOutput->AllocateChannels(2);
+  aOutput->AllocateChannels(2, aTrack->BlockSize());
 
   float azimuth, elevation;
 

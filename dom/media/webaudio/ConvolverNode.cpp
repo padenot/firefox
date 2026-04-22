@@ -318,7 +318,7 @@ void ConvolverNodeEngine::ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
   // If there are two convolvers, then they each need an output buffer, even
   // if the second convolver is only processing to keep history of up-mixed
   // input.
-  aOutput->AllocateChannels(reverbOutputChannelCount);
+  aOutput->AllocateChannels(reverbOutputChannelCount, aTrack->BlockSize());
 
   mReverb->process(&mReverbInput, aOutput);
 

@@ -75,7 +75,7 @@ void DelayBuffer::Read(const float* aPerFrameDelays, AudioBlock* aOutputChunk,
   }
 
   if (channelCount) {
-    aOutputChunk->AllocateChannels(channelCount);
+    aOutputChunk->AllocateChannels(channelCount, mBlockSize);
     ReadChannels(aPerFrameDelays, aOutputChunk, 0, channelCount,
                  aChannelInterpretation);
   } else {
