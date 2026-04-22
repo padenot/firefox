@@ -214,7 +214,7 @@ void AudioNodeExternalInputTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
                                  BlockSize());
       if (!tmpChunk.IsNull()) {
         if (accumulateIndex == 0) {
-          mLastChunks[0].AllocateChannels(inputChannels);
+          mLastChunks[0].AllocateChannels(inputChannels, BlockSize());
         }
         AccumulateInputChunk(accumulateIndex, tmpChunk, &mLastChunks[0],
                              &downmixBuffer);

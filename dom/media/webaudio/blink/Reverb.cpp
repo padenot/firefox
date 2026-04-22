@@ -166,7 +166,7 @@ bool Reverb::initialize(const nsTArray<const float*>& impulseResponseBuffer,
   // repeatedly allocating it in the process() method. It can be bad to allocate
   // memory in a real-time thread.
   if (numResponseChannels == 4) {
-    m_tempBuffer.AllocateChannels(2);
+    m_tempBuffer.AllocateChannels(2, m_blockSize);
     WriteZeroesToAudioBlock(&m_tempBuffer, 0, m_blockSize);
   }
   return true;

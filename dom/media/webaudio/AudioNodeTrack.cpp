@@ -78,6 +78,9 @@ already_AddRefed<AudioNodeTrack> AudioNodeTrack::Create(
       new AudioNodeTrack(aEngine, aFlags, aGraph->GraphRate());
 
   uint32_t blockSize = aGraph->BlockSize();
+  for (auto& chunk : track->mLastChunks) {
+    chunk.SetNull(blockSize);
+  }
 
   if (node) {
     track->SetChannelMixingParametersImpl(node->ChannelCount(),
@@ -316,7 +319,7 @@ void AudioNodeTrack::ObtainInputBlock(AudioBlock& aTmpChunk,
     return;
   }
 
-  aTmpChunk.AllocateChannels(outputChannelCount);
+  aTmpChunk.AllocateChannels(outputChannelCount, BlockSize());
   DownmixBufferType downmixBuffer;
 
   for (uint32_t i = 0; i < inputChunkCount; ++i) {

@@ -494,14 +494,14 @@ void WorkletNodeEngine::ProcessBlocksOnPorts(AudioNodeTrack* aTrack,
   if (!mOutputChannelCount.IsEmpty()) {
     MOZ_ASSERT(mOutputChannelCount.Length() == aOutput.Length());
     for (size_t o = 0; o < aOutput.Length(); ++o) {
-      aOutput[o].AllocateChannels(mOutputChannelCount[o]);
+      aOutput[o].AllocateChannels(mOutputChannelCount[o], aTrack->BlockSize());
     }
   } else if (aInput.Length() == 1 && aOutput.Length() == 1) {
     uint32_t channelCount = std::max(aInput[0].ChannelCount(), 1U);
-    aOutput[0].AllocateChannels(channelCount);
+    aOutput[0].AllocateChannels(channelCount, aTrack->BlockSize());
   } else {
     for (AudioBlock& output : aOutput) {
-      output.AllocateChannels(1);
+      output.AllocateChannels(1, aTrack->BlockSize());
     }
   }
 

@@ -29,7 +29,7 @@ class ChannelSplitterNodeEngine final : public AudioNodeEngine {
     for (uint16_t i = 0; i < OutputCount(); ++i) {
       if (i < aInput[0].ChannelCount()) {
         // Split out existing channels
-        aOutput[i].AllocateChannels(1);
+        aOutput[i].AllocateChannels(1, aTrack->BlockSize());
         AudioBufferCopyChannelWithScale(
             static_cast<const float*>(aInput[0].mChannelData[i]),
             aInput[0].mVolume, aOutput[i].ChannelFloatsForWrite(0),

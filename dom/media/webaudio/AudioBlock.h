@@ -49,7 +49,7 @@ class AudioBlock : private AudioChunk {
     return this;
   }
 
-  void AllocateChannels(uint32_t aChannelCount);
+  void AllocateChannels(uint32_t aChannelCount, uint32_t aBlockSize);
 
   /**
    * ChannelFloatsForWrite() should only be used when the buffers have been
@@ -82,6 +82,7 @@ class AudioBlock : private AudioChunk {
   AudioBlock& operator=(const AudioChunk& aChunk) {
     SetBuffer(aChunk.mBuffer);
     mChannelData = aChunk.mChannelData;
+    mDuration = aChunk.mDuration;
     mVolume = aChunk.mVolume;
     mBufferFormat = aChunk.mBufferFormat;
     return *this;

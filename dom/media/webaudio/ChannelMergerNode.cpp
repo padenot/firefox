@@ -38,7 +38,7 @@ class ChannelMergerNodeEngine final : public AudioNodeEngine {
       return;
     }
 
-    aOutput[0].AllocateChannels(channelCount);
+    aOutput[0].AllocateChannels(channelCount, aTrack->BlockSize());
 
     for (size_t i = 0; i < channelCount; ++i) {
       float* output = aOutput[0].ChannelFloatsForWrite(i);

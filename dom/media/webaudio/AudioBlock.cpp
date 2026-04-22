@@ -24,15 +24,17 @@ class AudioBlockBuffer final : public ThreadSharedObject {
   virtual AudioBlockBuffer* AsAudioBlockBuffer() override { return this; };
 
   uint32_t ChannelsAllocated() const { return mChannelsAllocated; }
+  uint32_t BlockSize() const { return mBlockSize; }
   float* ChannelData(uint32_t aChannel) const {
     float* base =
         reinterpret_cast<float*>(((uintptr_t)(this + 1) + 15) & ~0x0F);
     ASSERT_ALIGNED16(base);
-    return base + aChannel * WEBAUDIO_BLOCK_SIZE;
+    return base + aChannel * mBlockSize;
   }
 
-  static already_AddRefed<AudioBlockBuffer> Create(uint32_t aChannelCount) {
-    CheckedInt<size_t> size = WEBAUDIO_BLOCK_SIZE;
+  static already_AddRefed<AudioBlockBuffer> Create(uint32_t aChannelCount,
+                                                   uint32_t aBlockSize) {
+    CheckedInt<size_t> size = aBlockSize;
     size *= aChannelCount;
     size *= sizeof(float);
     size += sizeof(AudioBlockBuffer);
@@ -42,7 +44,7 @@ class AudioBlockBuffer final : public ThreadSharedObject {
     }
 
     void* m = operator new(size.value());
-    RefPtr<AudioBlockBuffer> p = new (m) AudioBlockBuffer(aChannelCount);
+    RefPtr<AudioBlockBuffer> p = new (m) AudioBlockBuffer(aChannelCount, aBlockSize);
     NS_ASSERTION((reinterpret_cast<char*>(p.get() + 1) -
                   reinterpret_cast<char*>(p.get())) %
                          4 ==
@@ -86,12 +88,13 @@ class AudioBlockBuffer final : public ThreadSharedObject {
   }
 
  private:
-  explicit AudioBlockBuffer(uint32_t aChannelsAllocated)
-      : mChannelsAllocated(aChannelsAllocated) {}
+  explicit AudioBlockBuffer(uint32_t aChannelsAllocated, uint32_t aBlockSize)
+      : mChannelsAllocated(aChannelsAllocated), mBlockSize(aBlockSize) {}
   ~AudioBlockBuffer() override { MOZ_ASSERT(mDownstreamRefCount == 0); }
 
   nsAutoRefCnt mDownstreamRefCount;
   const uint32_t mChannelsAllocated;
+  const uint32_t mBlockSize;
 };
 
 AudioBlock::~AudioBlock() { ClearDownstreamMark(); }
@@ -130,15 +133,16 @@ bool AudioBlock::CanWrite() {
          !mBuffer->AsAudioBlockBuffer()->HasLastingShares();
 }
 
-void AudioBlock::AllocateChannels(uint32_t aChannelCount) {
-
+void AudioBlock::AllocateChannels(uint32_t aChannelCount, uint32_t aBlockSize) {
+  mDuration = aBlockSize;
   if (mBufferIsDownstreamRef) {
     // This is not our buffer to re-use.
     ClearDownstreamMark();
   } else if (mBuffer) {
     AudioBlockBuffer* buffer = mBuffer->AsAudioBlockBuffer();
     if (buffer && !buffer->HasLastingShares() &&
-        buffer->ChannelsAllocated() >= aChannelCount) {
+        buffer->ChannelsAllocated() >= aChannelCount &&
+        buffer->BlockSize() == aBlockSize) {
       MOZ_ASSERT(mBufferFormat == AUDIO_FORMAT_FLOAT32);
       // No need to allocate again.
       uint32_t previousChannelCount = ChannelCount();
@@ -151,7 +155,7 @@ void AudioBlock::AllocateChannels(uint32_t aChannelCount) {
     }
   }
 
-  RefPtr<AudioBlockBuffer> buffer = AudioBlockBuffer::Create(aChannelCount);
+  RefPtr<AudioBlockBuffer> buffer = AudioBlockBuffer::Create(aChannelCount, aBlockSize);
   mChannelData.SetLength(aChannelCount);
   for (uint32_t i = 0; i < aChannelCount; ++i) {
     mChannelData[i] = buffer->ChannelData(i);

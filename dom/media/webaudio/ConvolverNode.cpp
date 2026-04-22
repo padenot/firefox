@@ -105,7 +105,7 @@ class ConvolverNodeEngine final : public AudioNodeEngine {
                            uint32_t aTotalChannelCount, uint32_t aSize) {
     uint32_t inputChannelCount = aInput.ChannelCount();
     MOZ_ASSERT(inputChannelCount <= aTotalChannelCount);
-    mReverbInput.AllocateChannels(aTotalChannelCount);
+    mReverbInput.AllocateChannels(aTotalChannelCount, aSize);
     // Pre-multiply the input's volume
     for (uint32_t i = 0; i < inputChannelCount; ++i) {
       const float* src = static_cast<const float*>(aInput.mChannelData[i]);
