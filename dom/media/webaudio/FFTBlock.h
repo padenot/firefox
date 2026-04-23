@@ -5,8 +5,6 @@
 #ifndef FFTBlock_h_
 #define FFTBlock_h_
 
-#include <bit>
-
 #include "AlignedTArray.h"
 #include "AudioNodeEngine.h"
 #include "FFVPXRuntimeLinker.h"
@@ -108,9 +106,9 @@ class FFTBlock final {
     PerformFFT(paddedData.Elements());
   }
 
-  // aSize must be a power of 2
+  // aSize must be a positive even number
   void SetFFTSize(uint32_t aSize) {
-    MOZ_ASSERT(std::has_single_bit(aSize));
+    MOZ_ASSERT(aSize > 0 && aSize % 2 == 0);
     mFFTSize = aSize;
     mOutputBuffer.SetLength(aSize / 2 + 1);
     PodZero(mOutputBuffer.Elements(), aSize / 2 + 1);
