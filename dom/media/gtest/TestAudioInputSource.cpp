@@ -117,7 +117,7 @@ TEST(TestAudioInputSource, DataOutputBeforeStartAndAfterStop)
   const TrackRate sourceRate = 44100;
   const TrackRate targetRate = 48000;
 
-  const TrackTime requestFrames = 2 * MediaTrackGraph::kRenderQuantumFrames;
+  const TrackTime requestFrames = 2 * 128u;
 
   auto listener = MakeRefPtr<MockEventListener>();
   EXPECT_CALL(*listener,
@@ -164,7 +164,8 @@ TEST(TestAudioInputSource, DataOutputBeforeStartAndAfterStop)
     AudioSegment deinterleaved;
     deinterleaved.AppendFromInterleavedBuffer(record.Elements(), frames,
                                               channels, testPrincipal);
-    AudioDriftCorrection driftCorrector(sourceRate, targetRate, testPrincipal);
+    AudioDriftCorrection driftCorrector(sourceRate, targetRate, testPrincipal,
+                                        128u);
     AudioSegment expectedSegment = driftCorrector.RequestFrames(
         deinterleaved, static_cast<uint32_t>(requestFrames));
 

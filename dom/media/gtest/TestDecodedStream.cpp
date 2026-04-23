@@ -90,7 +90,7 @@ class TestDecodedStream : public Test {
         mGraph(MediaTrackGraphImpl::GetInstance(
             MediaTrackGraph::SYSTEM_THREAD_DRIVER, /*Window ID*/ 1, kRate,
             nullptr, GetMainThreadSerialEventTarget(),
-            MediaTrackGraph::kRenderQuantumFrames)),
+            128u)),
         mDummyTrack(new nsMainThreadPtrHolder<SharedDummyTrack>(
             __func__, new SharedDummyTrack(
                           mGraph->CreateSourceTrack(MediaSegment::AUDIO)))),

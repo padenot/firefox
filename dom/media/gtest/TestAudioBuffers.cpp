@@ -15,7 +15,7 @@ void test_for_number_of_channels(const uint32_t channels) {
   const uint32_t samples = channels * FRAMES;
 
   mozilla::AudioCallbackBufferWrapper<float> mBuffer(channels);
-  mozilla::SpillBuffer<float, 128> b(channels);
+  mozilla::SpillBuffer<float> b(channels, 128);
   std::vector<float> fromCallback(samples, 0.0);
   std::vector<float> other(samples, 1.0);
   mozilla::AudioChunk chunk;

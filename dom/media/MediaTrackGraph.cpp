@@ -791,7 +791,8 @@ void MediaTrackGraphImpl::OpenAudioInputImpl(DeviceInputTrack* aTrack) {
       nonNative->GenerateSourceId(), nonNative->mDeviceId,
       AudioInputChannelCount(nonNative->mDeviceId),
       AudioInputDevicePreference(nonNative->mDeviceId) == AudioInputType::Voice,
-      nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
+      nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate(),
+      BlockSize()));
 }
 
 void MediaTrackGraphImpl::OpenAudioInput(DeviceInputTrack* aTrack) {
@@ -1095,7 +1096,8 @@ void MediaTrackGraphImpl::ReevaluateInputDevice(CubebUtils::AudioDeviceID aID) {
         MakeRefPtr<AudioInputSourceListener>(nonNative),
         nonNative->GenerateSourceId(), aID, AudioInputChannelCount(aID),
         AudioInputDevicePreference(aID) == AudioInputType::Voice,
-        nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
+        nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate(),
+        BlockSize()));
   }
 }
 
@@ -2468,7 +2470,7 @@ void MediaTrackGraphImpl::IncrementOutputDeviceRefCnt(
       MediaTrackGraph::AUDIO_THREAD_DRIVER, mWindowID, sampleRate, aDeviceID,
       GetMainThreadSerialEventTarget(), mBlockSize);
   // CreateCrossGraphReceiver wants the sample rate of this graph.
-  RefPtr receiver = newGraph->CreateCrossGraphReceiver(mSampleRate);
+  RefPtr receiver = newGraph->CreateCrossGraphReceiver(mSampleRate, newGraph->BlockSize());
   receiver->AddAudioOutput(nullptr, aDeviceID, sampleRate);
   mOutputDeviceRefCnts.EmplaceBack(
       DeviceReceiverAndCount{aDeviceID, receiver, 1});
@@ -3730,9 +3732,9 @@ CrossGraphTransmitter* MediaTrackGraph::CreateCrossGraphTransmitter(
 }
 
 CrossGraphReceiver* MediaTrackGraph::CreateCrossGraphReceiver(
-    TrackRate aTransmitterRate) {
+    TrackRate aTransmitterRate, uint32_t aBlockSize) {
   CrossGraphReceiver* track =
-      new CrossGraphReceiver(GraphRate(), aTransmitterRate);
+      new CrossGraphReceiver(GraphRate(), aTransmitterRate, aBlockSize);
   AddTrack(track);
   return track;
 }

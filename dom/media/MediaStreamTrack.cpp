@@ -206,7 +206,7 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
         mInputTrack->IsDestroyed()
             ? MediaTrackGraph::GetInstanceIfExists(
                   mWindow, mInputTrack->mSampleRate,
-                  MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, MediaTrackGraph::kRenderQuantumFrames)
+                  MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, 128u)
             : mInputTrack->Graph();
     MOZ_DIAGNOSTIC_ASSERT(graph,
                           "A destroyed input track is only expected when "

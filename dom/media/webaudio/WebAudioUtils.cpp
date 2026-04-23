@@ -33,7 +33,7 @@ int WebAudioUtils::SpeexResamplerProcess(SpeexResamplerState* aResampler,
                                          uint32_t aChannel, const int16_t* aIn,
                                          uint32_t* aInLen, float* aOut,
                                          uint32_t* aOutLen) {
-  AutoTArray<AudioDataValue, 4 * MediaTrackGraph::kRenderQuantumFrames> tmp;
+  AutoTArray<AudioDataValue, 4 * AudioContext::DefaultRenderQuantumSize> tmp;
   tmp.SetLength(*aInLen);
   ConvertAudioSamples(aIn, tmp.Elements(), *aInLen);
   int result = speex_resampler_process_float(
@@ -45,8 +45,8 @@ int WebAudioUtils::SpeexResamplerProcess(SpeexResamplerState* aResampler,
                                          uint32_t aChannel, const int16_t* aIn,
                                          uint32_t* aInLen, int16_t* aOut,
                                          uint32_t* aOutLen) {
-  AutoTArray<AudioDataValue, 4 * MediaTrackGraph::kRenderQuantumFrames> tmp1;
-  AutoTArray<AudioDataValue, 4 * MediaTrackGraph::kRenderQuantumFrames> tmp2;
+  AutoTArray<AudioDataValue, 4 * AudioContext::DefaultRenderQuantumSize> tmp1;
+  AutoTArray<AudioDataValue, 4 * AudioContext::DefaultRenderQuantumSize> tmp2;
   tmp1.SetLength(*aInLen);
   tmp2.SetLength(*aOutLen);
   ConvertAudioSamples(aIn, tmp1.Elements(), *aInLen);

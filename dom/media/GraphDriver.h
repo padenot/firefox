@@ -728,12 +728,11 @@ class AudioCallbackDriver final : public GraphDriver,
 
   /* MediaTrackGraphs are always down/up mixed to output channels. */
   const uint32_t mOutputChannelCount;
-  /* The size of this buffer comes from the fact that some audio backends can
-   * call back with a number of frames lower than one block (128 frames), so we
-   * need to keep at most two block in the SpillBuffer, because we always round
+  /* Some audio backends can call back with fewer frames than one block, so we
+   * need to keep at most two blocks in the SpillBuffer since we always round
    * up to block boundaries during an iteration.
    * This is only ever accessed on the audio callback thread. */
-  SpillBuffer<AudioDataValue, 256> mScratchBuffer;
+  SpillBuffer<AudioDataValue> mScratchBuffer;
   /* Wrapper to ensure we write exactly the number of frames we need in the
    * audio buffer cubeb passes us. This is only ever accessed on the audio
    * callback thread. */

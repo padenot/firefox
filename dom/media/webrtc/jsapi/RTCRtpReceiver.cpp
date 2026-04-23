@@ -147,7 +147,7 @@ RTCRtpReceiver::RTCRtpReceiver(
       isAudio ? MediaTrackGraph::AUDIO_THREAD_DRIVER
               : MediaTrackGraph::SYSTEM_THREAD_DRIVER,
       aWindow, MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
-      MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, MediaTrackGraph::kRenderQuantumFrames);
+      MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, 128u);
 
   if (isAudio) {
     auto* source = graph->CreateSourceTrack(MediaSegment::AUDIO);

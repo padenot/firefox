@@ -28,7 +28,7 @@ UniquePtr<CrossGraphPort> CrossGraphPort::Connect(
   }
 
   RefPtr<CrossGraphReceiver> receiver = aPartnerGraph->CreateCrossGraphReceiver(
-      aStreamTrack->Graph()->GraphRate());
+      aStreamTrack->Graph()->GraphRate(), aPartnerGraph->BlockSize());
 
   RefPtr<CrossGraphTransmitter> transmitter =
       aStreamTrack->Graph()->CreateCrossGraphTransmitter(receiver);
@@ -122,10 +122,12 @@ void CrossGraphTransmitter::ProcessInput(GraphTime aFrom, GraphTime aTo,
 /** CrossGraphReceiver **/
 
 CrossGraphReceiver::CrossGraphReceiver(TrackRate aSampleRate,
-                                       TrackRate aTransmitterRate)
+                                       TrackRate aTransmitterRate,
+                                       uint32_t aBlockSize)
     : ProcessedMediaTrack(aSampleRate, MediaSegment::AUDIO,
                           static_cast<MediaSegment*>(new AudioSegment())),
-      mDriftCorrection(aTransmitterRate, aSampleRate, PRINCIPAL_HANDLE_NONE) {}
+      mDriftCorrection(aTransmitterRate, aSampleRate, PRINCIPAL_HANDLE_NONE,
+                       aBlockSize) {}
 
 uint32_t CrossGraphReceiver::NumberOfChannels() const {
   return GetData<AudioSegment>()->MaxChannelCount();

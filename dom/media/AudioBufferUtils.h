@@ -144,16 +144,17 @@ class AudioCallbackBufferWrapper {
  * because of different rounding constraints, to be used the next time the audio
  * backend calls back.
  */
-template <typename T, uint32_t BLOCK_SIZE>
+template <typename T>
 class SpillBuffer {
  public:
-  SpillBuffer() : mBuffer(nullptr), mPosition(0), mChannels(0) {}
+  SpillBuffer() : mBuffer(nullptr), mPosition(0), mChannels(0), mBlockSize(0) {}
 
-  explicit SpillBuffer(uint32_t aChannels)
-      : mPosition(0), mChannels(aChannels) {
+  SpillBuffer(uint32_t aChannels, uint32_t aBlockSize)
+      : mPosition(0), mChannels(aChannels), mBlockSize(aBlockSize) {
     MOZ_ASSERT(aChannels);
-    mBuffer = MakeUnique<T[]>(BLOCK_SIZE * mChannels);
-    PodZero(mBuffer.get(), BLOCK_SIZE * mChannels);
+    MOZ_ASSERT(aBlockSize);
+    mBuffer = MakeUnique<T[]>(mBlockSize * mChannels);
+    PodZero(mBuffer.get(), mBlockSize * mChannels);
   }
 
   SpillBuffer& operator=(SpillBuffer& aOther) {
@@ -164,6 +165,7 @@ class SpillBuffer {
 
     mPosition = aOther.mPosition;
     mChannels = aOther.mChannels;
+    mBlockSize = aOther.mBlockSize;
     mBuffer = std::move(aOther.mBuffer);
 
     return *this;
@@ -188,7 +190,7 @@ class SpillBuffer {
     // data down
     if (mPosition > 0) {
       MOZ_ASSERT(FramesToSamples(mChannels, framesToWrite) + mPosition <=
-                 BLOCK_SIZE * mChannels);
+                 mBlockSize * mChannels);
       PodMove(mBuffer.get(),
               mBuffer.get() + FramesToSamples(mChannels, framesToWrite),
               mPosition);
@@ -201,10 +203,10 @@ class SpillBuffer {
   uint32_t Fill(const AudioChunk& aInput) {
     uint32_t framesToWrite =
         std::min(static_cast<uint32_t>(aInput.mDuration),
-                 BLOCK_SIZE - SamplesToFrames(mChannels, mPosition));
+                 mBlockSize - SamplesToFrames(mChannels, mPosition));
 
     MOZ_ASSERT(FramesToSamples(mChannels, framesToWrite) + mPosition <=
-               BLOCK_SIZE * mChannels);
+               mBlockSize * mChannels);
     InterleaveAndConvertBuffer(
         aInput.ChannelData<T>().Elements(), framesToWrite, aInput.mVolume,
         aInput.ChannelCount(), mBuffer.get() + mPosition);
@@ -221,6 +223,7 @@ class SpillBuffer {
    * amount of buffer filled when emptying. */
   uint32_t mPosition;
   uint32_t mChannels;
+  uint32_t mBlockSize;
 };
 
 }  // namespace mozilla

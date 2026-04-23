@@ -28,12 +28,12 @@ static media::TimeUnit DesiredBuffering(media::TimeUnit aSourceLatency) {
 
 AudioDriftCorrection::AudioDriftCorrection(
     uint32_t aSourceRate, uint32_t aTargetRate,
-    const PrincipalHandle& aPrincipalHandle)
+    const PrincipalHandle& aPrincipalHandle, uint32_t aBlockSize)
     : mTargetRate(aTargetRate),
       mDriftController(MakeUnique<DriftController>(aSourceRate, aTargetRate,
                                                    mDesiredBuffering)),
       mResampler(MakeUnique<AudioResampler>(aSourceRate, aTargetRate, 0,
-                                            aPrincipalHandle)) {}
+                                            aPrincipalHandle, aBlockSize)) {}
 
 AudioDriftCorrection::~AudioDriftCorrection() = default;
 

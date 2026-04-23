@@ -172,7 +172,7 @@ nsresult CanvasCaptureMediaStream::Init(const dom::Optional<double>& aFPS,
   MediaTrackGraph* graph = MediaTrackGraph::GetInstance(
       MediaTrackGraph::SYSTEM_THREAD_DRIVER, GetOwnerWindow(),
       MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
-      MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, MediaTrackGraph::kRenderQuantumFrames);
+      MediaTrackGraph::DEFAULT_OUTPUT_DEVICE, 128u);
   SourceMediaTrack* source = graph->CreateSourceTrack(MediaSegment::VIDEO);
   PrincipalHandle principalHandle = MakePrincipalHandle(aPrincipal);
   if (!aFPS.WasPassed()) {

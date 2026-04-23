@@ -10,9 +10,10 @@ namespace mozilla {
 
 AudioResampler::AudioResampler(uint32_t aInRate, uint32_t aOutRate,
                                uint32_t aInputPreBufferFrameCount,
-                               const PrincipalHandle& aPrincipalHandle)
+                               const PrincipalHandle& aPrincipalHandle,
+                               uint32_t aChunkCapacity)
     : mResampler(aInRate, aOutRate, aInputPreBufferFrameCount),
-      mOutputChunks(aOutRate / 10, STEREO, aPrincipalHandle) {}
+      mOutputChunks(aOutRate / 10, STEREO, aPrincipalHandle, aChunkCapacity) {}
 
 void AudioResampler::AppendInput(const AudioSegment& aInSegment) {
   MOZ_ASSERT(aInSegment.GetDuration());

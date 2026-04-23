@@ -44,7 +44,7 @@ class CrossGraphTransmitter : public ProcessedMediaTrack {
  */
 class CrossGraphReceiver : public ProcessedMediaTrack {
  public:
-  CrossGraphReceiver(TrackRate aSampleRate, TrackRate aTransmitterRate);
+  CrossGraphReceiver(TrackRate aSampleRate, TrackRate aTransmitterRate, uint32_t aBlockSize);
   CrossGraphReceiver* AsCrossGraphReceiver() override { return this; }
 
   uint32_t NumberOfChannels() const override;

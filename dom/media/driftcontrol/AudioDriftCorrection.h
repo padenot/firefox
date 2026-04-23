@@ -34,7 +34,8 @@ class DriftController;
 class AudioDriftCorrection final {
  public:
   AudioDriftCorrection(uint32_t aSourceRate, uint32_t aTargetRate,
-                       const PrincipalHandle& aPrincipalHandle);
+                       const PrincipalHandle& aPrincipalHandle,
+                       uint32_t aBlockSize);
 
   ~AudioDriftCorrection();
 

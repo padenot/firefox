@@ -1146,7 +1146,7 @@ class MediaTrackGraph {
 
   CrossGraphTransmitter* CreateCrossGraphTransmitter(
       CrossGraphReceiver* aReceiver);
-  CrossGraphReceiver* CreateCrossGraphReceiver(TrackRate aTransmitterRate);
+  CrossGraphReceiver* CreateCrossGraphReceiver(TrackRate aTransmitterRate, uint32_t aBlockSize);
 
   /**
    * Add a new track to the graph.  Main thread.

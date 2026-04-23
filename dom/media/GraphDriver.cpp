@@ -546,7 +546,7 @@ void AudioCallbackDriver::Init(const nsCString& aStreamName) {
 
   mBuffer = AudioCallbackBufferWrapper<AudioDataValue>(mOutputChannelCount);
   mScratchBuffer =
-      SpillBuffer<AudioDataValue, 256>(mOutputChannelCount);
+      SpillBuffer<AudioDataValue>(mOutputChannelCount, Graph()->BlockSize() * 2);
 
   output.channels = mOutputChannelCount;
   AudioConfig::ChannelLayout::ChannelMap channelMap =

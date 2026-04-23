@@ -35,7 +35,8 @@ class AudioResampler final {
  public:
   AudioResampler(uint32_t aInRate, uint32_t aOutRate,
                  uint32_t aInputPreBufferFrameCount,
-                 const PrincipalHandle& aPrincipalHandle);
+                 const PrincipalHandle& aPrincipalHandle,
+                 uint32_t aChunkCapacity = 128u);
 
   /**
    * Append input data into the resampler internal buffer. Copy/move of the

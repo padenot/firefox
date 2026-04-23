@@ -283,7 +283,8 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 
   WEB_AUDIO_API_LOG("AudioContext sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
-      new AudioContext(window, false, 2, 0, sampleRate, MediaTrackGraph::kRenderQuantumFrames);
+\\\\\\\        to: rnmwvpzk 13b24c61 "Bug 2034508 - Expose renderQuantumSize and renderSizeHint. r?" (rebased revision)
+      new AudioContext(window, false, 2, 0, sampleRate, renderQuantumSize);
 
   RegisterWeakMemoryReporter(object);
 
@@ -342,7 +343,7 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 
   RefPtr<AudioContext> object =
       new AudioContext(window, true, aNumberOfChannels, aLength, aSampleRate,
-                       MediaTrackGraph::kRenderQuantumFrames);
+                       AudioContext::DefaultRenderQuantumSize);
 
   RegisterWeakMemoryReporter(object);
 
