@@ -89,6 +89,8 @@ support-files = [
 
 ["test_OfflineAudioContext.html"]
 
+["test_renderQuantumSize.html"]
+
 ["test_ScriptProcessorCollected1.html"]
 
 ["test_WebAudioMemoryReporting.html"]

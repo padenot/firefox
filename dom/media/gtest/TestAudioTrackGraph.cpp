@@ -3610,6 +3610,36 @@ TEST(TestAudioTrackGraph, GraphRemovalInGetInstance)
   (void)WaitFor(cubeb->StreamDestroyEvent());
 }
 
+TEST(MediaTrackGraph, RoundUpToAudioBlock)
+{
+  using Impl = MediaTrackGraphImpl;
+  // RoundUpToEndOfAudioBlock: returns aTime unchanged when already aligned,
+  // otherwise rounds up to the next block boundary.
+  for (uint32_t bs : {64u, 256u, 512u}) {
+    EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(0, bs), GraphTime(0));
+    EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(bs, bs), GraphTime(bs));
+    EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(2 * bs, bs), GraphTime(2 * bs));
+    EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(1, bs), GraphTime(bs));
+    EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(bs - 1, bs), GraphTime(bs));
+    EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(bs + 1, bs), GraphTime(2 * bs));
+  }
+  // With bs=1 every integer is aligned.
+  EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(0, 1), GraphTime(0));
+  EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(1, 1), GraphTime(1));
+  EXPECT_EQ(Impl::RoundUpToEndOfAudioBlock(5, 1), GraphTime(5));
+
+  // RoundUpToNextAudioBlock: always advances to the next block boundary.
+  for (uint32_t bs : {64u, 256u, 512u}) {
+    EXPECT_EQ(Impl::RoundUpToNextAudioBlock(0, bs), GraphTime(bs));
+    EXPECT_EQ(Impl::RoundUpToNextAudioBlock(bs, bs), GraphTime(2 * bs));
+    EXPECT_EQ(Impl::RoundUpToNextAudioBlock(bs - 1, bs), GraphTime(bs));
+    EXPECT_EQ(Impl::RoundUpToNextAudioBlock(bs + 1, bs), GraphTime(2 * bs));
+  }
+  // With bs=1 it always advances by 1.
+  EXPECT_EQ(Impl::RoundUpToNextAudioBlock(0, 1), GraphTime(1));
+  EXPECT_EQ(Impl::RoundUpToNextAudioBlock(4, 1), GraphTime(5));
+}
+
 #undef InvokeAsync
 #undef DispatchFunction
 #undef DispatchMethod

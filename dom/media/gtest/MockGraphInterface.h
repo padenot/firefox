@@ -18,6 +18,7 @@ class MockGraphInterface : public GraphInterface {
   explicit MockGraphInterface(TrackRate aSampleRate)
       : mSampleRate(aSampleRate) {}
   uint32_t BlockSize() const override { return 128u; }
+  bool ShouldResistFingerprinting() const override { return false; }
   MOCK_METHOD(void, NotifyInputStopped, ());
   MOCK_METHOD(void, NotifyInputData,
               (const AudioDataValue*, size_t, TrackRate, uint32_t, uint32_t));

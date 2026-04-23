@@ -1,0 +1,98 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Test renderQuantumSize and renderSizeHint</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script type="text/javascript" src="webaudio.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
+</head>
+<body>
+<pre id="test">
+<script class="testbody" type="text/javascript">
+
+SimpleTest.waitForExplicitFinish();
+
+async function runTests() {
+  // Default renderQuantumSize is 128
+  {
+    const ctx = new AudioContext();
+    is(ctx.renderQuantumSize, 128, "AudioContext default renderQuantumSize is 128");
+    ctx.close();
+  }
+  {
+    const ctx = new OfflineAudioContext({numberOfChannels: 1, length: 1000, sampleRate: 44100});
+    is(ctx.renderQuantumSize, 128, "OfflineAudioContext default renderQuantumSize is 128");
+  }
+
+  // renderSizeHint "default" → 128
+  {
+    const ctx = new AudioContext({renderSizeHint: "default"});
+    is(ctx.renderQuantumSize, 128, "AudioContext renderSizeHint 'default' gives 128");
+    ctx.close();
+  }
+
+  // renderSizeHint integer for OfflineAudioContext
+  {
+    const ctx = new OfflineAudioContext(
+        {numberOfChannels: 1, length: 512, sampleRate: 44100, renderSizeHint: 256});
+    is(ctx.renderQuantumSize, 256, "OfflineAudioContext renderSizeHint 256 respected");
+
+    // Rendering with a 256-frame quantum should produce exactly `length` frames.
+    const buf = await ctx.startRendering();
+    is(buf.length, 512, "Rendered buffer has correct length at non-default quantum");
+  }
+
+  // NotSupportedError for invalid renderSizeHint
+  {
+    let threw = false;
+    try {
+      new AudioContext({renderSizeHint: 0});
+    } catch (e) {
+      threw = true;
+      is(e.name, "NotSupportedError", "renderSizeHint 0 throws NotSupportedError");
+    }
+    ok(threw, "renderSizeHint 0 throws");
+  }
+  {
+    const maxSize = Math.floor(6 * 44100);
+    let threw = false;
+    try {
+      new AudioContext({sampleRate: 44100, renderSizeHint: maxSize + 1});
+    } catch (e) {
+      threw = true;
+      is(e.name, "NotSupportedError", "renderSizeHint > 6s boundary throws NotSupportedError");
+    }
+    ok(threw, "renderSizeHint > 6s boundary throws");
+  }
+
+  // RFP coercion: renderSizeHint integer is ignored, always 128
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["privacy.fingerprintingProtection", true],
+      ["privacy.fingerprintingProtection.overrides", "-AllTargets,+AudioContext"],
+    ],
+  });
+  {
+    const ctx = new AudioContext({renderSizeHint: 256});
+    is(ctx.renderQuantumSize, 128,
+       "renderSizeHint ignored in RFP mode, renderQuantumSize is 128");
+    ctx.close();
+  }
+  {
+    // "hardware" is also ignored in RFP mode
+    const ctx = new AudioContext({renderSizeHint: "hardware"});
+    is(ctx.renderQuantumSize, 128,
+       "renderSizeHint 'hardware' ignored in RFP mode, renderQuantumSize is 128");
+    ctx.close();
+  }
+  await SpecialPowers.popPrefEnv();
+
+  SimpleTest.finish();
+}
+
+runTests();
+
+</script>
+</pre>
+</body>
+</html>
