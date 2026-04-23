@@ -132,6 +132,11 @@ struct AudioContextOptions;
 class AudioContext final : public DOMEventTargetHelper,
                            public nsIMemoryReporter,
                            public RelativeTimeline {
+ public:
+  // Default render quantum size per the Web Audio API spec.
+  static constexpr uint32_t DefaultRenderQuantumSize = 128u;
+
+ private:
   AudioContext(nsPIDOMWindowInner* aParentWindow, bool aIsOffline,
                uint32_t aNumberOfChannels, uint32_t aLength, float aSampleRate,
                uint32_t aRenderQuantumSize);

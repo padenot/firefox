@@ -13,6 +13,7 @@ dictionary OfflineAudioContextOptions {
              unsigned long numberOfChannels = 1;
     required unsigned long length;
     required float         sampleRate;
+             (AudioContextRenderSizeCategory or unsigned long) renderSizeHint = "default";
 };
 
 [Pref="dom.webaudio.enabled",

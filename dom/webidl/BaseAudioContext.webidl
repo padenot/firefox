@@ -18,6 +18,8 @@ enum AudioContextState {
     "closed"
 };
 
+enum AudioContextRenderSizeCategory { "default", "hardware" };
+
 [Exposed=Window]
 interface BaseAudioContext : EventTarget {
     readonly        attribute AudioDestinationNode destination;
@@ -25,6 +27,7 @@ interface BaseAudioContext : EventTarget {
     readonly        attribute double               currentTime;
     readonly        attribute AudioListener        listener;
     readonly        attribute AudioContextState    state;
+    readonly        attribute unsigned long        renderQuantumSize;
     [Throws, SameObject, SecureContext]
     readonly        attribute AudioWorklet         audioWorklet;
 

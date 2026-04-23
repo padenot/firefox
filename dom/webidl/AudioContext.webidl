@@ -11,6 +11,7 @@
 
 dictionary AudioContextOptions {
              float        sampleRate;
+             (AudioContextRenderSizeCategory or unsigned long) renderSizeHint = "default";
 };
 
 dictionary AudioTimestamp {

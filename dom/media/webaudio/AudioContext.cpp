@@ -11,6 +11,7 @@
 #include "AudioListener.h"
 #include "AudioNodeTrack.h"
 #include "AudioStream.h"
+#include "CubebUtils.h"
 #include "AudioWorkletImpl.h"
 #include "AutoplayPolicy.h"
 #include "BiquadFilterNode.h"
@@ -281,9 +282,41 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
                          ? aOptions.mSampleRate.Value()
                          : MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE;
 
+  bool shouldRFP = window->AsGlobal()->ShouldResistFingerprinting(RFPTarget::AudioContext);
+  float resolvedSampleRate =
+      sampleRate != 0.0f
+          ? sampleRate
+          : static_cast<float>(CubebUtils::PreferredSampleRate(
+                window->AsGlobal()->ShouldResistFingerprinting(
+                    RFPTarget::AudioSampleRate)));
+
+  uint32_t renderQuantumSize = AudioContext::DefaultRenderQuantumSize;
+  if (aOptions.mRenderSizeHint.IsUnsignedLong()) {
+    uint32_t requested = aOptions.mRenderSizeHint.GetAsUnsignedLong();
+    uint32_t maxSize = static_cast<uint32_t>(6.0 * resolvedSampleRate);
+    if (requested < 1 || requested > maxSize) {
+      aRv.ThrowNotSupportedError(
+          nsPrintfCString("renderSizeHint %u is not in the valid range [1, %u]",
+                          requested, maxSize));
+      return nullptr;
+    }
+    if (!shouldRFP) {
+      renderQuantumSize = requested;
+    }
+  } else if (!shouldRFP &&
+             aOptions.mRenderSizeHint.GetAsAudioContextRenderSizeCategory() ==
+                 AudioContextRenderSizeCategory::Hardware) {
+    cubeb_stream_params params = {};
+    params.rate = static_cast<uint32_t>(resolvedSampleRate);
+    params.format = CUBEB_SAMPLE_FLOAT32NE;
+    params.channels = 2;
+    params.layout = CUBEB_LAYOUT_STEREO;
+    params.prefs = CUBEB_STREAM_PREF_NONE;
+    renderQuantumSize = CubebUtils::GetCubebMTGLatencyInFrames(&params);
+  }
+
   WEB_AUDIO_API_LOG("AudioContext sampleRate={}", sampleRate);
   RefPtr<AudioContext> object =
-\\\\\\\        to: rnmwvpzk 13b24c61 "Bug 2034508 - Expose renderQuantumSize and renderSizeHint. r?" (rebased revision)
       new AudioContext(window, false, 2, 0, sampleRate, renderQuantumSize);
 
   RegisterWeakMemoryReporter(object);
@@ -295,8 +328,56 @@ already_AddRefed<AudioContext> AudioContext::Constructor(
 already_AddRefed<AudioContext> AudioContext::Constructor(
     const GlobalObject& aGlobal, const OfflineAudioContextOptions& aOptions,
     ErrorResult& aRv) {
-  return Constructor(aGlobal, aOptions.mNumberOfChannels, aOptions.mLength,
-                     aOptions.mSampleRate, aRv);
+  nsCOMPtr<nsPIDOMWindowInner> window =
+      do_QueryInterface(aGlobal.GetAsSupports());
+  if (!window) {
+    aRv.Throw(NS_ERROR_FAILURE);
+    return nullptr;
+  }
+  if (!CheckFullyActive(window, aRv)) {
+    return nullptr;
+  }
+
+  WEB_AUDIO_API_LOG(
+      "OfflineAudioContext numberOfChannels={} length={} sampleRate={}",
+      aOptions.mNumberOfChannels, aOptions.mLength, aOptions.mSampleRate);
+  if (aOptions.mNumberOfChannels == 0 ||
+      aOptions.mNumberOfChannels > WebAudioUtils::MaxChannelCount) {
+    aRv.ThrowNotSupportedError(nsPrintfCString(
+        "%u is not a valid channel count", aOptions.mNumberOfChannels));
+    return nullptr;
+  }
+  if (aOptions.mLength == 0) {
+    aRv.ThrowNotSupportedError("Length must be nonzero");
+    return nullptr;
+  }
+  if (aOptions.mSampleRate < WebAudioUtils::MinSampleRate ||
+      aOptions.mSampleRate > WebAudioUtils::MaxSampleRate) {
+    aRv.ThrowNotSupportedError(nsPrintfCString(
+        "Sample rate %g is not in the range [%u, %u]", aOptions.mSampleRate,
+        WebAudioUtils::MinSampleRate, WebAudioUtils::MaxSampleRate));
+    return nullptr;
+  }
+
+  uint32_t renderQuantumSize = AudioContext::DefaultRenderQuantumSize;
+  if (aOptions.mRenderSizeHint.IsUnsignedLong()) {
+    uint32_t requested = aOptions.mRenderSizeHint.GetAsUnsignedLong();
+    uint32_t maxSize = static_cast<uint32_t>(6.0 * aOptions.mSampleRate);
+    if (requested < 1 || requested > maxSize) {
+      aRv.ThrowNotSupportedError(
+          nsPrintfCString("renderSizeHint %u is not in the valid range [1, %u]",
+                          requested, maxSize));
+      return nullptr;
+    }
+    renderQuantumSize = requested;
+  }
+  // "default" or "hardware" both map to AudioContext::DefaultRenderQuantumSize for offline.
+
+  RefPtr<AudioContext> object =
+      new AudioContext(window, true, aOptions.mNumberOfChannels, aOptions.mLength,
+                       aOptions.mSampleRate, renderQuantumSize);
+  RegisterWeakMemoryReporter(object);
+  return object.forget();
 }
 
 /* static */
