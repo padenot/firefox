@@ -45,6 +45,8 @@ class AudioWorkletGlobalScope final : public WorkletGlobalScope {
 
   float SampleRate() const;
 
+  uint32_t RenderQuantumSize() const;
+
   MessagePort* Port() const { return mPort; };
 
   void SetPort(MessagePort* aPort) { mPort = aPort; }

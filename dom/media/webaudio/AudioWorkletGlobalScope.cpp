@@ -214,6 +214,10 @@ float AudioWorkletGlobalScope::SampleRate() const {
   return static_cast<float>(Impl()->DestinationTrack()->mSampleRate);
 }
 
+uint32_t AudioWorkletGlobalScope::RenderQuantumSize() const {
+  return Impl()->DestinationTrack()->BlockSize();
+}
+
 AudioParamDescriptorMap AudioWorkletGlobalScope::DescriptorsFromJS(
     JSContext* aCx, JS::ForOfIterator* aIter, ErrorResult& aRv) {
   AudioParamDescriptorMap res;
