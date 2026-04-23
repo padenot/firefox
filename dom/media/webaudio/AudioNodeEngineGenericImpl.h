@@ -144,3 +144,186 @@ void Engine<Arch>::AudioBufferInPlaceScale(float* aBlock, float* aScale,
 };
 
 template <class Arch>
+void Engine<Arch>::AudioBufferPanStereoToStereo(const float* aInputL,
+                                               const float* aInputR,
+                                               float aGainL, float aGainR,
+                                               bool aIsOnTheLeft,
+                                               float* aOutputL, float* aOutputR,
+                                               uint32_t aSize) {
+  MOZ_ASSERT(is_aligned<Arch>(aInputL), "aInputL is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aInputR), "aInputR is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aOutputL), "aOutputL is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aOutputR), "aOutputR is aligned");
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
+             "requires tail processing");
+
+  xsimd::batch<float, Arch> vgainl(aGainL);
+  xsimd::batch<float, Arch> vgainr(aGainR);
+
+  if (aIsOnTheLeft) {
+    MOZ_UNROLL(2)
+    for (unsigned i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
+      auto vinl = xsimd::batch<float, Arch>::load_aligned(&aInputL[i]);
+      auto vinr = xsimd::batch<float, Arch>::load_aligned(&aInputR[i]);
+
+      /* left channel : aOutputL  = aInputL + aInputR * gainL */
+      auto vout = xsimd::fma(vinr, vgainl, vinl);
+      vout.store_aligned(&aOutputL[i]);
+
+      /* right channel : aOutputR = aInputR * gainR */
+      auto vscaled = vinr * vgainr;
+      vscaled.store_aligned(&aOutputR[i]);
+    }
+  } else {
+    MOZ_UNROLL(2)
+    for (unsigned i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
+      auto vinl = xsimd::batch<float, Arch>::load_aligned(&aInputL[i]);
+      auto vinr = xsimd::batch<float, Arch>::load_aligned(&aInputR[i]);
+
+      /* left channel : aInputL * gainL */
+      auto vscaled = vinl * vgainl;
+      vscaled.store_aligned(&aOutputL[i]);
+
+      /* right channel: aOutputR = aInputR + aInputL * gainR */
+      auto vout = xsimd::fma(vinl, vgainr, vinr);
+      vout.store_aligned(&aOutputR[i]);
+    }
+  }
+};
+
+template <class Arch>
+void Engine<Arch>::BufferComplexMultiply(const float* aInput,
+                                         const float* aScale, float* aOutput,
+                                         uint32_t aSize) {
+  MOZ_ASSERT(is_aligned<Arch>(aInput), "aInput is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aOutput), "aOutput is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aScale), "aScale is aligned");
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
+             "requires tail processing");
+
+  MOZ_UNROLL(2)
+  for (unsigned i = 0; i < aSize * 2;
+       i += 2 * xsimd::batch<std::complex<float>, Arch>::size) {
+    auto in1 = xsimd::batch<std::complex<float>, Arch>::load_aligned(
+        reinterpret_cast<const std::complex<float>*>(&aInput[i]));
+    auto in2 = xsimd::batch<std::complex<float>, Arch>::load_aligned(
+        reinterpret_cast<const std::complex<float>*>(&aScale[i]));
+    auto out = in1 * in2;
+    out.store_aligned(reinterpret_cast<std::complex<float>*>(&aOutput[i]));
+  }
+};
+
+template <class Arch>
+float Engine<Arch>::AudioBufferSumOfSquares(const float* aInput,
+                                            uint32_t aLength) {
+  float sum = 0.f;
+
+  if constexpr (Arch::requires_alignment()) {
+    while (!is_aligned<Arch>(aInput)) {
+      if (!aLength) {
+        return sum;
+      }
+      sum += *aInput * *aInput;
+      ++aInput;
+      --aLength;
+    }
+  }
+
+  MOZ_ASSERT(is_aligned<Arch>(aInput), "aInput is aligned");
+
+  constexpr uint32_t unroll_factor = 4;
+  xsimd::batch<float, Arch> accs[unroll_factor] = {0.f, 0.f, 0.f, 0.f};
+
+  uint32_t vLength =
+      aLength & ~(unroll_factor * xsimd::batch<float, Arch>::size - 1);
+
+  for (uint32_t i = 0; i < vLength;
+       i += unroll_factor * xsimd::batch<float, Arch>::size) {
+    MOZ_UNROLL(4)
+    for (uint32_t j = 0; j < unroll_factor; ++j) {
+      auto in = xsimd::batch<float, Arch>::load_aligned(
+          &aInput[i + xsimd::batch<float, Arch>::size * j]);
+      accs[j] = xsimd::fma(in, in, accs[j]);
+    }
+  }
+
+  sum += reduce_add((accs[0] + accs[1]) + (accs[2] + accs[3]));
+  for (uint32_t i = vLength; i < aLength; ++i) sum += aInput[i] * aInput[i];
+  return sum;
+};
+
+template <class Arch>
+void Engine<Arch>::NaNToZeroInPlace(float* aSamples, size_t aCount) {
+  if constexpr (Arch::requires_alignment()) {
+    while (!is_aligned<Arch>(aSamples)) {
+      if (!aCount) {
+        return;
+      }
+      if (*aSamples != *aSamples) {
+        *aSamples = 0.0;
+      }
+      ++aSamples;
+      --aCount;
+    }
+  }
+
+  MOZ_ASSERT(is_aligned<Arch>(aSamples), "aSamples is aligned");
+
+  uint32_t vCount = aCount & ~(xsimd::batch<float, Arch>::size - 1);
+
+  MOZ_UNROLL(4)
+  for (uint32_t i = 0; i < vCount; i += xsimd::batch<float, Arch>::size) {
+    auto vin = xsimd::batch<float, Arch>::load_aligned(&aSamples[i]);
+    auto vout =
+        xsimd::select(xsimd::isnan(vin), xsimd::batch<float, Arch>(0.f), vin);
+    vout.store_aligned(&aSamples[i]);
+  }
+
+  for (uint32_t i = vCount; i < aCount; i++) {
+    if (aSamples[i] != aSamples[i]) {
+      aSamples[i] = 0.0;
+    }
+  }
+};
+
+template <class Arch>
+void Engine<Arch>::AudioBufferPanStereoToStereo(
+    const float* aInputL, const float* aInputR, const float* aGainL,
+    const float* aGainR, const bool* aIsOnTheLeft, float* aOutputL,
+    float* aOutputR, uint32_t aSize) {
+  MOZ_ASSERT(is_aligned<Arch>(aInputL), "aInputL is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aInputR), "aInputR is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aGainL), "aGainL is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aGainR), "aGainR is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aIsOnTheLeft), "aIsOnTheLeft is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aOutputL), "aOutputL is aligned");
+  MOZ_ASSERT(is_aligned<Arch>(aOutputR), "aOutputR is aligned");
+  MOZ_ASSERT((aSize % xsimd::batch<float, Arch>::size == 0),
+             "requires tail processing");
+
+  MOZ_UNROLL(2)
+  for (uint32_t i = 0; i < aSize; i += xsimd::batch<float, Arch>::size) {
+    auto mask = xsimd::batch_bool<float, Arch>::load_aligned(&aIsOnTheLeft[i]);
+
+    auto inputL = xsimd::batch<float, Arch>::load_aligned(&aInputL[i]);
+    auto inputR = xsimd::batch<float, Arch>::load_aligned(&aInputR[i]);
+    auto gainL = xsimd::batch<float, Arch>::load_aligned(&aGainL[i]);
+    auto gainR = xsimd::batch<float, Arch>::load_aligned(&aGainR[i]);
+
+    auto outL_true = xsimd::fma(inputR, gainL, inputL);
+    auto outR_true = inputR * gainR;
+
+    auto outL_false = inputL * gainL;
+    auto outR_false = xsimd::fma(inputL, gainR, inputR);
+
+    auto outL = xsimd::select(mask, outL_true, outL_false);
+    auto outR = xsimd::select(mask, outR_true, outR_false);
+
+    outL.store_aligned(&aOutputL[i]);
+    outR.store_aligned(&aOutputR[i]);
+  }
+}
+
+}  // namespace mozilla
+
+#endif

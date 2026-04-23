@@ -132,17 +132,21 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   explicit MediaTrackGraphImpl(uint64_t aWindowID, TrackRate aSampleRate,
                                CubebUtils::AudioDeviceID aOutputDeviceID,
                                nsISerialEventTarget* aMainThread,
-                               uint32_t aBlockSize);
+                               uint32_t aBlockSize,
+                               bool aShouldResistFingerprinting = false);
 
   static MediaTrackGraphImpl* GetInstance(
       GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
       TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
-      nsISerialEventTarget* aMainThread, uint32_t aBlockSize);
+      nsISerialEventTarget* aMainThread, uint32_t aBlockSize,
+      bool aShouldResistFingerprinting = false);
   static MediaTrackGraphImpl* GetInstanceIfExists(
       uint64_t aWindowID, TrackRate aSampleRate,
-      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize);
-  static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate,
-                                                    uint32_t aBlockSize);
+      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize,
+      bool aShouldResistFingerprinting = false);
+  static MediaTrackGraph* CreateNonRealtimeInstance(
+      TrackRate aSampleRate, uint32_t aBlockSize,
+      bool aShouldResistFingerprinting = false);
   // For GraphHashSet:
   struct Lookup;
   operator Lookup() const;
@@ -155,6 +159,9 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
   bool Destroyed() const override;
 
   uint32_t BlockSize() const override { return mBlockSize; }
+  bool ShouldResistFingerprinting() const override {
+    return mShouldResistFingerprinting;
+  }
 
 #ifdef DEBUG
   /**

@@ -1107,13 +1107,17 @@ class MediaTrackGraph {
   // Main thread only
   static MediaTrackGraph* GetInstanceIfExists(
       nsPIDOMWindowInner* aWindow, TrackRate aSampleRate,
-      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize);
+      CubebUtils::AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize,
+      bool aShouldResistFingerprinting = false);
   static MediaTrackGraph* GetInstance(
       GraphDriverType aGraphDriverRequested, nsPIDOMWindowInner* aWindow,
       TrackRate aSampleRate, CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
-      uint32_t aBlockSize);
-  static MediaTrackGraph* CreateNonRealtimeInstance(TrackRate aSampleRate,
-                                                    uint32_t aBlockSize);
+      uint32_t aBlockSize, bool aShouldResistFingerprinting = false);
+  static MediaTrackGraph* CreateNonRealtimeInstance(
+      TrackRate aSampleRate, uint32_t aBlockSize,
+      bool aShouldResistFingerprinting = false);
+
+  virtual bool ShouldResistFingerprinting() const = 0;
 
   // Idempotent
   void ForceShutDown();
@@ -1293,10 +1297,12 @@ class MediaTrackGraph {
  protected:
   explicit MediaTrackGraph(TrackRate aSampleRate,
                            CubebUtils::AudioDeviceID aPrimaryOutputDeviceID,
-                           uint32_t aBlockSize)
+                           uint32_t aBlockSize,
+                           bool aShouldResistFingerprinting = false)
       : mSampleRate(aSampleRate),
         mPrimaryOutputDeviceID(aPrimaryOutputDeviceID),
-        mBlockSize(aBlockSize) {
+        mBlockSize(aBlockSize),
+        mShouldResistFingerprinting(aShouldResistFingerprinting) {
     MOZ_COUNT_CTOR(MediaTrackGraph);
     // 12 float arrays of blockSize: covers PannerNode (9) plus headroom.
     mAudioScratch.Init(12 * aBlockSize * sizeof(float));
@@ -1327,6 +1333,7 @@ class MediaTrackGraph {
    */
   const uint32_t mBlockSize;
   AudioScratchAllocator mAudioScratch;
+  const bool mShouldResistFingerprinting = false;
 
   /* A monotonically increasing graph-unique generation for
    * AudioInputProcessingParamsRequest::mGeneration. */

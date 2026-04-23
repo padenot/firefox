@@ -122,17 +122,20 @@ void DeviceInputTrackManager::Remove(DeviceInputTrack* aTrack) {
 
 struct MediaTrackGraphImpl::Lookup final {
   HashNumber Hash() const {
-    return HashGeneric(mWindowID, mSampleRate, mOutputDeviceID, mBlockSize);
+    return HashGeneric(mWindowID, mSampleRate, mOutputDeviceID, mBlockSize,
+                       mResistFingerprinting);
   }
   const uint64_t mWindowID;
   const TrackRate mSampleRate;
   const CubebUtils::AudioDeviceID mOutputDeviceID;
   const uint32_t mBlockSize;
+  const bool mResistFingerprinting;
 };
 
 // Implicit to support GraphHashSet.lookup(*graph).
 MOZ_IMPLICIT MediaTrackGraphImpl::operator MediaTrackGraphImpl::Lookup() const {
-  return {mWindowID, mSampleRate, PrimaryOutputDeviceID(), mBlockSize};
+  return {mWindowID, mSampleRate, PrimaryOutputDeviceID(), mBlockSize,
+          mShouldResistFingerprinting};
 }
 
 namespace {
@@ -145,7 +148,9 @@ struct GraphHasher {  // for HashSet
     return aGraph->mWindowID == aLookup.mWindowID &&
            aGraph->GraphRate() == aLookup.mSampleRate &&
            aGraph->PrimaryOutputDeviceID() == aLookup.mOutputDeviceID &&
-           aGraph->BlockSize() == aLookup.mBlockSize;
+           aGraph->BlockSize() == aLookup.mBlockSize &&
+           aGraph->ShouldResistFingerprinting() ==
+               aLookup.mResistFingerprinting;
   }
 };
 
@@ -3364,8 +3369,10 @@ MediaTrackGraphImpl::MediaTrackGraphImpl(uint64_t aWindowID,
                                          TrackRate aSampleRate,
                                          AudioDeviceID aPrimaryOutputDeviceID,
                                          nsISerialEventTarget* aMainThread,
-                                         uint32_t aBlockSize)
-    : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID, aBlockSize),
+                                         uint32_t aBlockSize,
+                                         bool aShouldResistFingerprinting)
+    : MediaTrackGraph(aSampleRate, aPrimaryOutputDeviceID, aBlockSize,
+                      aShouldResistFingerprinting),
       mWindowID(aWindowID),
       mFirstCycleBreaker(0)
       // An offline graph is not initially processing.
@@ -3468,12 +3475,14 @@ void MediaTrackGraphImpl::Destroy() {
 /* static */
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstanceIfExists(
     uint64_t aWindowID, TrackRate aSampleRate,
-    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize) {
+    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize,
+    bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
 
-  GraphHashSet::Ptr p = Graphs()->lookup(
-      {aWindowID, aSampleRate, aPrimaryOutputDeviceID, aBlockSize});
+  GraphHashSet::Ptr p = Graphs()->lookup({aWindowID, aSampleRate,
+                                          aPrimaryOutputDeviceID, aBlockSize,
+                                          aShouldResistFingerprinting});
   return p ? *p : nullptr;
 }
 
@@ -3482,28 +3491,34 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstanceIfExists(
 /* static */
 MediaTrackGraph* MediaTrackGraph::GetInstanceIfExists(
     nsPIDOMWindowInner* aWindow, TrackRate aSampleRate,
-    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize) {
+    AudioDeviceID aPrimaryOutputDeviceID, uint32_t aBlockSize,
+    bool aShouldResistFingerprinting) {
   TrackRate sampleRate =
       aSampleRate ? aSampleRate
                   : CubebUtils::PreferredSampleRate(
                         aWindow->AsGlobal()->ShouldResistFingerprinting(
                             RFPTarget::AudioSampleRate));
-  return MediaTrackGraphImpl::GetInstanceIfExists(
-      aWindow->WindowID(), sampleRate, aPrimaryOutputDeviceID, aBlockSize);
+  return MediaTrackGraphImpl::GetInstanceIfExists(aWindow->WindowID(),
+                                                  sampleRate,
+                                                  aPrimaryOutputDeviceID,
+                                                  aBlockSize,
+                                                  aShouldResistFingerprinting);
 }
 
 /* static */
 MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
     GraphDriverType aGraphDriverRequested, uint64_t aWindowID,
     TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
-    nsISerialEventTarget* aMainThread, uint32_t aBlockSize) {
+    nsISerialEventTarget* aMainThread, uint32_t aBlockSize,
+    bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
   MOZ_ASSERT(aSampleRate > 0);
   MOZ_ASSERT(aGraphDriverRequested != OFFLINE_THREAD_DRIVER,
              "Use CreateNonRealtimeInstance() for offline graphs");
 
-  MediaTrackGraphImpl* graph = GetInstanceIfExists(
-      aWindowID, aSampleRate, aPrimaryOutputDeviceID, aBlockSize);
+  MediaTrackGraphImpl* graph =
+      GetInstanceIfExists(aWindowID, aSampleRate, aPrimaryOutputDeviceID,
+                          aBlockSize, aShouldResistFingerprinting);
   if (graph) {  // graph already exists
     return graph;
   }
@@ -3516,11 +3531,14 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
   // In a real time graph, the number of output channels is determined by
   // the underlying number of channel of the default audio output device.
   uint32_t channelCount = CubebUtils::MaxNumberOfChannels();
-  graph = new MediaTrackGraphImpl(
-      aWindowID, aSampleRate, aPrimaryOutputDeviceID, aMainThread, aBlockSize);
+  graph = new MediaTrackGraphImpl(aWindowID, aSampleRate, aPrimaryOutputDeviceID,
+                                  aMainThread, aBlockSize,
+                                  aShouldResistFingerprinting);
   graph->Init(aGraphDriverRequested, runType, channelCount);
   MOZ_ALWAYS_TRUE(Graphs()->putNew(
-      {aWindowID, aSampleRate, aPrimaryOutputDeviceID, aBlockSize}, graph));
+      {aWindowID, aSampleRate, aPrimaryOutputDeviceID, aBlockSize,
+       aShouldResistFingerprinting},
+      graph));
 
   LOG(LogLevel::Debug, ("Starting up MediaTrackGraph %p for window 0x%" PRIx64,
                         graph, aWindowID));
@@ -3532,7 +3550,7 @@ MediaTrackGraphImpl* MediaTrackGraphImpl::GetInstance(
 MediaTrackGraph* MediaTrackGraph::GetInstance(
     GraphDriverType aGraphDriverRequested, nsPIDOMWindowInner* aWindow,
     TrackRate aSampleRate, AudioDeviceID aPrimaryOutputDeviceID,
-    uint32_t aBlockSize) {
+    uint32_t aBlockSize, bool aShouldResistFingerprinting) {
   TrackRate sampleRate =
       aSampleRate ? aSampleRate
                   : CubebUtils::PreferredSampleRate(
@@ -3540,18 +3558,21 @@ MediaTrackGraph* MediaTrackGraph::GetInstance(
                             RFPTarget::AudioSampleRate));
   return MediaTrackGraphImpl::GetInstance(
       aGraphDriverRequested, aWindow->WindowID(), sampleRate,
-      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget(), aBlockSize);
+      aPrimaryOutputDeviceID, GetMainThreadSerialEventTarget(), aBlockSize,
+      aShouldResistFingerprinting);
 }
 
 MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
-    TrackRate aSampleRate, uint32_t aBlockSize) {
+    TrackRate aSampleRate, uint32_t aBlockSize,
+    bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread(), "Main thread only");
 
   nsISerialEventTarget* mainThread = GetMainThreadSerialEventTarget();
   // Offline graphs have 0 output channel count: they write the output to a
   // buffer, not an audio output track.
-  MediaTrackGraphImpl* graph = new MediaTrackGraphImpl(
-      0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread, aBlockSize);
+  MediaTrackGraphImpl* graph =
+      new MediaTrackGraphImpl(0, aSampleRate, DEFAULT_OUTPUT_DEVICE, mainThread,
+                              aBlockSize, aShouldResistFingerprinting);
   graph->Init(OFFLINE_THREAD_DRIVER, DIRECT_DRIVER, 0);
 
   LOG(LogLevel::Debug, ("Starting up Offline MediaTrackGraph %p", graph));
@@ -3560,9 +3581,10 @@ MediaTrackGraph* MediaTrackGraphImpl::CreateNonRealtimeInstance(
 }
 
 MediaTrackGraph* MediaTrackGraph::CreateNonRealtimeInstance(
-    TrackRate aSampleRate, uint32_t aBlockSize) {
-  return MediaTrackGraphImpl::CreateNonRealtimeInstance(aSampleRate,
-                                                        aBlockSize);
+    TrackRate aSampleRate, uint32_t aBlockSize,
+    bool aShouldResistFingerprinting) {
+  return MediaTrackGraphImpl::CreateNonRealtimeInstance(aSampleRate, aBlockSize,
+                                                        aShouldResistFingerprinting);
 }
 
 void MediaTrackGraph::ForceShutDown() {

@@ -40,3 +40,16 @@ struct Engine {
   static float AudioBufferSumOfSquares(const float* aInput, uint32_t aLength);
 
   static void NaNToZeroInPlace(float* aSamples, size_t aCount);
+
+  static void AudioBufferPanStereoToStereo(const float* aInputL,
+                                          const float* aInputR,
+                                          const float* aGainL,
+                                          const float* aGainR,
+                                          const bool* aIsOnTheLeft,
+                                          float* aOutputL, float* aOutputR,
+                                          uint32_t aSize);
+};
+
+}  // namespace mozilla
+
+#endif

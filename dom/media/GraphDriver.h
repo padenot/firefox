@@ -188,6 +188,7 @@ struct GraphInterface : public nsISupports {
   virtual IterationResult OneIteration(
       GraphTime aStateComputedEnd, MixerCallbackReceiver* aMixerReceiver) = 0;
   virtual uint32_t BlockSize() const = 0;
+  virtual bool ShouldResistFingerprinting() const = 0;
 #ifdef DEBUG
   /* True if we're on aDriver's thread, or if we're on mGraphRunner's thread
    * and mGraphRunner is currently run by aDriver. */

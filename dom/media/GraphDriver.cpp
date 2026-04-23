@@ -338,6 +338,9 @@ class AudioCallbackDriver::FallbackWrapper : public GraphInterface {
   }
 #endif
   uint32_t BlockSize() const override { return mGraph->BlockSize(); }
+  bool ShouldResistFingerprinting() const override {
+    return mGraph->ShouldResistFingerprinting();
+  }
 
   IterationResult OneIteration(GraphTime aStateComputedEnd,
                                MixerCallbackReceiver* aMixerReceiver) override {
@@ -585,6 +588,9 @@ void AudioCallbackDriver::Init(const nsCString& aStreamName) {
     LOG(LogLevel::Debug,
         ("Latency clamped to %d from %d", blockSize, latencyFrames));
     latencyFrames = blockSize;
+  }
+  if (Graph()->ShouldResistFingerprinting()) {
+    latencyFrames = mozilla::RoundUpPow2(latencyFrames);
   }
   LOG(LogLevel::Debug, ("Effective latency in frames: %d", latencyFrames));
 
