@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>convolution-non-default-quantum.html</title>
+    <script src="/resources/testharness.js"></script>
+    <script src="/resources/testharnessreport.js"></script>
+    <script src="/webaudio/resources/audit-util.js"></script>
+    <script src="/webaudio/resources/audit.js"></script>
+    <script src="/webaudio/resources/convolution-testing.js"></script>
+  </head>
+  <body>
+    <script id="layout-test-code">
+      // Run the mono-mono convolution correctness test at several non-default
+      // render quantum sizes:
+      //   256  — power-of-2 > 128: minFFTSize becomes 512 instead of 256
+      //   192  — non-power-of-2 typical on Android at 48 kHz
+      //   96   — non-power-of-2, some Android devices at 48 kHz
+      //
+      // Each test convolves two square pulses and checks the result matches the
+      // expected triangular pulse, verifying OLA staging is correct for the
+      // given block size.
+
+      let audit = Audit.createTaskRunner();
+
+      // Latency test: convolve with a Dirac delta IR shifted by `irDelay`
+      // samples.  The output impulse must appear at exactly `irDelay`, not at
+      // `irDelay + extraLatency`.  This catches any buffering stage that would
+      // hold back output by one or more render quanta.
+      for (const renderSizeHint of [256, 192, 96]) {
+        audit.define(`latency renderSizeHint=${renderSizeHint}`, function(task, should) {
+          // Length: 4 quanta is plenty to capture the output impulse.
+          const length = 4 * renderSizeHint;
+          const irDelay = renderSizeHint;  // shift the Dirac by one quantum
+
+          let context = new OfflineAudioContext({
+            numberOfChannels: 1,
+            length: length,
+            sampleRate: sampleRate,
+            renderSizeHint: renderSizeHint,
+          });
+
+          // Dirac delta at position irDelay
+          let ir = context.createBuffer(1, irDelay + 1, sampleRate);
+          ir.getChannelData(0)[irDelay] = 1.0;
+
+          // Single impulse at t=0 as input
+          let input = context.createBuffer(1, 1, sampleRate);
+          input.getChannelData(0)[0] = 1.0;
+
+          let src = context.createBufferSource();
+          src.buffer = input;
+
+          let conv = context.createConvolver();
+          conv.normalize = false;
+          conv.buffer = ir;
+
+          src.connect(conv);
+          conv.connect(context.destination);
+          src.start(0);
+
+          context.startRendering().then(buf => {
+            const data = buf.getChannelData(0);
+
+            // Find the first non-zero sample.
+            let firstNonZero = -1;
+            for (let i = 0; i < data.length; i++) {
+              if (Math.abs(data[i]) > 1e-6) { firstNonZero = i; break; }
+            }
+
+            should(firstNonZero, `[latency renderSizeHint=${renderSizeHint}] output impulse position`)
+                .beEqualTo(irDelay);
+            should(data[irDelay], `[latency renderSizeHint=${renderSizeHint}] output impulse value`)
+                .beCloseTo(1.0, { threshold: 1e-5 });
+          }).then(task.done.bind(task));
+        });
+      }
+
+      for (const renderSizeHint of [256, 192, 96]) {
+        audit.define(`correctness renderSizeHint=${renderSizeHint}`, function(task, should) {
+          let context = new OfflineAudioContext({
+            numberOfChannels: 1,
+            length: Math.ceil(sampleRate * renderLengthSeconds / renderSizeHint)
+                    * renderSizeHint,
+            sampleRate: sampleRate,
+            renderSizeHint: renderSizeHint,
+          });
+
+          should(context.renderQuantumSize, `[correctness renderSizeHint=${renderSizeHint}] renderQuantumSize`)
+              .beEqualTo(renderSizeHint);
+
+          let squarePulse = createSquarePulseBuffer(context, pulseLengthFrames);
+          let trianglePulse =
+              createTrianglePulseBuffer(context, 2 * pulseLengthFrames);
+
+          let bufferSource = context.createBufferSource();
+          bufferSource.buffer = squarePulse;
+
+          let convolver = context.createConvolver();
+          convolver.normalize = false;
+          convolver.buffer = squarePulse;
+
+          bufferSource.connect(convolver);
+          convolver.connect(context.destination);
+          bufferSource.start(0);
+
+          const prefixedShould = (value, label) =>
+              should(value, `[correctness renderSizeHint=${renderSizeHint}] ${label}`);
+          context.startRendering()
+              .then(buffer => {
+                checkConvolvedResult(buffer, trianglePulse, prefixedShould);
+              })
+              .then(task.done.bind(task));
+        });
+      }
+
+      audit.run();
+    </script>
+  </body>
+</html>
