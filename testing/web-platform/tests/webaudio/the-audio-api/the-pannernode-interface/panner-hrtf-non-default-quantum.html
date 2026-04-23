@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>PannerNode HRTF at non-default render quantum</title>
+    <script src="/resources/testharness.js"></script>
+    <script src="/resources/testharnessreport.js"></script>
+    <script src="/webaudio/resources/audit-util.js"></script>
+    <script src="/webaudio/resources/audit.js"></script>
+  </head>
+  <body>
+    <script>
+      // Tests that HRTF panning produces non-silent output at non-power-of-2
+      // render quantum sizes.  This exercises the HRTFElevation.fftSizeForSampleRate
+      // fix that computes fftSize as the smallest multiple of 2*blockSize >=
+      // 2*hrirLength, ensuring FFTConvolver's OLA invariant holds for any
+      // quantum size.
+      //
+      // Strategy: render a white-noise burst through a PannerNode with
+      // panningModel='HRTF', then verify the output is non-zero (HRTF
+      // convolution happened without asserting or producing silence).
+
+      let audit = Audit.createTaskRunner();
+
+      for (const renderSizeHint of [256, 192, 96]) {
+        audit.define(`HRTF renderSizeHint=${renderSizeHint}`, function(task, should) {
+          // Long enough for the HRTF database to load and produce output.
+          // HRTF tail is ~512 samples; give it several quanta of headroom.
+          const sampleRate = 44100;
+          const length = 8 * renderSizeHint;
+
+          const context = new OfflineAudioContext({
+            numberOfChannels: 2,
+            length: length,
+            sampleRate: sampleRate,
+            renderSizeHint: renderSizeHint,
+          });
+
+          // White noise burst for the full render
+          const noiseBuf = context.createBuffer(1, length, sampleRate);
+          const data = noiseBuf.getChannelData(0);
+          // Simple pseudo-random sequence (deterministic for reproducibility)
+          let seed = 42;
+          for (let i = 0; i < data.length; i++) {
+            seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+            data[i] = ((seed >>> 0) / 0x80000000) - 1.0;
+          }
+
+          const src = context.createBufferSource();
+          src.buffer = noiseBuf;
+
+          const panner = context.createPanner();
+          panner.panningModel = 'HRTF';
+          panner.setPosition(1, 0, 0);
+
+          src.connect(panner);
+          panner.connect(context.destination);
+          src.start(0);
+
+          context.startRendering().then(rendered => {
+            // Check that at least one output sample is non-zero, confirming
+            // that HRTF convolution ran without crashing.
+            const out = rendered.getChannelData(0);
+            let hasNonZero = false;
+            for (let i = 0; i < out.length; i++) {
+              if (Math.abs(out[i]) > 1e-10) { hasNonZero = true; break; }
+            }
+            should(hasNonZero,
+                `[renderSizeHint=${renderSizeHint}] HRTF output is non-silent`)
+                .beTrue();
+          }).then(task.done.bind(task));
+        });
+      }
+
+      audit.run();
+    </script>
+  </body>
+</html>
