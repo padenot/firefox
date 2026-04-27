@@ -149,6 +149,7 @@ EXPORTS += [
     "AudioPacketizer.h",
     "AudioRingBuffer.h",
     "AudioSampleFormat.h",
+    "AudioScratchAllocator.h",
     "AudioSegment.h",
     "AudioStream.h",
     "BackgroundVideoDecodingPermissionObserver.h",

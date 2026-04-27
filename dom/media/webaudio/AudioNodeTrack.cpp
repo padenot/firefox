@@ -423,6 +423,7 @@ void AudioNodeTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
                  "For now, we only support nodes that have one output port");
       mLastChunks[0] = mInputChunks[0];
     } else {
+      AudioScratchAllocator::Scope scratch(Graph()->AudioScratch());
       if (maxInputs <= 1 && outputCount <= 1) {
         mEngine->ProcessBlock(this, aFrom, mInputChunks[0], &mLastChunks[0],
                               &finished);
@@ -474,6 +475,7 @@ void AudioNodeTrack::ProduceOutputBeforeInput(GraphTime aFrom) {
   if (!mIsActive) {
     mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
   } else {
+    AudioScratchAllocator::Scope scratch(Graph()->AudioScratch());
     mEngine->ProduceBlockBeforeInput(this, aFrom, &mLastChunks[0]);
     NS_ASSERTION(mLastChunks[0].GetDuration() == WEBAUDIO_BLOCK_SIZE,
                  "Invalid WebAudio chunk size");

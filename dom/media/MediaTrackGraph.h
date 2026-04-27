@@ -8,6 +8,7 @@
 #include <speex/speex_resampler.h>
 
 #include "AudioSampleFormat.h"
+#include "AudioScratchAllocator.h"
 #include "AudioSegment.h"
 #include "CubebUtils.h"
 #include "MainThreadUtils.h"
@@ -1224,6 +1225,7 @@ class MediaTrackGraph {
    * Returns the render quantum size (block size) for this graph.
    */
   uint32_t BlockSize() const { return mBlockSize; }
+  AudioScratchAllocator& AudioScratch() { return mAudioScratch; }
   /**
    * Returns the ID of the device used for audio output through an
    * AudioCallbackDriver.  This is the device specified when creating the
@@ -1296,6 +1298,8 @@ class MediaTrackGraph {
         mPrimaryOutputDeviceID(aPrimaryOutputDeviceID),
         mBlockSize(aBlockSize) {
     MOZ_COUNT_CTOR(MediaTrackGraph);
+    // 12 float arrays of blockSize: covers PannerNode (9) plus headroom.
+    mAudioScratch.Init(12 * aBlockSize * sizeof(float));
   }
   MOZ_COUNTED_DTOR_VIRTUAL(MediaTrackGraph)
 
@@ -1322,6 +1326,7 @@ class MediaTrackGraph {
    * Render quantum size for this graph.
    */
   const uint32_t mBlockSize;
+  AudioScratchAllocator mAudioScratch;
 
   /* A monotonically increasing graph-unique generation for
    * AudioInputProcessingParamsRequest::mGeneration. */

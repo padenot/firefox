@@ -129,6 +129,11 @@ class AudioNodeTrack : public ProcessedMediaTrack {
   void RemoveInput(MediaInputPort* aPort) override;
 
   // Graph thread only
+  template <typename T>
+  mozilla::Span<T> GetScratch(uint32_t aCount) {
+    return Graph()->AudioScratch().Alloc<T>(aCount);
+  }
+
   void SetTrackTimeParameterImpl(uint32_t aIndex, MediaTrack* aRelativeToTrack,
                                  double aTrackTime);
   void SetChannelMixingParametersImpl(
