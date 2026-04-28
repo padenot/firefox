@@ -21,7 +21,8 @@ class AudioStreamTrack : public MediaStreamTrack {
       bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints())
       : MediaStreamTrack(aWindow, aInputTrack, aSource, aReadyState, aMuted,
-                         aConstraints) {}
+                         aConstraints),
+        mLazy(aInputTrack == nullptr) {}
 
   already_AddRefed<MediaStreamTrack> Clone() override;
 
@@ -41,6 +42,12 @@ class AudioStreamTrack : public MediaStreamTrack {
   already_AddRefed<MediaInputPort> AddConsumerPort(ProcessedMediaTrack* aTrack);
   void RemoveConsumerPort(MediaInputPort* aPort);
 
+  // Called the first time a consumer connects to a lazy track. Creates
+  // mInputTrack in aGraph and starts the device.
+  void InitializeInGraph(MediaTrackGraph* aGraph);
+
+  void EnsureInitialized() override;
+
   // WebIDL
   void GetKind(nsAString& aKind) override { aKind.AssignLiteral("audio"); }
 
@@ -50,6 +57,10 @@ class AudioStreamTrack : public MediaStreamTrack {
   void SetReadyState(MediaStreamTrackState aState) override;
 
  private:
+  // True until the first consumer connects and mInputTrack is created.
+  // Main thread only.
+  bool mLazy;
+
   // Main thread only
   struct CrossGraphConnection {
     UniquePtr<CrossGraphPort> mPort;

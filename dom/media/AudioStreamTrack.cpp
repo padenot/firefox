@@ -4,6 +4,7 @@
 
 #include "AudioStreamTrack.h"
 
+#include "AudioDeviceInfo.h"
 #include "MediaTrackGraph.h"
 #include "nsContentUtils.h"
 
@@ -16,6 +17,18 @@ RefPtr<GenericPromise> AudioStreamTrack::AddAudioOutput(
     void* aKey, AudioDeviceInfo* aSink) {
   if (Ended()) {
     return GenericPromise::CreateAndResolve(true, __func__);
+  }
+
+  if (mLazy) {
+    CubebUtils::AudioDeviceID deviceId =
+        aSink ? aSink->DeviceID() : MediaTrackGraph::DEFAULT_OUTPUT_DEVICE;
+    MediaTrackGraph* g = MediaTrackGraph::GetInstance(
+        MediaTrackGraph::AUDIO_THREAD_DRIVER, mWindow,
+        MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE, deviceId);
+    InitializeInGraph(g);
+    if (Ended()) {
+      return GenericPromise::CreateAndResolve(true, __func__);
+    }
   }
 
   mTrack->AddAudioOutput(aKey, aSink);
@@ -38,9 +51,41 @@ void AudioStreamTrack::SetAudioOutputVolume(void* aKey, float aVolume) {
   mTrack->SetAudioOutputVolume(aKey, aVolume);
 }
 
+void AudioStreamTrack::EnsureInitialized() {
+  if (!mLazy) {
+    return;
+  }
+  MediaTrackGraph* g = MediaTrackGraph::GetInstance(
+      MediaTrackGraph::AUDIO_THREAD_DRIVER, mWindow,
+      MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
+      MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
+  InitializeInGraph(g);
+}
+
+void AudioStreamTrack::InitializeInGraph(MediaTrackGraph* aGraph) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mLazy);
+
+  RefPtr<MediaTrack> inputTrack =
+      GetSource().CreateAndInitInputTrackInGraph(aGraph);
+  if (!inputTrack) {
+    OverrideEnded();
+    return;
+  }
+  mInputTrack = inputTrack;
+  CompleteInit();
+  mLazy = false;
+}
+
 already_AddRefed<MediaInputPort> AudioStreamTrack::AddConsumerPort(
     ProcessedMediaTrack* aTrack) {
   MOZ_ASSERT(NS_IsMainThread());
+
+  if (mLazy) {
+    MOZ_ASSERT(aTrack);
+    InitializeInGraph(aTrack->Graph());
+  }
+
   MOZ_ASSERT(!mTrack == Ended());
 
   if (!mTrack || !aTrack || aTrack->IsDestroyed()) {
