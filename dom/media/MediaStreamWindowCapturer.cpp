@@ -66,6 +66,10 @@ void MediaStreamWindowCapturer::AddTrack(AudioStreamTrack* aTrack) {
   if (aTrack->Ended()) {
     return;
   }
+  aTrack->EnsureInitialized();
+  if (aTrack->Ended()) {
+    return;
+  }
   mTracks.AppendElement(MakeUnique<CapturedTrack>(aTrack, mWindowId));
 }
 

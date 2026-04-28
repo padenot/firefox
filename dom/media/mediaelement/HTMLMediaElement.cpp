@@ -1049,8 +1049,11 @@ class HTMLMediaElement::MediaStreamRenderer {
     MediaTrackGraph* graph = nullptr;
     for (const auto& t : mAudioTracks) {
       if (t && !t->Ended()) {
-        graph = t->Graph();
-        break;
+        t->EnsureInitialized();
+        if (!t->Ended()) {
+          graph = t->Graph();
+          break;
+        }
       }
     }
 
@@ -4097,6 +4100,11 @@ void HTMLMediaElement::UpdateOutputTrackSources() {
         return;
       }
       MOZ_DIAGNOSTIC_ASSERT(!inputTrack->Ended());
+
+      inputTrack->EnsureInitialized();
+      if (inputTrack->Ended()) {
+        return;
+      }
 
       track = inputTrack->Graph()->CreateForwardedInputTrack(type);
       RefPtr<MediaInputPort> port = inputTrack->ForwardTrackContentsTo(track);

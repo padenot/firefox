@@ -573,6 +573,11 @@ void MediaEncoder::ConnectMediaStreamTrack(MediaStreamTrack* aTrack) {
     return;
   }
 
+  aTrack->EnsureInitialized();
+  if (aTrack->Ended()) {
+    return;
+  }
+
   EnsureGraphTrackFrom(aTrack->GetTrack());
 
   if (AudioStreamTrack* audio = aTrack->AsAudioStreamTrack()) {

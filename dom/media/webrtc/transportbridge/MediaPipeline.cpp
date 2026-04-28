@@ -897,13 +897,18 @@ void MediaPipelineTransmit::UpdateSendState() {
 
   const bool wasTransmitting = mTransmitting;
 
+  if (mDomTrack.Ref() && !mDomTrack.Ref()->Ended()) {
+    mDomTrack.Ref()->EnsureInitialized();
+  }
+
   const bool haveLiveSendTrack = mSendTrack && !mSendTrack->IsDestroyed();
   const bool haveLiveDomTrack = mDomTrack.Ref() && !mDomTrack.Ref()->Ended();
   const bool haveLiveOverrideTrack =
       mSendTrackOverride.Ref() && !mSendTrackOverride.Ref()->IsDestroyed();
   const bool mustRemoveSendTrack =
       haveLiveSendTrack && !mSendTrackOverride.Ref() &&
-      (!haveLiveDomTrack || mDomTrack.Ref()->GetTrack() != mSendPortSource);
+      (!haveLiveDomTrack ||
+       mDomTrack.Ref()->MaybeGetTrack() != mSendPortSource);
 
   mTransmitting = mActive && (haveLiveDomTrack || haveLiveOverrideTrack) &&
                   !mustRemoveSendTrack;

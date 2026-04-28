@@ -878,6 +878,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
 
       uint8_t trackTypes = 0;
       for (const auto& track : mMediaStreamTracks) {
+        track->EnsureInitialized();
         if (track->AsAudioStreamTrack()) {
           trackTypes |= ContainerWriter::CREATE_AUDIO_TRACK;
         } else if (track->AsVideoStreamTrack()) {
