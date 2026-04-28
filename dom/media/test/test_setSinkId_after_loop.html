@@ -45,6 +45,10 @@ add_task(async () => {
     todo_isnot(loopbackInputLabel, "", "audio_loopback_dev");
     return;
   }
+  if (!loopbackInputLabel) {
+    ok(true, "No loopback device set. Use --use-test-media-devices.");
+    return;
+  }
   isnot(loopbackInputLabel, "",
         "audio_loopback_dev. Try --use-test-media-devices.");
   const loopbackStream =

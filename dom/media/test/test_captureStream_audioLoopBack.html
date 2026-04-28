@@ -30,6 +30,11 @@ add_task(async function testCaptureStreamAudioPlayout() {
     return;
   }
 
+  if (!SpecialPowers.getCharPref("media.audio_loopback_dev", "")) {
+    ok(true, "No loopback device set. Use --use-test-media-devices.");
+    return;
+  }
+
   if (!navigator.mediaDevices) {
     ok(true, "No mediaDevices, then gUM cannot have been called either");
     return;
@@ -92,6 +97,11 @@ add_task(async function testCaptureStreamAudioPlayout() {
 add_task(async function testMediaElementAudioSourceNodeAudioPlayout() {
   if (!navigator.userAgent.includes("Linux")) {
     ok(true, "audio loopback is only supported on Linux");
+    return;
+  }
+
+  if (!SpecialPowers.getCharPref("media.audio_loopback_dev", "")) {
+    ok(true, "No loopback device set. Use --use-test-media-devices.");
     return;
   }
 

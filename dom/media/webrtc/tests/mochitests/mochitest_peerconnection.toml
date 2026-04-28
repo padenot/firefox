@@ -163,6 +163,7 @@ skip-if = [
 
 ["test_peerConnection_basicScreenshare.html"]
 skip-if = [
+  "headless", # getDisplayMedia blocks on portal picker in headless runs
   "os == 'android'", # no screenshare on android
   "os == 'mac' && os_version == '14.70' && arch == 'x86_64'", # Bug 1929420
   "os == 'mac' && os_version == '15.30' && arch == 'aarch64'", # Bug 1929420
@@ -493,6 +494,7 @@ skip-if = [
 
 ["test_peerConnection_simulcastOffer_screenshare.html"]
 skip-if = [
+  "headless", # getDisplayMedia blocks on portal picker in headless runs
   "os == 'android'", # no screenshare on android
   "os == 'mac' && os_version == '15.30' && arch == 'aarch64'", # Bug 1941688
 ]

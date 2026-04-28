@@ -67,17 +67,23 @@ void AudioInputSource::Init() {
   // operations to the task thread.
   MOZ_ASSERT(mTaskThread);
 
-  LOG("AudioInputSource %p, init", this);
+  LOG("AudioInputSource %p, init device %p channels=%u rate=%u", this,
+      mDeviceId, mChannelCount, static_cast<uint32_t>(mRate));
   MOZ_ALWAYS_SUCCEEDS(mTaskThread->Dispatch(
       NS_NewRunnableFunction(__func__, [this, self = RefPtr(this)]() mutable {
         mStream = CubebInputStream::Create(mDeviceId, mChannelCount,
                                            static_cast<uint32_t>(mRate),
                                            mIsVoice, this);
         if (!mStream) {
-          LOGE("AudioInputSource %p, cannot create an audio input stream!",
-               self.get());
+          LOGE("AudioInputSource %p, cannot create input stream for device %p "
+               "channels=%u rate=%u",
+               self.get(), mDeviceId, mChannelCount,
+               static_cast<uint32_t>(mRate));
+          NS_WARNING("AudioInputSource: cubeb input stream creation failed");
           return;
         }
+        LOG("AudioInputSource %p, stream %p created for device %p", self.get(),
+            mStream.get(), mDeviceId);
       })));
 }
 

@@ -934,7 +934,8 @@ def findTestMediaDevices(log):
         return None
 
     info = {}
-    # Look for a v4l2loopback device.
+    # Look for a v4l2loopback device. Optional: audio-only tests can run
+    # without one.
     name = None
     device = None
     for dev in sorted(glob.glob("/dev/video*")):
@@ -944,31 +945,33 @@ def findTestMediaDevices(log):
             device = dev
             break
 
-    if not (name and device):
-        log.error("Couldn't find a v4l2loopback video device")
-        return None
-
-    # Feed it a frame of output so it has something to display
-    gst01 = which("gst-launch-0.1")
-    gst010 = which("gst-launch-0.10")
-    gst10 = which("gst-launch-1.0")
-    if gst01:
-        gst = gst01
-    if gst010:
-        gst = gst010
+    if name and device:
+        # Feed it a frame of output so it has something to display
+        gst01 = which("gst-launch-0.1")
+        gst010 = which("gst-launch-0.10")
+        gst10 = which("gst-launch-1.0")
+        if gst01:
+            gst = gst01
+        if gst010:
+            gst = gst010
+        else:
+            gst = gst10
+        process = subprocess.Popen([
+            gst,
+            "--no-fault",
+            "videotestsrc",
+            "pattern=green",
+            "num-buffers=1",
+            "!",
+            "v4l2sink",
+            f"device={device}",
+        ])
+        info["video"] = {"name": name, "process": process}
     else:
-        gst = gst10
-    process = subprocess.Popen([
-        gst,
-        "--no-fault",
-        "videotestsrc",
-        "pattern=green",
-        "num-buffers=1",
-        "!",
-        "v4l2sink",
-        f"device={device}",
-    ])
-    info["video"] = {"name": name, "process": process}
+        log.warning(
+            "No v4l2loopback video device found; video tests will not have a "
+            "test camera"
+        )
     info["speaker"] = {"name": "44100Hz Null Output"}
     info["audio"] = {"name": "Monitor of {}".format(info["speaker"]["name"])}
     return info
@@ -2602,10 +2605,11 @@ toolbar#nav-bar {
         # See if we should use fake media devices.
         if options.useTestMediaDevices:
             prefs["media.audio_loopback_dev"] = self.mediaDevices["audio"]["name"]
-            prefs["media.video_loopback_dev"] = self.mediaDevices["video"]["name"]
             prefs["media.cubeb.output_device"] = self.mediaDevices["speaker"]["name"]
             prefs["media.volume_scale"] = "1.0"
-            self.gstForV4l2loopbackProcess = self.mediaDevices["video"]["process"]
+            if "video" in self.mediaDevices:
+                prefs["media.video_loopback_dev"] = self.mediaDevices["video"]["name"]
+                self.gstForV4l2loopbackProcess = self.mediaDevices["video"]["process"]
 
         self.profile.set_preferences(prefs)
 
@@ -2686,6 +2690,13 @@ toolbar#nav-bar {
             for id in self.virtualAudioNodeIdList:
                 subprocess.check_output(["pw-cli", "destroy", str(id)])
             self.virtualAudioNodeIdList = []
+
+        if hasattr(self, "pwLoopbackProcesses"):
+            for proc in self.pwLoopbackProcesses:
+                proc.terminate()
+            for proc in self.pwLoopbackProcesses:
+                proc.wait()
+            self.pwLoopbackProcesses = []
 
     def dumpScreen(self, utilityPath):
         if self.haveDumpedScreen:
@@ -3231,57 +3242,133 @@ toolbar#nav-bar {
                 "frequency": freq,
             })
 
-        # Determine if this is running PulseAudio or PipeWire
-        # `pactl info` works on both systems, but when running on PipeWire it says
-        # something like:
-        # Server Name: PulseAudio (on PipeWire 1.0.5)
+        # Determine if this is running PulseAudio or PipeWire.
+        # If pactl is available, `pactl info` works on both systems and reports
+        # PipeWire when running on it. If pactl isn't installed but pw-cli is,
+        # assume PipeWire.
         pactl = which("pactl")
-        if not pactl:
-            self.log.error("Could not find pactl on system")
-            return
-
-        o = subprocess.check_output([pactl, "info"])
-        if b"PipeWire" in o:
+        if pactl:
+            o = subprocess.check_output([pactl, "info"])
+            if b"PipeWire" in o:
+                if not self.initializeVirtualAudioDevicesPipeWire(
+                    input_devices, output_devices
+                ):
+                    self.initializeVirtualAudioDevicesPulseAudio(
+                        pactl, input_devices, output_devices
+                    )
+            else:
+                self.initializeVirtualAudioDevicesPulseAudio(
+                    pactl, input_devices, output_devices
+                )
+        elif which("pw-cli"):
             self.initializeVirtualAudioDevicesPipeWire(input_devices, output_devices)
         else:
-            self.initializeVirtualAudioDevicesPulseAudio(
-                pactl, input_devices, output_devices
+            self.log.error(
+                "Could not find pactl or pw-cli on system; cannot set up "
+                "virtual audio devices"
             )
+            return
+
+    def _pw_dump_nodes(self):
+        """Run pw-dump Node and return a list of node objects.
+
+        Handles both JSON array output (older PipeWire) and newline-delimited
+        JSON objects (newer PipeWire versions).
+        """
+        try:
+            output = subprocess.check_output(["pw-dump", "Node"])
+        except subprocess.CalledProcessError:
+            return []
+        text = output.decode("utf-8", errors="replace").strip()
+        if not text:
+            return []
+        try:
+            result = json.loads(text)
+            nodes = result if isinstance(result, list) else [result]
+        except json.JSONDecodeError:
+            # Try NDJSON (one JSON object per line)
+            nodes = []
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        nodes.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        return [n for n in nodes if isinstance(n, dict)]
 
     def initializeVirtualAudioDevicesPipeWire(self, input_devices, output_devices):
-        required_commands = ["pw-cli", "pw-dump"]
+        # Already initialized for this run; skip to avoid duplicate nodes.
+        if getattr(self, "pwLoopbackProcesses", None):
+            return True
+
+        required_commands = ["pw-cli", "pw-dump", "pw-loopback"]
         for command in required_commands:
             cmd = which(command)
             if not cmd:
-                self.log.error(f"Could not find required program {command} on system")
-                return
-
-        # Create outputs
-        for device in output_devices:
-            cmd = ["pw-cli", "create-node", "adapter"]
-            device_spec = [
-                (
-                    "{{factory.name=support.null-audio-sink "
-                    'node.name="{}" '
-                    'node.description="{}" '
-                    "media.class=Audio/Sink "
-                    "object.linger=true "
-                    "audio.position=[FL FR] "
-                    "monitor.channel-volumes=true "
-                    "audio.rate={}}}".format(
-                        device["name"], device["description"], device["rate"]
-                    )
+                self.log.warning(
+                    f"Could not find required program {command} on system; "
+                    "falling back to PulseAudio path"
                 )
-            ]
-            subprocess.check_output(cmd + device_spec)
+                return False
+
+        # Create outputs as a sink + matching monitor source pair via
+        # pw-loopback. Audio written to the sink is routed to the source.
+        # This avoids relying on PipeWire's pulseaudio-compat layer to surface
+        # null sink monitors as separate Source nodes, which only works when
+        # pipewire-pulse is installed.
+        self.pwLoopbackProcesses = []
+        for device in output_devices:
+            rate = device["rate"]
+            description = device["description"]
+            capture_props = (
+                f'node.name="{device["name"]}" '
+                f'node.description="{description}" '
+                f"media.class=Audio/Sink "
+                f"audio.rate={rate}"
+            )
+            playback_props = (
+                f'node.name="{device["name"]}-monitor" '
+                f'node.description="Monitor of {description}" '
+                f"media.class=Audio/Source "
+                f"audio.rate={rate}"
+            )
+            self.pwLoopbackProcesses.append(
+                subprocess.Popen([
+                    "pw-loopback",
+                    "-i",
+                    capture_props,
+                    "-o",
+                    playback_props,
+                ])
+            )
+
+        # Wait for loopback nodes to register before continuing.
+        for _ in range(50):
+            nodes = self._pw_dump_nodes()
+            registered_names = {
+                n.get("info", {}).get("props", {}).get("node.name", "")
+                for n in nodes
+                if isinstance(n, dict)
+            }
+            expected = set()
+            for d in output_devices:
+                expected.add(d["name"])
+                expected.add(f"{d['name']}-monitor")
+            if expected.issubset(registered_names):
+                break
+            time.sleep(0.1)
 
         # Create inputs
         for device in input_devices:
             cmd = ["pw-cli", "create-node", "adapter"]
-            # The frequency setting doesn't work for now
+            # The frequency setting doesn't work for now.
+            # library.name is explicit because factory.name=audiotestsrc has
+            # no entry in PipeWire's default context.spa-libs mapping.
             device_spec = [
                 (
                     "{{factory.name=audiotestsrc "
+                    "library.name=audiotestsrc/libspa-audiotestsrc "
                     'node.name="{}" '
                     'node.description="{}" '
                     "media.class=Audio/Source "
@@ -3295,19 +3382,20 @@ toolbar#nav-bar {
 
         # Get the node ids for cleanup
         virtual_node_ids = []
-        cmd = ["pw-dump", "Node"]
-        try:
-            nodes = json.loads(subprocess.check_output(cmd))
-        except json.JSONDecodeError as e:
-            # This can happen but I'm not sure why, leaving that in for now
-            print(e, str(cmd))
-            sys.exit(1)
+        nodes = self._pw_dump_nodes()
+        # Only collect sine-* nodes here. The null-* sink/source pair is
+        # managed by pw-loopback subprocesses and is cleaned up when those
+        # processes are terminated.
         for node in nodes:
-            name = node["info"]["props"]["node.name"]
-            if "null-" in name or "sine-" in name:
-                virtual_node_ids.append(node["info"]["props"]["object.id"])
+            if not isinstance(node, dict):
+                continue
+            props = node.get("info", {}).get("props", {})
+            name = props.get("node.name", "")
+            if "sine-" in name:
+                virtual_node_ids.append(props.get("object.id"))
 
         self.virtualAudioNodeIdList = virtual_node_ids
+        return True
 
     def initializeVirtualAudioDevicesPulseAudio(
         self, pactl, input_devices, output_devices

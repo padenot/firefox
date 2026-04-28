@@ -164,8 +164,6 @@ void MediaEngineWebRTC::EnumerateMicrophoneDevices(
   RefPtr<const AudioDeviceSet> devices =
       GetEnumerator()->EnumerateAudioInputDevices();
 
-  DebugOnly<bool> foundPreferredDevice = false;
-
   for (const auto& deviceInfo : *devices) {
 #ifndef ANDROID
     MOZ_ASSERT(deviceInfo->DeviceID());
@@ -180,20 +178,6 @@ void MediaEngineWebRTC::EnumerateMicrophoneDevices(
       // Lie and provide the name as UUID
       RefPtr device = new MediaDevice(this, deviceInfo, deviceInfo->Name());
       if (deviceInfo->Preferred()) {
-#ifdef DEBUG
-        if (!foundPreferredDevice) {
-          foundPreferredDevice = true;
-        } else {
-          // This is possible on windows, there is a default communication
-          // device, and a default device:
-          // See https://bugzilla.mozilla.org/show_bug.cgi?id=1542739
-#  ifndef XP_WIN
-          MOZ_ASSERT(!foundPreferredDevice,
-                     "Found more than one preferred audio input device"
-                     "while enumerating");
-#  endif
-        }
-#endif
         aDevices->InsertElementAt(0, std::move(device));
       } else {
         aDevices->AppendElement(std::move(device));

@@ -231,6 +231,10 @@ NotNull<RefPtr<DeviceInputTrack>> DeviceInputTrack::OpenAudio(
     // trigger the MTG shutdown timeout (bug 2035550).
     const bool graphHasAudioCallbackDriver =
         static_cast<MediaTrackGraphImpl*>(aGraph)->mAudioOutputEverStarted;
+    LOG("OpenAudio: device %p, graphHasAudioCallbackDriver=%d, "
+        "nativeInputTrack=%p",
+        aDeviceId, (int)graphHasAudioCallbackDriver,
+        aGraph->GetNativeInputTrackMainThread());
     if (aGraph->GetNativeInputTrackMainThread() || graphHasAudioCallbackDriver) {
       // A native device is already in use, or output audio is already running.
       // This device will be a non-native device.

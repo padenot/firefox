@@ -1187,6 +1187,8 @@ class MochitestArguments(ArgumentContainer):
             gst010 = which("gst-launch-0.10")
             gst10 = which("gst-launch-1.0")
             pactl = which("pactl")
+            pw_cli = which("pw-cli")
+            pw_dump = which("pw-dump")
 
             if not (gst01 or gst10 or gst010):
                 parser.error(
@@ -1194,9 +1196,10 @@ class MochitestArguments(ArgumentContainer):
                     "--use-test-media-devices"
                 )
 
-            if not pactl:
+            if not pactl and not (pw_cli and pw_dump):
                 parser.error(
-                    "Missing binary pactl required for --use-test-media-devices"
+                    "Missing pactl (PulseAudio) or pw-cli + pw-dump (PipeWire), "
+                    "one set required for --use-test-media-devices"
                 )
 
         # The a11y and chrome flavors can't run with e10s.

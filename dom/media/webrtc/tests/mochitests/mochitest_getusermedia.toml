@@ -80,6 +80,7 @@ run-if = [
   "os != 'android'", # no screenshare on android
 ]
 skip-if = [
+  "headless", # getDisplayMedia blocks on portal picker in headless runs
   "os == 'linux' && os_version == '24.04' && arch == 'x86_64' && display == 'x11' && debug", # Bug 1781629
   "os == 'linux' && os_version == '24.04' && arch == 'x86_64' && display == 'x11' && opt", # Bug 1781629
   "os == 'mac' && os_version == '14.70' && arch == 'x86_64'", # Bug 1929425
@@ -118,6 +119,24 @@ skip-if = [
 ["test_getUserMedia_cubebDisabledFakeStreams.html"]
 
 ["test_getUserMedia_getTrackById.html"]
+
+["test_lazy_gum_clone_before_consume.html"]
+use-test-media-devices = true
+
+["test_lazy_gum_same_graph.html"]
+use-test-media-devices = true
+
+["test_lazy_gum_capture_state.html"]
+use-test-media-devices = true
+
+["test_lazy_gum_second_consumer.html"]
+use-test-media-devices = true
+
+["test_lazy_gum_srcobject.html"]
+use-test-media-devices = true
+
+["test_lazy_gum_stop_before_consume.html"]
+use-test-media-devices = true
 
 ["test_getUserMedia_gumWithinGum.html"]
 

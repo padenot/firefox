@@ -788,11 +788,14 @@ void MediaTrackGraphImpl::OpenAudioInputImpl(DeviceInputTrack* aTrack) {
   }
   NonNativeInputTrack* nonNative = aTrack->AsNonNativeInputTrack();
   MOZ_ASSERT(nonNative);
+  uint32_t channelCount = AudioInputChannelCount(nonNative->mDeviceId);
+  LOG(LogLevel::Debug,
+      ("%p OpenAudioInputImpl NonNative device %p channelCount=%u rate=%u",
+       this, nonNative->mDeviceId, channelCount, nonNative->mSampleRate));
   // Start non-native input right away.
   nonNative->StartAudio(MakeRefPtr<AudioInputSource>(
       MakeRefPtr<AudioInputSourceListener>(nonNative),
-      nonNative->GenerateSourceId(), nonNative->mDeviceId,
-      AudioInputChannelCount(nonNative->mDeviceId),
+      nonNative->GenerateSourceId(), nonNative->mDeviceId, channelCount,
       AudioInputDevicePreference(nonNative->mDeviceId) == AudioInputType::Voice,
       nonNative->mPrincipalHandle, nonNative->mSampleRate, GraphRate()));
 }

@@ -23,54 +23,54 @@ promise_setup(async () => {
 // https://webaudio.github.io/web-audio-api/#AudioContext-constructors
 
 // Step 10.1.1. If sinkId is equal to [[sink ID]], abort these substeps.
-async_test(t => {
+promise_test(async t => {
   // The initial `sinkId` is the empty string. This will cause the same value
   // check.
   const audioContext = new AudioContext({sinkId: ''});
-  audioContext.addEventListener('statechange', () => {
-    t.step(() => {
-      assert_equals(audioContext.sinkId, '');
-      assert_equals(audioContext.state, 'running');
-    });
-    audioContext.close();
-    t.done();
-  }, {once: true});
+  await new Promise(resolve => {
+    audioContext.addEventListener('statechange', resolve, {once: true});
+  });
+  assert_equals(audioContext.sinkId, '');
+  assert_equals(audioContext.state, 'running');
+  await audioContext.close();
 }, 'Setting sinkId to the empty string at construction should succeed.');
 
 // Step 10.1.2~3: See "Validating sinkId" tests below.
 
 // Step 10.1.4. If sinkId is a type of DOMString, set [[sink ID]] to sinkId and
 // abort these substeps.
-async_test(t => {
+promise_test(async t => {
   const audioContext = new AudioContext({sinkId: firstDeviceId});
-  audioContext.addEventListener('statechange', () => {
-    t.step(() => {
-      assert_true(audioContext.sinkId === firstDeviceId,
-                  'the context sinkId should match the given sinkId.');
-    });
-    audioContext.close();
-    t.done();
-  }, {once: true});
-  t.step_timeout(t.unreached_func('onstatechange not fired or assert failed'),
-                 100);
+  await Promise.race([
+    new Promise(resolve => {
+      audioContext.addEventListener('statechange', resolve, {once: true});
+    }),
+    new Promise((_, reject) => {
+      t.step_timeout(() => reject(new Error('onstatechange not fired or assert failed')), 100);
+    }),
+  ]);
+  assert_true(audioContext.sinkId === firstDeviceId,
+              'the context sinkId should match the given sinkId.');
+  await audioContext.close();
 }, 'Setting sinkId with a valid device identifier at construction should succeed.');
 
 // Step 10.1.5. If sinkId is a type of AudioSinkOptions, set [[sink ID]] to a
 // new instance of AudioSinkInfo created with the value of type of sinkId.
-async_test(t => {
+promise_test(async t => {
   const audioContext = new AudioContext({sinkId: {type: 'none'}});
   // The only signal we can use for the sinkId change after construction is
   // `statechange` event.
-  audioContext.addEventListener('statechange', () => {
-    t.step(() => {
-      assert_equals(typeof audioContext.sinkId, 'object');
-      assert_equals(audioContext.sinkId.type, 'none');
-    });
-    audioContext.close();
-    t.done();
-  }, {once: true});
-  t.step_timeout(t.unreached_func('onstatechange not fired or assert failed'),
-                 100);
+  await Promise.race([
+    new Promise(resolve => {
+      audioContext.addEventListener('statechange', resolve, {once: true});
+    }),
+    new Promise((_, reject) => {
+      t.step_timeout(() => reject(new Error('onstatechange not fired or assert failed')), 100);
+    }),
+  ]);
+  assert_equals(typeof audioContext.sinkId, 'object');
+  assert_equals(audioContext.sinkId.type, 'none');
+  await audioContext.close();
 }, 'Setting sinkId with an AudioSinkOptions at construction should succeed.');
 
 // 1.2.4. Validating sinkId
@@ -81,17 +81,14 @@ async_test(t => {
 // TODO(https://crbug.com/1380872): Due to the lack of "speaker-selection"
 // implementation, a test for such step does not exist yet.
 
-async_test(t => {
-  t.step(() => {
-    // The wrong AudioSinkOption.type should cause a TypeError. This exception
-    // is thrown at the IDL validation level.
-    assert_throws_js(TypeError, () => {
-      const audioContext = new AudioContext({sinkId: {type: 'something_else'}});
-      audioContext.close();
-    }, 'An invalid AudioSinkOptions.type value should throw a TypeError ' +
-     'exception.');
-  });
-  t.done();
+promise_test(t => {
+  // The wrong AudioSinkOption.type should cause a TypeError. This exception
+  // is thrown at the IDL validation level.
+  assert_throws_js(TypeError, () => {
+    const audioContext = new AudioContext({sinkId: {type: 'something_else'}});
+    audioContext.close();
+  }, 'An invalid AudioSinkOptions.type value should throw a TypeError exception.');
+  return Promise.resolve();
 }, 'Invalid sinkId argument with a wrong type should throw an appropriate exception.');
 
 // Step 4. If sinkIdArg is a type of DOMString but it is not equal to the
@@ -100,15 +97,18 @@ async_test(t => {
 //
 // When validation returns a false value, the context dispatches an onerror
 // event.
-async_test(t => {
+promise_test(async t => {
   // An invalid device ID should dispatch an onerror event.
   const audioContext = new AudioContext({sinkId: 'some_random_device_id'});
-  audioContext.addEventListener('error', () => {
-    audioContext.close();
-    t.done();
-  }, {once: true});
-  t.step_timeout(t.unreached_func('onerror not fired on invalid device ID'),
-                 100);
+  await Promise.race([
+    new Promise(resolve => {
+      audioContext.addEventListener('error', resolve, {once: true});
+    }),
+    new Promise((_, reject) => {
+      t.step_timeout(() => reject(new Error('onerror not fired on invalid device ID')), 100);
+    }),
+  ]);
+  await audioContext.close();
 }, 'Invalid sinkId argument with a wrong ID should dispatch an onerror event.');
 </script>
 </html>
