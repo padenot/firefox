@@ -198,24 +198,26 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
   if (!Ended()) {
     GetSource().RegisterSink(mSink.get());
 
-    // Even if the input track is destroyed we need mTrack so that methods
-    // like AddListener still work. Keeping the number of paths to a minimum
-    // also helps prevent bugs elsewhere. We'll be ended through the
-    // MediaStreamTrackSource soon enough.
-    auto graph = mInputTrack->IsDestroyed()
-                     ? MediaTrackGraph::GetInstanceIfExists(
-                           mWindow, mInputTrack->mSampleRate,
-                           MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
-                     : mInputTrack->Graph();
-    MOZ_DIAGNOSTIC_ASSERT(graph,
-                          "A destroyed input track is only expected when "
-                          "cloning, but since we're live there must be another "
-                          "live track that is keeping the graph alive");
+    if (mInputTrack) {
+      // Even if the input track is destroyed we need mTrack so that methods
+      // like AddListener still work. Keeping the number of paths to a minimum
+      // also helps prevent bugs elsewhere. We'll be ended through the
+      // MediaStreamTrackSource soon enough.
+      auto graph = mInputTrack->IsDestroyed()
+                       ? MediaTrackGraph::GetInstanceIfExists(
+                             mWindow, mInputTrack->mSampleRate,
+                             MediaTrackGraph::DEFAULT_OUTPUT_DEVICE)
+                       : mInputTrack->Graph();
+      MOZ_DIAGNOSTIC_ASSERT(graph,
+                            "A destroyed input track is only expected when "
+                            "cloning, but since we're live there must be another "
+                            "live track that is keeping the graph alive");
 
-    mTrack = graph->CreateForwardedInputTrack(mInputTrack->mType);
-    mPort = mTrack->AllocateInputPort(mInputTrack);
-    mMTGListener = new MTGListener(this);
-    AddListener(mMTGListener);
+      mTrack = graph->CreateForwardedInputTrack(mInputTrack->mType);
+      mPort = mTrack->AllocateInputPort(mInputTrack);
+      mMTGListener = new MTGListener(this);
+      AddListener(mMTGListener);
+    }
   }
 
   nsresult rv;
@@ -234,6 +236,30 @@ MediaStreamTrack::MediaStreamTrack(nsPIDOMWindowInner* aWindow,
 }
 
 MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
+
+void MediaStreamTrack::CompleteInit() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mInputTrack);
+  MOZ_ASSERT(!mTrack);
+
+  mTrack = mInputTrack->Graph()->CreateForwardedInputTrack(mInputTrack->mType);
+  mPort = mTrack->AllocateInputPort(mInputTrack);
+
+  if (!mEnabled || mMuted) {
+    mTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
+  }
+
+  for (const auto& l : mTrackListeners) {
+    mTrack->AddListener(l);
+  }
+  for (const auto& l : mDirectTrackListeners) {
+    mTrack->AddDirectListener(l);
+  }
+
+  mMTGListener = new MTGListener(this);
+  // AddListener appends to mTrackListeners and adds to mTrack.
+  AddListener(mMTGListener);
+}
 
 void MediaStreamTrack::Destroy() {
   SetReadyState(MediaStreamTrackState::Ended);
@@ -289,7 +315,7 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
 
   mEnabled = aEnabled;
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
     return;
   }
 
@@ -385,21 +411,24 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
 
 ProcessedMediaTrack* MediaStreamTrack::GetTrack() const {
   MOZ_DIAGNOSTIC_ASSERT(!Ended());
+  MOZ_DIAGNOSTIC_ASSERT(mTrack);
   return mTrack;
 }
 
 MediaTrackGraph* MediaStreamTrack::Graph() const {
   MOZ_DIAGNOSTIC_ASSERT(!Ended());
+  MOZ_DIAGNOSTIC_ASSERT(mTrack);
   return mTrack->Graph();
 }
 
 MediaTrackGraphImpl* MediaStreamTrack::GraphImpl() const {
   MOZ_DIAGNOSTIC_ASSERT(!Ended());
+  MOZ_DIAGNOSTIC_ASSERT(mTrack);
   return mTrack->GraphImpl();
 }
 
 uint64_t MediaStreamTrack::MediaTrackGraphId() const {
-  if (Ended()) {
+  if (Ended() || !mTrack) {
     return 0;
   }
   return reinterpret_cast<uintptr_t>(Graph());
@@ -595,7 +624,7 @@ void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
       ("MediaStreamTrack %p adding listener %p", this, aListener));
   mTrackListeners.AppendElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->AddListener(aListener);
@@ -606,7 +635,7 @@ void MediaStreamTrack::RemoveListener(MediaTrackListener* aListener) {
       ("MediaStreamTrack %p removing listener %p", this, aListener));
   mTrackListeners.RemoveElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->RemoveListener(aListener);
@@ -619,7 +648,7 @@ void MediaStreamTrack::AddDirectListener(DirectMediaTrackListener* aListener) {
                         aListener, mTrack.get()));
   mDirectTrackListeners.AppendElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->AddDirectListener(aListener);
@@ -632,7 +661,7 @@ void MediaStreamTrack::RemoveDirectListener(
        aListener, mTrack.get()));
   mDirectTrackListeners.RemoveElement(aListener);
 
-  if (Ended()) {
+  if (Ended() || !mTrack) {
     return;
   }
   mTrack->RemoveDirectListener(aListener);

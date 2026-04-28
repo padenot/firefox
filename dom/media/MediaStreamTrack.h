@@ -140,6 +140,16 @@ class MediaStreamTrackSource : public nsISupports {
   virtual CloneResult Clone();
 
   /**
+   * Create an input MediaTrack in the given graph and start the underlying
+   * device. Called once when a lazy AudioStreamTrack is first connected to a
+   * consumer. Returns null on failure (device gone, shutdown).
+   */
+  virtual already_AddRefed<MediaTrack> CreateAndInitInputTrackInGraph(
+      MediaTrackGraph* aGraph) {
+    return nullptr;
+  }
+
+  /**
    * Gets the source's MediaSourceEnum for usage by PeerConnections.
    */
   virtual MediaSourceEnum GetMediaSource() const = 0;
@@ -512,9 +522,18 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   }
 
   ProcessedMediaTrack* GetTrack() const;
+  // Like GetTrack() but returns null instead of asserting for lazy tracks.
+  ProcessedMediaTrack* MaybeGetTrack() const { return mTrack; }
   MediaTrackGraph* Graph() const;
   MediaTrackGraphImpl* GraphImpl() const;
   uint64_t MediaTrackGraphId() const;
+
+  /**
+   * Ensure the track has been initialized in a MediaTrackGraph. No-op for
+   * tracks that are already initialized. AudioStreamTrack overrides this to
+   * lazily start the device in the default output graph.
+   */
+  virtual void EnsureInitialized() {}
 
   MediaStreamTrackSource& GetSource() const {
     MOZ_RELEASE_ASSERT(mSource,
@@ -595,6 +614,12 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   virtual void SetReadyState(MediaStreamTrackState aState);
 
   /**
+   * Called by AudioStreamTrack::InitializeInGraph once mInputTrack has been
+   * created. Sets up mTrack, mPort, mMTGListener, and re-applies pending state.
+   */
+  void CompleteInit();
+
+  /**
    * Notified by the MediaTrackGraph, through our owning MediaStream on the
    * main thread.
    *
@@ -658,8 +683,9 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   template <typename TrackType>
   already_AddRefed<MediaStreamTrack> CloneInternal() {
     auto cloneRes = mSource->Clone();
-    MOZ_ASSERT(!!cloneRes.mSource == !!cloneRes.mInputTrack);
-    if (!cloneRes.mSource || !cloneRes.mInputTrack) {
+    // mInputTrack may be null with a valid mSource for lazy audio tracks.
+    MOZ_ASSERT(!cloneRes.mInputTrack || cloneRes.mSource);
+    if (!cloneRes.mSource) {
       cloneRes.mSource = mSource;
       cloneRes.mInputTrack = mInputTrack;
     }
@@ -680,8 +706,8 @@ class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
 
   // The input MediaTrack assigned us by the data producer.
-  // Owned by the producer.
-  const RefPtr<mozilla::MediaTrack> mInputTrack;
+  // Owned by the producer. Null for lazy audio tracks until first consumer.
+  RefPtr<mozilla::MediaTrack> mInputTrack;
   // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
   // Set on construction if we're live. Valid until we end. Owned by us.
   RefPtr<ProcessedMediaTrack> mTrack;

@@ -331,7 +331,7 @@ void DOMMediaStream::AddTrack(MediaStreamTrack& aTrack) {
           : (aTrack.AsVideoStreamTrack() ? "Video" : "Other");
   LOG(LogLevel::Info,
       ("DOMMediaStream %p Adding track %p (type=%s, from track %p)", this,
-       &aTrack, trackType, aTrack.GetTrack()));
+       &aTrack, trackType, aTrack.MaybeGetTrack()));
 
   if (HasTrack(aTrack)) {
     LOG(LogLevel::Debug,
@@ -354,7 +354,7 @@ void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
     } else {
       LOG(LogLevel::Info,
           ("DOMMediaStream %p Removing track %p (from track %p)", this, &aTrack,
-           aTrack.GetTrack()));
+           aTrack.MaybeGetTrack()));
     }
   }
 
