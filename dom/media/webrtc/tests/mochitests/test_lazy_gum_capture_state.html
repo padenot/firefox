@@ -1,0 +1,44 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<pre id="test">
+<script type="application/javascript">
+createHTML({
+  title: "Lazy gUM - capture state is Enabled immediately after getUserMedia",
+  bug: "2035550",
+});
+
+function getCaptureState() {
+  const svc = Cc["@mozilla.org/mediaManagerService;1"]
+      .getService(Ci.nsIMediaManagerService);
+  const hasMic = {};
+  svc.mediaCaptureWindowState(window, {}, hasMic, {}, {}, {}, {}, false);
+  return hasMic.value;
+}
+
+runTest(async () => {
+  const stream = await getUserMedia({ audio: true });
+  const track = stream.getAudioTracks()[0];
+
+  is(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+     "track is lazy before first consumer");
+
+  // Capture state must be Enabled immediately: the device is allocated and the
+  // privacy indicator should light up even before the first consumer connects.
+  const svc = Cc["@mozilla.org/mediaManagerService;1"]
+      .getService(Ci.nsIMediaManagerService);
+  is(getCaptureState(), svc.STATE_CAPTURE_ENABLED,
+     "capture state is Enabled while lazy, before first consumer");
+
+  // Stop the lazy track - capture state must clear.
+  track.stop();
+  is(getCaptureState(), svc.STATE_NOCAPTURE,
+     "capture state is NoCapture after stopping the lazy track");
+});
+</script>
+</pre>
+</body>
+</html>

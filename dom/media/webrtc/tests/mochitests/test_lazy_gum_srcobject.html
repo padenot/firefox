@@ -1,0 +1,36 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<audio id="testAudio" autoplay></audio>
+<pre id="test">
+<script type="application/javascript">
+createHTML({
+  title: "Lazy gUM - srcObject play initializes the track",
+  bug: "lazy-gum",
+});
+
+runTest(async () => {
+  const stream = await getUserMedia({ audio: true });
+  const track = stream.getAudioTracks()[0];
+
+  is(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+     "lazy gUM track has graphId 0 before playing");
+
+  const audio = document.getElementById("testAudio");
+  audio.srcObject = stream;
+
+  await haveEvent(audio, "playing", wait(10000, new Error("Timeout waiting for playing")));
+
+  isnot(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+        "srcObject play initializes the track");
+
+  track.stop();
+  audio.srcObject = null;
+});
+</script>
+</pre>
+</body>
+</html>

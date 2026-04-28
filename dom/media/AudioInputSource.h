@@ -132,6 +132,9 @@ class AudioInputSource : public CubebInputStream::Listener {
   // An input-only cubeb stream operated within mTaskThread.
   UniquePtr<CubebInputStream> mStream;
 
+  // Set to true on first DataCallback, to log it once.
+  Atomic<bool> mDataCallbackLogged{false};
+
   // The params configured on the cubeb stream, after filtering away unsupported
   // params. mTaskThread only.
   cubeb_input_processing_params mConfiguredProcessingParams =

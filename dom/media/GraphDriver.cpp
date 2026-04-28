@@ -747,17 +747,11 @@ void AudioCallbackDriver::Shutdown() {
       ("%p: Releasing audio driver off main thread (GraphDriver::Shutdown).",
        Graph()));
 
-  fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Shutdown - dispatching Stop to mCubebOperationThread\n", this);
   nsLiteralCString reason("AudioCallbackDriver::Shutdown");
   NS_DispatchAndSpinEventLoopUntilComplete(
       reason, mCubebOperationThread,
       NS_NewRunnableFunction(reason.get(),
-                             [self = RefPtr{this}] {
-                               fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Stop() running on mCubebOperationThread\n", self.get());
-                               self->Stop();
-                               fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Stop() done\n", self.get());
-                             }));
-  fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Shutdown complete\n", this);
+                             [self = RefPtr{this}] { self->Stop(); }));
 }
 
 void AudioCallbackDriver::SetStreamName(const nsACString& aStreamName) {

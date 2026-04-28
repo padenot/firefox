@@ -45,6 +45,11 @@ async function runTest() {
 
   await Promise.all([waitForRunning(interactive), waitForRunning(balanced)]);
 
+  // Connect the track to the interactive context so the lazy gUM track
+  // initializes in its graph.
+  const source = interactive.createMediaStreamSource(stream);
+  source.connect(interactive.destination);
+
   const trackGraphId      = wrap(track).mediaTrackGraphId;
   const interactiveGraphId = wrap(interactive).mediaTrackGraphId;
   const balancedGraphId   = wrap(balanced).mediaTrackGraphId;
@@ -54,6 +59,8 @@ async function runTest() {
 
   isnot(balancedGraphId, trackGraphId,
     "Balanced AudioContext uses a different MediaTrackGraph from the gUM track");
+
+  source.disconnect();
 
   track.stop();
   await Promise.all([interactive.close(), balanced.close()]);

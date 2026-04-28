@@ -2472,6 +2472,10 @@ void MediaTrackGraphImpl::IncrementOutputDeviceRefCnt(
           ? aPreferredSampleRate
           : static_cast<TrackRate>(CubebUtils::PreferredSampleRate(
                 /*aShouldResistFingerprinting*/ false));
+  LOG(LogLevel::Debug,
+      ("%p IncrementOutputDeviceRefCnt: new device %p (primary %p), rate %u, "
+       "creating cross-graph receiver",
+       this, aDeviceID, mPrimaryOutputDeviceID, sampleRate));
   MediaTrackGraph* newGraph = MediaTrackGraphImpl::GetInstance(
       MediaTrackGraph::AUDIO_THREAD_DRIVER, mWindowID, sampleRate, aDeviceID,
       GetMainThreadSerialEventTarget());

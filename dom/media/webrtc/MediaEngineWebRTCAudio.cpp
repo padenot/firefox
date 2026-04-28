@@ -408,6 +408,8 @@ void MediaEngineWebRTCMicrophoneSource::SetTrack(
 
   NS_DispatchToMainThread(NS_NewRunnableFunction(
       __func__, [track = mTrack, processing = mInputProcessing]() mutable {
+        LOG("Mic source SetTrack dispatch: SetInputProcessing+Resume on track %p",
+            track.get());
         track->SetInputProcessing(std::move(processing));
         track->Resume();  // Suspended by MediaManager
       }));
@@ -612,8 +614,10 @@ void AudioInputProcessing::Start(MediaTrackGraph* aGraph) {
   aGraph->AssertOnGraphThread();
 
   if (mEnabled) {
+    LOG("AudioInputProcessing %p Start() already enabled", this);
     return;
   }
+  LOG("AudioInputProcessing %p Start() setting mEnabled=true", this);
   mEnabled = true;
 
   MOZ_ASSERT(!mPacketizerInput);

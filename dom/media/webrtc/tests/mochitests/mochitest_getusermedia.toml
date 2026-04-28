@@ -124,13 +124,11 @@ skip-if = [
 use-test-media-devices = true
 
 ["test_lazy_gum_same_graph.html"]
-use-test-media-devices = true
 
 ["test_lazy_gum_capture_state.html"]
 use-test-media-devices = true
 
 ["test_lazy_gum_second_consumer.html"]
-use-test-media-devices = true
 
 ["test_lazy_gum_srcobject.html"]
 use-test-media-devices = true

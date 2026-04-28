@@ -1,0 +1,45 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<pre id="test">
+<script type="application/javascript">
+createHTML({
+  title: "Lazy gUM - clone before consume is also lazy",
+  bug: "2035550",
+});
+
+runTest(async () => {
+  const stream = await getUserMedia({ audio: true });
+  const track = stream.getAudioTracks()[0];
+  const clone = track.clone();
+
+  // Both original and clone are lazy before any consumer.
+  is(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+     "original lazy track has no graph before first consumer");
+  is(SpecialPowers.wrap(clone).mediaTrackGraphId, 0,
+     "cloned lazy track has no graph before first consumer");
+
+  // Connect both to the same non-default AudioContext.
+  const ctx = new AudioContext({ latencyHint: "balanced" });
+  new MediaStreamTrackAudioSourceNode(ctx, { mediaStreamTrack: track });
+  new MediaStreamTrackAudioSourceNode(ctx, { mediaStreamTrack: clone });
+
+  // Both must end up in ctx's graph — no cross-graph for clone.
+  is(SpecialPowers.wrap(track).mediaTrackGraphId,
+     SpecialPowers.wrap(ctx).mediaTrackGraphId,
+     "original initializes in ctx's graph");
+  is(SpecialPowers.wrap(clone).mediaTrackGraphId,
+     SpecialPowers.wrap(ctx).mediaTrackGraphId,
+     "lazy clone also initializes in ctx's graph, no cross-graph");
+
+  track.stop();
+  clone.stop();
+  await ctx.close();
+});
+</script>
+</pre>
+</body>
+</html>

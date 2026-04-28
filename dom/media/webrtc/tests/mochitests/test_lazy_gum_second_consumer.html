@@ -1,0 +1,57 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<pre id="test">
+<script type="application/javascript">
+createHTML({
+  title: "Lazy gUM - second consumer in different graph uses CrossGraphPort",
+  bug: "lazy-gum",
+});
+
+runTest(async () => {
+  await SpecialPowers.pushPrefEnv({
+    set: [["media.navigator.streams.fake", true]],
+  });
+
+  const ctx1 = new AudioContext({ latencyHint: "interactive" });
+  const ctx2 = new AudioContext({ latencyHint: "balanced" });
+
+  // The two contexts must be in different graphs for this test to be meaningful.
+  isnot(SpecialPowers.wrap(ctx1).mediaTrackGraphId,
+        SpecialPowers.wrap(ctx2).mediaTrackGraphId,
+        "interactive and balanced contexts are in different graphs");
+
+  const stream = await getUserMedia({ audio: true });
+  const track = stream.getAudioTracks()[0];
+
+  // Before any consumer: track is lazy.
+  is(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+     "lazy gUM track has graphId 0 before first consumer");
+
+  // First consumer — lazy init picks ctx1's graph.
+  new MediaStreamTrackAudioSourceNode(ctx1, { mediaStreamTrack: track });
+  is(SpecialPowers.wrap(track).mediaTrackGraphId,
+     SpecialPowers.wrap(ctx1).mediaTrackGraphId,
+     "first consumer: track is in ctx1's graph");
+
+  // Second consumer in a different graph — cross-graph port used,
+  // track stays in ctx1's graph.
+  new MediaStreamTrackAudioSourceNode(ctx2, { mediaStreamTrack: track });
+  is(SpecialPowers.wrap(track).mediaTrackGraphId,
+     SpecialPowers.wrap(ctx1).mediaTrackGraphId,
+     "second consumer in different graph: track stays in ctx1's graph");
+  isnot(SpecialPowers.wrap(track).mediaTrackGraphId,
+        SpecialPowers.wrap(ctx2).mediaTrackGraphId,
+        "second consumer in different graph: cross-graph (different from ctx2)");
+
+  track.stop();
+  await ctx1.close();
+  await ctx2.close();
+});
+</script>
+</pre>
+</body>
+</html>

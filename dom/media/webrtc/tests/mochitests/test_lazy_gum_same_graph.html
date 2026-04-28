@@ -1,0 +1,61 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<pre id="test">
+<script type="application/javascript">
+createHTML({
+  title: "Lazy gUM - track initializes in AudioContext's graph",
+  bug: "lazy-gum",
+});
+
+runTest(async () => {
+  await SpecialPowers.pushPrefEnv({
+    set: [["media.navigator.streams.fake", true]],
+  });
+
+  // Default AudioContext
+  const ctx1 = new AudioContext();
+  const stream1 = await getUserMedia({ audio: true });
+  const track1 = stream1.getAudioTracks()[0];
+
+  is(SpecialPowers.wrap(track1).mediaTrackGraphId, 0,
+     "lazy gUM track has graphId 0 before first consumer");
+
+  const src1 = new MediaStreamTrackAudioSourceNode(ctx1,
+      { mediaStreamTrack: track1 });
+
+  is(SpecialPowers.wrap(track1).mediaTrackGraphId,
+     SpecialPowers.wrap(ctx1).mediaTrackGraphId,
+     "default ctx: track and context share a graph after connection");
+
+  // Balanced latency hint — different MTG than default
+  const ctx2 = new AudioContext({ latencyHint: "balanced" });
+  const stream2 = await getUserMedia({ audio: true });
+  const track2 = stream2.getAudioTracks()[0];
+
+  is(SpecialPowers.wrap(track2).mediaTrackGraphId, 0,
+     "lazy gUM track (balanced ctx) has graphId 0 before first consumer");
+
+  const src2 = new MediaStreamTrackAudioSourceNode(ctx2,
+      { mediaStreamTrack: track2 });
+
+  is(SpecialPowers.wrap(track2).mediaTrackGraphId,
+     SpecialPowers.wrap(ctx2).mediaTrackGraphId,
+     "balanced ctx: track and context share a graph after connection");
+
+  isnot(SpecialPowers.wrap(ctx1).mediaTrackGraphId,
+        SpecialPowers.wrap(ctx2).mediaTrackGraphId,
+        "default and balanced contexts are in different graphs");
+
+  track1.stop();
+  track2.stop();
+  await ctx1.close();
+  await ctx2.close();
+});
+</script>
+</pre>
+</body>
+</html>

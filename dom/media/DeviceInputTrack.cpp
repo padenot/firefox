@@ -555,6 +555,23 @@ void NonNativeInputTrack::ProcessInput(GraphTime aFrom, GraphTime aTo,
 
   AudioSegment data = mAudioSource->GetAudioSegment(delta, consumer);
   MOZ_ASSERT(data.GetDuration() == delta);
+  // Periodically log signal amplitude from the monitor device.
+  static std::atomic<uint32_t> sLogCount{0};
+  if ((sLogCount++ % 200) == 0) {
+    float maxVal = 0.f;
+    for (AudioSegment::ChunkIterator ci(data); !ci.IsEnded(); ci.Next()) {
+      if (ci->IsNull()) continue;
+      for (uint32_t ch = 0; ch < ci->ChannelCount(); ++ch) {
+        const float* p = static_cast<const float*>(ci->mChannelData[ch]);
+        for (TrackTime i = 0; i < ci->mDuration; ++i) {
+          float v = std::abs(p[i]);
+          if (v > maxVal) maxVal = v;
+        }
+      }
+    }
+    TRACK_GRAPH_LOG("NonNativeInputTrack %p device %p: captured max=%.4f",
+                    this, mDeviceId, maxVal);
+  }
   GetData<AudioSegment>()->AppendFrom(&data);
 }
 

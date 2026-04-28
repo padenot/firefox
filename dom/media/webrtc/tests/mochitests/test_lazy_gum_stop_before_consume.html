@@ -1,0 +1,40 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <script src="mediaStreamPlayback.js"></script>
+</head>
+<body>
+<pre id="test">
+<script type="application/javascript">
+createHTML({
+  title: "Lazy gUM - stop before first consumer does not crash",
+  bug: "2035550",
+});
+
+runTest(async () => {
+  // Stop a lazy track before connecting it to any consumer.  This must not
+  // crash (MediaEngineWebRTCMicrophoneSource::Stop asserts mTrack non-null
+  // if called without a prior SetTrack).
+  const stream = await getUserMedia({ audio: true });
+  const track = stream.getAudioTracks()[0];
+
+  is(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+     "track is lazy before first consumer");
+
+  track.stop();
+
+  is(track.readyState, "ended",
+     "stopping a lazy track transitions readyState to ended");
+  is(SpecialPowers.wrap(track).mediaTrackGraphId, 0,
+     "stopped lazy track still has no graph");
+
+  // Verify a second gUM still works after a lazy stop.
+  const stream2 = await getUserMedia({ audio: true });
+  const track2 = stream2.getAudioTracks()[0];
+  is(track2.readyState, "live", "second gUM track is live");
+  track2.stop();
+});
+</script>
+</pre>
+</body>
+</html>
