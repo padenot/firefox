@@ -400,6 +400,13 @@ class DeviceListener : public SupportsWeakPtr {
    */
   RefPtr<DeviceListenerPromise> InitializeAsync();
 
+  /**
+   * For lazy clones: allocates the device using aOriginalDevice's constraints,
+   * then initializes. Called when the first consumer connects.
+   */
+  RefPtr<DeviceListenerPromise> AllocateAndInitializeAsync(
+      RefPtr<LocalMediaDevice> aOriginalDevice);
+
  private:
   /**
    * Initializes synchronously. Must be called on the media thread.
@@ -881,9 +888,50 @@ class LocalTrackSource : public MediaStreamTrackSource {
       mListener->Stop();
       mListener = nullptr;
     }
-    if (!mTrack->IsDestroyed()) {
+    if (mTrack && !mTrack->IsDestroyed()) {
       mTrack->Destroy();
+    } else if (!mTrack) {
+      // Lazy track never consumed — no graph track to fire the ended
+      // notification upward, so notify sinks directly.
+      OverrideEnded();
     }
+  }
+
+  already_AddRefed<MediaTrack> CreateAndInitInputTrackInGraph(
+      MediaTrackGraph* aGraph) override {
+    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_ASSERT(!mTrack);
+
+    if (!mListener || mListener->Stopped()) {
+      return nullptr;
+    }
+
+    RefPtr<MediaTrack> track;
+#ifdef MOZ_WEBRTC
+    if (!mListener->GetDevice()->IsFake()) {
+      track = AudioProcessingTrack::Create(aGraph);
+      track->Suspend();
+    } else {
+      track = aGraph->CreateSourceTrack(MediaSegment::AUDIO);
+    }
+#else
+    track = aGraph->CreateSourceTrack(MediaSegment::AUDIO);
+#endif
+
+    mTrack = track;
+
+    if (mOriginalDevice) {
+      // Lazy clone: device not yet allocated. Allocate and initialize now.
+      mListener->AllocateAndInitializeAsync(std::move(mOriginalDevice))
+          ->Then(GetCurrentSerialEventTarget(), __func__, [] {}, [] {});
+    } else {
+      // Original gUM track: device already allocated, just start.
+      // mTrack must be set before InitializeAsync() captures it.
+      mListener->InitializeAsync()->Then(GetCurrentSerialEventTarget(), __func__,
+                                         [] {}, [] {});
+    }
+
+    return track.forget();
   }
 
   CloneResult Clone() override {
@@ -914,22 +962,28 @@ class LocalTrackSource : public MediaStreamTrackSource {
 
   void Mute() {
     MutedChanged(true);
-    mTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
+    if (mTrack) {
+      mTrack->SetDisabledTrackMode(DisabledTrackMode::SILENCE_BLACK);
+    }
   }
 
   void Unmute() {
     MutedChanged(false);
-    mTrack->SetDisabledTrackMode(DisabledTrackMode::ENABLED);
+    if (mTrack) {
+      mTrack->SetDisabledTrackMode(DisabledTrackMode::ENABLED);
+    }
   }
 
   const MediaSourceEnum mSource;
-  const RefPtr<MediaTrack> mTrack;
+  RefPtr<MediaTrack> mTrack;
   const RefPtr<const PeerIdentity> mPeerIdentity;
+  // Set for lazy clones only; cleared after the first consumer connects.
+  RefPtr<LocalMediaDevice> mOriginalDevice;
 
  protected:
   ~LocalTrackSource() {
     MOZ_ASSERT(NS_IsMainThread());
-    MOZ_ASSERT(mTrack->IsDestroyed());
+    MOZ_ASSERT(!mTrack || mTrack->IsDestroyed());
   }
 
   // This is a weak pointer to avoid having the DeviceListener (which may
@@ -1761,12 +1815,22 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
     return;
   }
 
-  MediaTrackGraph::GraphDriverType graphDriverType =
-      mAudioDevice ? MediaTrackGraph::AUDIO_THREAD_DRIVER
-                   : MediaTrackGraph::SYSTEM_THREAD_DRIVER;
-  MediaTrackGraph* mtg = MediaTrackGraph::GetInstance(
-      graphDriverType, window, MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
-      MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
+  // Lazy mic audio doesn't use this graph (it joins the consumer's graph on
+  // first connect). Only create one if AudioCapture or video needs it; an
+  // unused graph would register a shutdown blocker and never release it,
+  // hanging xpcom-will-shutdown.
+  const bool needAudioCapture = mAudioDevice && mAudioDevice->GetMediaSource() ==
+                                                    MediaSourceEnum::AudioCapture;
+  const bool needGraph = needAudioCapture || mVideoDevice;
+  MediaTrackGraph* mtg = nullptr;
+  if (needGraph) {
+    MediaTrackGraph::GraphDriverType graphDriverType =
+        needAudioCapture ? MediaTrackGraph::AUDIO_THREAD_DRIVER
+                         : MediaTrackGraph::SYSTEM_THREAD_DRIVER;
+    mtg = MediaTrackGraph::GetInstance(
+        graphDriverType, window, MediaTrackGraph::REQUEST_DEFAULT_SAMPLE_RATE,
+        MediaTrackGraph::DEFAULT_OUTPUT_DEVICE);
+  }
 
   auto domStream = MakeRefPtr<DOMMediaStream>(window);
   RefPtr<LocalTrackSource> audioTrackSource;
@@ -1800,17 +1864,8 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
       domStream->AddTrackInternal(track);
     } else {
       const nsString& audioDeviceName = mAudioDevice->mName;
+      // Lazy init: track and device start when the first consumer connects.
       RefPtr<MediaTrack> track;
-#ifdef MOZ_WEBRTC
-      if (mAudioDevice->IsFake()) {
-        track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
-      } else {
-        track = AudioProcessingTrack::Create(mtg);
-        track->Suspend();  // Microphone source resumes in SetTrack
-      }
-#else
-      track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
-#endif
       audioTrackSource = new LocalTrackSource(
           principal, audioDeviceName, mAudioDeviceListener,
           mAudioDevice->GetMediaSource(), track, peerIdentity);
@@ -1872,11 +1927,17 @@ void GetUserMediaStreamTask::PrepareDOMStream() {
   }
 
   // Dispatch to the media thread to ask it to start the sources, because that
-  // can take a while.
+  // can take a while. Lazy audio tracks (non-fake WebRTC mic) skip this step;
+  // their device starts when the first consumer connects.
   typedef DeviceListener::DeviceListenerPromise PromiseType;
   AutoTArray<RefPtr<PromiseType>, 2> promises;
   if (mAudioDeviceListener) {
-    promises.AppendElement(mAudioDeviceListener->InitializeAsync());
+    const bool lazyAudio =
+        mAudioDevice &&
+        mAudioDevice->GetMediaSource() != MediaSourceEnum::AudioCapture;
+    if (!lazyAudio) {
+      promises.AppendElement(mAudioDeviceListener->InitializeAsync());
+    }
   }
   if (mVideoDeviceListener) {
     promises.AppendElement(mVideoDeviceListener->InitializeAsync());
@@ -4455,6 +4516,60 @@ DeviceListener::InitializeAsync() {
           });
 }
 
+RefPtr<DeviceListener::DeviceListenerPromise>
+DeviceListener::AllocateAndInitializeAsync(
+    RefPtr<LocalMediaDevice> aOriginalDevice) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_DIAGNOSTIC_ASSERT(!mStopped);
+
+  bool startDevice = !mDeviceState->mDeviceMuted || !mDeviceState->mOffWhileDisabled;
+  return InvokeAsync(
+             MediaManager::Get()->mMediaThread, __func__,
+             [self = RefPtr(this), principal = GetPrincipalHandle(),
+              originalDevice = std::move(aOriginalDevice),
+              device = mDeviceState->mDevice, prefs = MediaManager::Get()->mPrefs,
+              windowId = mWindowListener->WindowID(),
+              track = mDeviceState->mTrackSource->mTrack, startDevice] {
+               const char* outBadConstraint{};
+               nsresult rv = device->Source()->Allocate(
+                   originalDevice->Constraints(), prefs, windowId,
+                   &outBadConstraint);
+               if (NS_FAILED(rv)) {
+                 return GenericPromise::CreateAndReject(rv, __func__);
+               }
+               rv = self->Initialize(principal, device, track, startDevice);
+               if (NS_SUCCEEDED(rv)) {
+                 return GenericPromise::CreateAndResolve(true, __func__);
+               }
+               return GenericPromise::CreateAndReject(rv, __func__);
+             })
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [self = RefPtr<DeviceListener>(this), this](bool) {
+            if (mStopped) {
+              return DeviceListenerPromise::CreateAndResolve(true, __func__);
+            }
+            mDeviceState->mAllocated = true;
+            mDeviceState->mDeviceEnabled = true;
+            mDeviceState->mTrackEnabled = true;
+            mDeviceState->mTrackEnabledTime = TimeStamp::Now();
+            return DeviceListenerPromise::CreateAndResolve(true, __func__);
+          },
+          [self = RefPtr<DeviceListener>(this), this](nsresult aRv) {
+            RefPtr<MediaMgrError> err;
+            if (NS_FAILED(aRv)) {
+              nsCString log;
+              log.AppendPrintf("Lazy clone allocation failed");
+              err = MakeRefPtr<MediaMgrError>(MediaMgrError::Name::AbortError,
+                                              std::move(log));
+            }
+            if (!mStopped) {
+              Stop();
+            }
+            return DeviceListenerPromise::CreateAndReject(err, __func__);
+          });
+}
+
 nsresult DeviceListener::Initialize(PrincipalHandle aPrincipal,
                                     LocalMediaDevice* aDevice,
                                     MediaTrack* aTrack, bool aStartDevice) {
@@ -4494,38 +4609,48 @@ already_AddRefed<DeviceListener> DeviceListener::Clone() const {
     return nullptr;
   }
 
-  // See PrepareDOMStream for how a gUM/gDM track is created.
-  RefPtr<MediaTrack> track;
-  MediaTrackGraph* mtg = thisTrackSource->mTrack->Graph();
-  if (const auto source = thisDevice->GetMediaSource();
-      source == dom::MediaSourceEnum::Microphone) {
-#ifdef MOZ_WEBRTC
-    if (thisDevice->IsFake()) {
-      track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
-    } else {
-      track = AudioProcessingTrack::Create(mtg);
-      track->Suspend();  // Microphone source resumes in SetTrack
-    }
-#else
-    track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
-#endif
-  } else if (source == dom::MediaSourceEnum::Camera ||
-             source == dom::MediaSourceEnum::Screen ||
-             source == dom::MediaSourceEnum::Window ||
-             source == dom::MediaSourceEnum::Browser) {
-    track = mtg->CreateSourceTrack(MediaSegment::VIDEO);
-  }
-
-  if (!track) {
-    return nullptr;
-  }
-
   RefPtr device = thisDevice->Clone();
   auto listener = MakeRefPtr<DeviceListener>();
+
+  RefPtr<MediaTrack> track;
+  if (thisTrackSource->mTrack) {
+    // Source is initialized: create clone track in the same graph eagerly.
+    MediaTrackGraph* mtg = thisTrackSource->mTrack->Graph();
+    if (const auto source = thisDevice->GetMediaSource();
+        source == dom::MediaSourceEnum::Microphone) {
+#ifdef MOZ_WEBRTC
+      if (thisDevice->IsFake()) {
+        track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
+      } else {
+        track = AudioProcessingTrack::Create(mtg);
+        track->Suspend();
+      }
+#else
+      track = mtg->CreateSourceTrack(MediaSegment::AUDIO);
+#endif
+    } else if (source == dom::MediaSourceEnum::Camera ||
+               source == dom::MediaSourceEnum::Screen ||
+               source == dom::MediaSourceEnum::Window ||
+               source == dom::MediaSourceEnum::Browser) {
+      track = mtg->CreateSourceTrack(MediaSegment::VIDEO);
+    }
+    if (!track) {
+      return nullptr;
+    }
+  }
+  // If source is lazy (null mTrack), the clone is also lazy. track stays null
+  // and CreateAndInitInputTrackInGraph will allocate + initialize on demand.
+
   auto trackSource = MakeRefPtr<LocalTrackSource>(
       thisTrackSource->GetPrincipal(), thisTrackSource->mLabel, listener,
       thisTrackSource->mSource, track, thisTrackSource->mPeerIdentity,
       thisTrackSource->mTrackingId);
+
+  if (!thisTrackSource->mTrack) {
+    // Lazy clone: store original device so CreateAndInitInputTrackInGraph
+    // can allocate it with the right constraints.
+    trackSource->mOriginalDevice = thisDevice;
+  }
 
   LOG("DeviceListener %p registering clone", this);
   mWindowListener->Register(listener);
@@ -4538,59 +4663,54 @@ already_AddRefed<DeviceListener> DeviceListener::Clone() const {
   listener->mDeviceState->mTrackEnabled = mDeviceState->mTrackEnabled;
   listener->mDeviceState->mTrackEnabledTime = TimeStamp::Now();
 
-  // We have to do an async operation here, even though Clone() is sync.
-  // This is fine because JS will not be able to trigger any operation to run
-  // async on the media thread.
-  LOG("DeviceListener %p allocating clone device %p async", this, device.get());
-  InvokeAsync(
-      mgr->mMediaThread, __func__,
-      [thisDevice = RefPtr(thisDevice), device, prefs = mgr->mPrefs,
-       windowId = mWindowListener->WindowID(), listener,
-       principal = GetPrincipalHandle(), track,
-       startDevice = !listener->mDeviceState->mOffWhileDisabled ||
-                     (!listener->mDeviceState->mDeviceMuted &&
-                      listener->mDeviceState->mDeviceEnabled)] {
-        const char* outBadConstraint{};
-        nsresult rv = device->Source()->Allocate(
-            thisDevice->Constraints(), prefs, windowId, &outBadConstraint);
-        LOG("Allocated clone device %p. rv=%s", device.get(),
-            GetStaticErrorName(rv));
-        if (NS_FAILED(rv)) {
+  if (thisTrackSource->mTrack) {
+    // Non-lazy clone: allocate and initialize eagerly.
+    LOG("DeviceListener %p allocating clone device %p async", this, device.get());
+    InvokeAsync(
+        mgr->mMediaThread, __func__,
+        [thisDevice = RefPtr(thisDevice), device, prefs = mgr->mPrefs,
+         windowId = mWindowListener->WindowID(), listener,
+         principal = GetPrincipalHandle(), track,
+         startDevice = !listener->mDeviceState->mOffWhileDisabled ||
+                       (!listener->mDeviceState->mDeviceMuted &&
+                        listener->mDeviceState->mDeviceEnabled)] {
+          const char* outBadConstraint{};
+          nsresult rv = device->Source()->Allocate(
+              thisDevice->Constraints(), prefs, windowId, &outBadConstraint);
+          LOG("Allocated clone device %p. rv=%s", device.get(),
+              GetStaticErrorName(rv));
+          if (NS_FAILED(rv)) {
+            return GenericPromise::CreateAndReject(
+                rv, "DeviceListener::Clone failure #1");
+          }
+          rv = listener->Initialize(principal, device, track, startDevice);
+          if (NS_SUCCEEDED(rv)) {
+            return GenericPromise::CreateAndResolve(
+                true, "DeviceListener::Clone success");
+          }
           return GenericPromise::CreateAndReject(
-              rv, "DeviceListener::Clone failure #1");
-        }
-        rv = listener->Initialize(principal, device, track, startDevice);
-        if (NS_SUCCEEDED(rv)) {
-          return GenericPromise::CreateAndResolve(
-              true, "DeviceListener::Clone success");
-        }
-        return GenericPromise::CreateAndReject(
-            rv, "DeviceListener::Clone failure #2");
-      })
-      ->Then(
-          GetMainThreadSerialEventTarget(), __func__,
-          [listener, device,
-           trackSource](GenericPromise::ResolveOrRejectValue&& aValue) {
-            if (aValue.IsReject()) {
-              // Allocating/initializing failed. Stopping the device listener
-              // will destroy the MediaStreamTrackSource's MediaTrack, which
-              // will make the MediaStreamTrack's mTrack MediaTrack auto-end
-              // due to lack of inputs. This makes the MediaStreamTrack's
-              // readyState transition to "ended" as expected.
-              LOG("Allocating clone device %p failed. Stopping.", device.get());
-              listener->Stop();
-              return;
-            }
-            listener->mDeviceState->mAllocated = true;
-            if (listener->mDeviceState->mStopped && !sHasMainThreadShutdown) {
-              MediaManager::Dispatch(NS_NewRunnableFunction(
-                  "DeviceListener::Clone::Stop",
-                  [device = listener->mDeviceState->mDevice]() {
-                    device->Stop();
-                    device->Deallocate();
-                  }));
-            }
-          });
+              rv, "DeviceListener::Clone failure #2");
+        })
+        ->Then(
+            GetMainThreadSerialEventTarget(), __func__,
+            [listener, device,
+             trackSource](GenericPromise::ResolveOrRejectValue&& aValue) {
+              if (aValue.IsReject()) {
+                LOG("Allocating clone device %p failed. Stopping.", device.get());
+                listener->Stop();
+                return;
+              }
+              listener->mDeviceState->mAllocated = true;
+              if (listener->mDeviceState->mStopped && !sHasMainThreadShutdown) {
+                MediaManager::Dispatch(NS_NewRunnableFunction(
+                    "DeviceListener::Clone::Stop",
+                    [device = listener->mDeviceState->mDevice]() {
+                      device->Stop();
+                      device->Deallocate();
+                    }));
+              }
+            });
+  }
 
   return listener.forget();
 }
@@ -4617,10 +4737,22 @@ void DeviceListener::Stop() {
     mDeviceState->mTrackSource->Stop();
 
     if (mDeviceState->mAllocated) {
-      MediaManager::Dispatch(NewTaskFrom([device = mDeviceState->mDevice]() {
-        device->Stop();
-        device->Deallocate();
-      }));
+      // Only call Stop() if SetTrack/Start were called. For lazy tracks stopped
+      // before the first consumer connects mDeviceEnabled is still false and
+      // MediaEngineWebRTCMicrophoneSource::Stop() would assert on null mTrack.
+      // mDeviceEnabled is set asynchronously after init completes, so for lazy
+      // tracks consumed but not yet acknowledged on the main thread, also rely
+      // on mTrackSource->mTrack which is set synchronously by
+      // CreateAndInitInputTrackInGraph and signals that init is in progress.
+      bool deviceStarted = mDeviceState->mDeviceEnabled ||
+                           mDeviceState->mTrackSource->mTrack;
+      MediaManager::Dispatch(
+          NewTaskFrom([device = mDeviceState->mDevice, deviceStarted]() {
+            if (deviceStarted) {
+              device->Stop();
+            }
+            device->Deallocate();
+          }));
     }
 
     mWindowListener->ChromeAffectingStateChanged();
@@ -4952,6 +5084,13 @@ CaptureState DeviceListener::CapturingSource(MediaSourceEnum aSource) const {
     return CaptureState::Enabled;
   }
 
+  // Lazy track: allocated and waiting for first consumer. The device has been
+  // reserved so report as Enabled to keep the privacy indicator correct.
+  if (mDeviceState->mAllocated && !mDeviceState->mTrackSource->mTrack &&
+      !mDeviceState->mDeviceMuted) {
+    return CaptureState::Enabled;
+  }
+
   return CaptureState::Disabled;
 }
 
@@ -5091,7 +5230,7 @@ void GetUserMediaWindowListener::NotifyChrome() {
       "MediaManager::NotifyChrome", [windowID = mWindowID]() {
         auto* window = nsGlobalWindowInner::GetInnerWindowWithId(windowID);
         if (!window) {
-          MOZ_ASSERT_UNREACHABLE("Should have window");
+          LOG("NotifyChrome: window %" PRIu64 " already gone", windowID);
           return;
         }
 

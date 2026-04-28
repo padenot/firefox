@@ -887,7 +887,8 @@ void MediaTrackGraphImpl::CloseAudioInput(DeviceInputTrack* aTrack) {
 
 // All AudioInput listeners get the same speaker data (at least for now).
 void MediaTrackGraphImpl::NotifyOutputData(const AudioChunk& aChunk) {
-  if (!mDeviceInputTrackManagerGraphThread.GetNativeInputTrack()) {
+  if (!mDeviceInputTrackManagerGraphThread.GetNativeInputTrack() &&
+      !mDeviceInputTrackManagerGraphThread.GetFirstNonNativeInputTrack()) {
     return;
   }
 

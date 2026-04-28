@@ -1022,6 +1022,13 @@ class MediaTrackGraphImpl : public MediaTrackGraph,
    */
   Atomic<bool> mGraphDriverRunning;
   /**
+   * Set to true (atomically) in AudioCallbackDriver's constructor, which runs
+   * on the graph thread. Readable from any thread. Checked by
+   * DeviceInputTrack::OpenAudio on the main thread to decide whether to use
+   * NonNativeInputTrack (avoids restarting an existing AudioCallbackDriver).
+   */
+  Atomic<bool> mAudioOutputEverStarted{false};
+  /**
    * True when a stable state runner has been posted to the appshell to run
    * RunInStableState at the next stable state.
    * Only accessed on the main thread.

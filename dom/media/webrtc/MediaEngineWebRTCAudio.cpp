@@ -183,7 +183,6 @@ nsresult MediaEngineWebRTCMicrophoneSource::Reconfigure(
     const dom::MediaTrackConstraints& aConstraints,
     const MediaEnginePrefs& aPrefs, const char** aOutBadConstraint) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mTrack);
 
   LOG("Mic source %p Reconfigure ", this);
 
@@ -204,7 +203,18 @@ nsresult MediaEngineWebRTCMicrophoneSource::Reconfigure(
     return NS_ERROR_UNEXPECTED;
   }
 
-  ApplySettings(outputPrefs);
+  if (mTrack) {
+    ApplySettings(outputPrefs);
+  } else {
+    RefPtr<MediaEngineWebRTCMicrophoneSource> that = this;
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        __func__, [this, that, prefs = outputPrefs] {
+          mSettings->mEchoCancellation.Value() = prefs.mAecOn;
+          mSettings->mAutoGainControl.Value() = prefs.mAgcOn;
+          mSettings->mNoiseSuppression.Value() = prefs.mNoiseOn;
+          mSettings->mChannelCount.Value() = prefs.mChannels;
+        }));
+  }
 
   mCurrentPrefs = outputPrefs;
 

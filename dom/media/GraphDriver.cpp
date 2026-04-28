@@ -461,6 +461,12 @@ AudioCallbackDriver::AudioCallbackDriver(
                         Graph(), this, mInputDeviceID, mInputChannelCount,
                         mOutputDeviceID, mOutputChannelCount));
 
+  // Mark the graph as having an audio output driver. Read on the main thread
+  // by DeviceInputTrack::OpenAudio to decide NativeInputTrack vs
+  // NonNativeInputTrack. Setting here (graph thread, ctor) ensures the flag
+  // is visible before ConnectDeviceInput runs on the main thread.
+  static_cast<MediaTrackGraphImpl*>(Graph())->mAudioOutputEverStarted = true;
+
   NS_WARNING_ASSERTION(mOutputChannelCount != 0,
                        "Invalid output channel count");
 
@@ -741,11 +747,17 @@ void AudioCallbackDriver::Shutdown() {
       ("%p: Releasing audio driver off main thread (GraphDriver::Shutdown).",
        Graph()));
 
+  fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Shutdown - dispatching Stop to mCubebOperationThread\n", this);
   nsLiteralCString reason("AudioCallbackDriver::Shutdown");
   NS_DispatchAndSpinEventLoopUntilComplete(
       reason, mCubebOperationThread,
       NS_NewRunnableFunction(reason.get(),
-                             [self = RefPtr{this}] { self->Stop(); }));
+                             [self = RefPtr{this}] {
+                               fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Stop() running on mCubebOperationThread\n", self.get());
+                               self->Stop();
+                               fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Stop() done\n", self.get());
+                             }));
+  fprintf(stderr, "LAZY_AUDIT: AudioCallbackDriver %p Shutdown complete\n", this);
 }
 
 void AudioCallbackDriver::SetStreamName(const nsACString& aStreamName) {

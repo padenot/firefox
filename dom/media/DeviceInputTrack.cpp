@@ -223,11 +223,17 @@ NotNull<RefPtr<DeviceInputTrack>> DeviceInputTrack::OpenAudio(
     MOZ_ASSERT(!track->mConsumerTracks.IsEmpty());
     track->AddDataListener(aConsumer->GetAudioDataListener());
   } else {
-    // Create a NativeInputTrack or NonNativeInputTrack, depending on whether
-    // the given graph already has a native device or not.
-    if (aGraph->GetNativeInputTrackMainThread()) {
-      // A native device is already in use. This device will be a non-native
-      // device.
+    // Create a NativeInputTrack or NonNativeInputTrack. Use NonNativeInputTrack
+    // when a native track is already in use, or when the graph already has a
+    // running AudioCallbackDriver (mAudioOutputEverStarted). Adding a
+    // NativeInputTrack to a graph with an existing AudioCallbackDriver forces
+    // a driver restart, which can stall mCubebOperationThread long enough to
+    // trigger the MTG shutdown timeout (bug 2035550).
+    const bool graphHasAudioCallbackDriver =
+        static_cast<MediaTrackGraphImpl*>(aGraph)->mAudioOutputEverStarted;
+    if (aGraph->GetNativeInputTrackMainThread() || graphHasAudioCallbackDriver) {
+      // A native device is already in use, or output audio is already running.
+      // This device will be a non-native device.
       track = new NonNativeInputTrack(aGraph->GraphRate(), aDeviceId,
                                       aPrincipalHandle);
     } else {
