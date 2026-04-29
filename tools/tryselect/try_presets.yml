@@ -331,15 +331,23 @@ media-full:
     description: >-
         Runs tests that exercise media playback and WebRTC code.
     query:
-        - "mochitest-media !dfpi !nofis"
-        - "mochitest-media android !spi !swr !lite"
-        - "mochitest-browser-chrome !dfpi !nofis !a11y"
-        - "mochitest-browser-media"
-        - "web-platform-tests !dfpi !nofis !shippable"
-        - "web-platform-tests android !wdspec !spi !swr !lite"
-        - "crashtest !wdspec !nofis"
+        # Desktop mochitest-media: exclude alternate rendering/packaging configs
+        - "mochitest-media !tsan !nofis !spi !swr !msix !wmfme !mda-gpu !nogpu !dfpi !-32"
+        # Android mochitest-media: base variant only
+        - "mochitest-media android !lite !nofis !nogpu !spi !swr"
+        # mochitest-browser-chrome (media-relevant browser tests) and mochitest-browser-media
+        - "mochitest-browser-chrome !tsan !nofis !a11y !dfpi !-32"
+        - "mochitest-browser-media !tsan !nofis !wmfme !dfpi !-32"
+        # Web platform tests: exclude shippable, wdspec, nofis, alternate configs
+        - "web-platform-tests !tsan !nofis !shippable !wdspec !dfpi !swr !spi !-32"
+        # Android WPT
+        - "web-platform-tests android !wdspec !spi !swr !lite !nofis"
+        # Crashtests: exclude wdspec, nofis, alternate configs
+        - "crashtest !wdspec !tsan !nofis !spi !swr !dfpi !-32"
+        # Android crashtests
         - "crashtest android !wdspec !spi !swr !lite"
-        - "'gtest"
+        # GTests
+        - "'gtest !tsan"
 
 mochitest-bc:
     description: >-
