@@ -41,6 +41,7 @@
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/SPSCQueue.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Document.h"
@@ -68,20 +69,30 @@ mozilla::LazyLogModule gMediaPipelineLog("MediaPipeline");
 namespace mozilla {
 
 // An async inserter for audio data, to avoid running audio codec encoders
-// on the MTG/input audio thread.  Basically just bounces all the audio
-// data to a single audio processing/input queue.  We could if we wanted to
-// use multiple threads and a TaskQueue.
+// on the MTG/input audio thread. Bounces audio to a dedicated thread via a
+// lock-free SPSC queue.
 class AudioProxyThread {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AudioProxyThread)
 
+  // POD ring slot. No RefPtr to SharedChannelArrayBuffer crosses the thread
+  // boundary — the graph thread downmixes and converts to interleaved int16
+  // here; mThread resamples if needed and packetizes.
+  struct AudioChunkData {
+    TrackRate mRate;
+    uint32_t mDuration;
+    uint32_t mChannels;  // output channels (1 or 2)
+    bool mHasData;       // false means silence
+    // Interleaved int16 samples: mDuration * mChannels entries.
+    int16_t mSamples[WEBAUDIO_BLOCK_SIZE * 2];
+  };
+
   explicit AudioProxyThread(RefPtr<AudioSessionConduit> aConduit)
-      : mConduit(std::move(aConduit)),
-        mTaskQueue(TaskQueue::Create(
-            GetMediaThreadPool(MediaThreadType::WEBRTC_WORKER), "AudioProxy")),
-        mAudioConverter(nullptr) {
+      : mConduit(std::move(aConduit)), mAudioConverter(nullptr) {
     MOZ_ASSERT(mConduit);
     MOZ_COUNT_CTOR(AudioProxyThread);
+    MOZ_ALWAYS_SUCCEEDS(
+        NS_NewNamedThread("AudioProxy", getter_AddRefs(mThread)));
   }
 
   // This function is the identity if aInputRate is supported.
@@ -106,54 +117,55 @@ class AudioProxyThread {
     return 48000;
   }
 
-  // From an arbitrary AudioChunk at sampling-rate aRate, process the audio into
-  // something the conduit can work with (or send silence if the track is not
-  // enabled), and send the audio in 10ms chunks to the conduit.
-  void InternalProcessAudioChunk(TrackRate aRate, const AudioChunk& aChunk,
-                                 bool aEnabled) {
-    MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+  // Dequeue all pending slots and process them. Called on mThread.
+  void DrainAndProcess() {
+    MOZ_ASSERT(mThread->IsOnCurrentThread());
+    AudioChunkData data;
+    while (mSPSCQueue.Dequeue(&data, 1) == 1) {
+      InternalProcessAudioChunk(data);
+    }
+  }
 
-    // Convert to interleaved 16-bits integer audio, with a maximum of two
-    // channels (since the WebRTC.org code below makes the assumption that the
-    // input audio is either mono or stereo), with a sample-rate rate that is
-    // 16, 32, 44.1, or 48kHz.
-    uint32_t outputChannels = aChunk.ChannelCount() == 1 ? 1 : 2;
-    int32_t transmissionRate = AppropriateSendingRateForInputRate(aRate);
+  // From an AudioChunkData dequeued from mSPSCQueue, resample if needed and
+  // send the audio in 10ms chunks to the conduit.
+  void InternalProcessAudioChunk(const AudioChunkData& aData) {
+    MOZ_ASSERT(mThread->IsOnCurrentThread());
 
-    // We take advantage of the fact that the common case (microphone directly
-    // to PeerConnection, that is, a normal call), the samples are already
-    // 16-bits mono, so the representation in interleaved and planar is the
-    // same, and we can just use that.
-    if (aEnabled && outputChannels == 1 &&
-        aChunk.mBufferFormat == AUDIO_FORMAT_S16 && transmissionRate == aRate) {
-      const int16_t* samples = aChunk.ChannelData<int16_t>().Elements()[0];
-      PacketizeAndSend(samples, transmissionRate, outputChannels,
-                       aChunk.mDuration);
+    TrackRate transmissionRate = AppropriateSendingRateForInputRate(aData.mRate);
+
+    // Fast path: already the right rate, no resampling needed.
+    if (transmissionRate == aData.mRate) {
+      if (aData.mHasData) {
+        PacketizeAndSend(aData.mSamples, transmissionRate, aData.mChannels,
+                         aData.mDuration);
+      } else {
+        uint32_t sampleCount = aData.mDuration * aData.mChannels;
+        if (mInterleavedAudio.Length() < sampleCount) {
+          mInterleavedAudio.SetLength(sampleCount);
+        }
+        PodZero(mInterleavedAudio.Elements(), sampleCount);
+        PacketizeAndSend(mInterleavedAudio.Elements(), transmissionRate,
+                         aData.mChannels, aData.mDuration);
+      }
       return;
     }
 
-    uint32_t sampleCount = aChunk.mDuration * outputChannels;
+    uint32_t sampleCount = aData.mDuration * aData.mChannels;
     if (mInterleavedAudio.Length() < sampleCount) {
       mInterleavedAudio.SetLength(sampleCount);
     }
-
-    if (!aEnabled || aChunk.mBufferFormat == AUDIO_FORMAT_SILENCE) {
+    if (!aData.mHasData) {
       PodZero(mInterleavedAudio.Elements(), sampleCount);
-    } else if (aChunk.mBufferFormat == AUDIO_FORMAT_FLOAT32) {
-      DownmixAndInterleave(aChunk.ChannelData<float>(), aChunk.mDuration,
-                           aChunk.mVolume, outputChannels,
-                           mInterleavedAudio.Elements());
-    } else if (aChunk.mBufferFormat == AUDIO_FORMAT_S16) {
-      DownmixAndInterleave(aChunk.ChannelData<int16_t>(), aChunk.mDuration,
-                           aChunk.mVolume, outputChannels,
-                           mInterleavedAudio.Elements());
+    } else {
+      PodCopy(mInterleavedAudio.Elements(), aData.mSamples, sampleCount);
     }
-    int16_t* inputAudio = mInterleavedAudio.Elements();
-    size_t inputAudioFrameCount = aChunk.mDuration;
 
-    AudioConfig inputConfig(AudioConfig::ChannelLayout(outputChannels), aRate,
-                            AudioConfig::FORMAT_S16);
-    AudioConfig outputConfig(AudioConfig::ChannelLayout(outputChannels),
+    int16_t* inputAudio = mInterleavedAudio.Elements();
+    size_t inputAudioFrameCount = aData.mDuration;
+
+    AudioConfig inputConfig(AudioConfig::ChannelLayout(aData.mChannels),
+                            aData.mRate, AudioConfig::FORMAT_S16);
+    AudioConfig outputConfig(AudioConfig::ChannelLayout(aData.mChannels),
                              transmissionRate, AudioConfig::FORMAT_S16);
     // Resample to an acceptable sample-rate for the sending side
     if (!mAudioConverter || mAudioConverter->InputConfig() != inputConfig ||
@@ -174,7 +186,7 @@ class AudioProxyThread {
       processedAudio = inputAudio;
     }
 
-    PacketizeAndSend(processedAudio, transmissionRate, outputChannels,
+    PacketizeAndSend(processedAudio, transmissionRate, aData.mChannels,
                      framesProcessed);
   }
 
@@ -214,21 +226,44 @@ class AudioProxyThread {
 
   void QueueAudioChunk(TrackRate aRate, const AudioChunk& aChunk,
                        bool aEnabled) {
+    AudioChunkData data;
+    data.mRate = aRate;
+    data.mDuration = aChunk.mDuration;
+    data.mChannels = aChunk.ChannelCount() == 1 ? 1 : 2;
+    data.mHasData =
+        aEnabled && aChunk.mBufferFormat != AUDIO_FORMAT_SILENCE;
+    if (data.mHasData) {
+      if (aChunk.mBufferFormat == AUDIO_FORMAT_FLOAT32) {
+        DownmixAndInterleave(aChunk.ChannelData<float>(), aChunk.mDuration,
+                             aChunk.mVolume, data.mChannels, data.mSamples);
+      } else {
+        DownmixAndInterleave(aChunk.ChannelData<int16_t>(), aChunk.mDuration,
+                             aChunk.mVolume, data.mChannels, data.mSamples);
+      }
+    }
+    if (mSPSCQueue.Enqueue(data) == 0) {
+      NS_WARNING("AudioProxyThread: queue full, dropping audio");
+      return;
+    }
     RefPtr<AudioProxyThread> self = this;
-    nsresult rv = mTaskQueue->Dispatch(NS_NewRunnableFunction(
-        "AudioProxyThread::QueueAudioChunk", [self, aRate, aChunk, aEnabled]() {
-          self->InternalProcessAudioChunk(aRate, aChunk, aEnabled);
-        }));
+    nsresult rv = mThread->Dispatch(NS_NewRunnableFunction(
+        "AudioProxyThread::DrainAndProcess",
+        [self]() { self->DrainAndProcess(); }));
     MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
     (void)rv;
   }
 
  protected:
-  virtual ~AudioProxyThread() { MOZ_COUNT_DTOR(AudioProxyThread); }
+  virtual ~AudioProxyThread() {
+    MOZ_COUNT_DTOR(AudioProxyThread);
+    mThread->Shutdown();
+  }
 
   const RefPtr<AudioSessionConduit> mConduit;
-  const RefPtr<TaskQueue> mTaskQueue;
-  // Only accessed on mTaskQueue
+  nsCOMPtr<nsIThread> mThread;
+  // Written on the graph thread, read on mThread.
+  SPSCQueue<AudioChunkData> mSPSCQueue{30};
+  // Only accessed on mThread
   UniquePtr<AudioPacketizer<int16_t, int16_t>> mPacketizer;
   // A buffer to hold a single packet of audio.
   UniquePtr<int16_t[]> mPacket;

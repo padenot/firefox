@@ -67,6 +67,7 @@ Function Broker
 GMPThread
 Gamepad
 GraphRunner
+AudioProxy
 HTML5 Parser
 ICS parser
 IPC Launch
