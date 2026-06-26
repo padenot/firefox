@@ -8,6 +8,7 @@
 #include "llama/llama.h"
 #include "ggml.h"
 #include "parakeet.h"
+#include "parakeet_capi.h"
 #include "whisper.h"
 
 struct PRLibrary;
@@ -129,7 +130,17 @@ namespace mozilla::llama {
     (struct parakeet_context * ctx, parakeet_token token))                     \
   X(int, parakeet_token_to_text,                                               \
     (const char* token_str, bool is_first, char* output, int max_len))         \
-  X(void, parakeet_free, (struct parakeet_context * ctx))
+  X(void, parakeet_free, (struct parakeet_context * ctx))                      \
+  /* mudler/parakeet.cpp cache-aware streaming C-API */                        \
+  X(parakeet_ctx*, parakeet_capi_load_fd, (int fd))                            \
+  X(void, parakeet_capi_free, (parakeet_ctx * ctx))                            \
+  X(parakeet_stream*, parakeet_capi_stream_begin_lang,                         \
+    (parakeet_ctx * ctx, const char* target_lang))                             \
+  X(char*, parakeet_capi_stream_feed,                                          \
+    (parakeet_stream * s, const float* pcm, int n_samples, int* eou_out))      \
+  X(char*, parakeet_capi_stream_finalize, (parakeet_stream * s))               \
+  X(void, parakeet_capi_stream_free, (parakeet_stream * s))                    \
+  X(void, parakeet_capi_free_string, (char* s))
 
 struct LlamaLibWrapper {
   LlamaLibWrapper() = default;

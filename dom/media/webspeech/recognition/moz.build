@@ -48,6 +48,7 @@ LOCAL_INCLUDES += [
 ]
 
 DIRS += ["/third_party/whisper.cpp"]
+DIRS += ["/third_party/parakeet.cpp"]
 
 include("/ipc/chromium/chromium-config.mozbuild")
 
