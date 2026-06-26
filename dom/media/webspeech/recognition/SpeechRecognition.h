@@ -150,7 +150,7 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   }
   // Backend methods
   void HandleRecognitionResultFromBackend(const nsCString& aTranscript,
-                                          bool aIsFinal);
+                                          bool aIsFinal, float aConfidence);
   void HandleRecognitionErrorFromBackend(const nsCString& aError);
   // Called once the backend's session is initialized and ready to receive
   // audio; combined with a track being attached (mTrack), this determines

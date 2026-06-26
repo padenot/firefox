@@ -128,8 +128,8 @@ class SpeechRecognitionBackend
   void StartSpeechRecognitionSession(const nsCString& aLanguage)
       MOZ_REQUIRES(sIPCCapability);
   void StopSpeechRecognitionSession() MOZ_REQUIRES(sIPCCapability);
-  void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal)
-      MOZ_REQUIRES(sIPCCapability);
+  void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal,
+                               float aConfidence) MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsCString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
