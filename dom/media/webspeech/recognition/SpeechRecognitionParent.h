@@ -10,6 +10,7 @@
 #include <atomic>
 
 #include "WavDumper.h"
+#include "mozilla/FileUtils.h"
 #include "mozilla/PSpeechRecognitionParent.h"
 #include "mozilla/SPSCQueue.h"
 #include "mozilla/ThreadSafety.h"
@@ -19,13 +20,15 @@
 #include "nsISupportsImpl.h"
 #include "nsIThread.h"
 #include "nsStringFwd.h"
-#include "WavDumper.h"
 #include "parakeet.h"
-#include "mozilla/FileUtils.h"
 
 namespace mozilla::llama {
 struct LlamaLibWrapper;
 }
+
+// Opaque handles from mudler/parakeet.cpp's streaming C-API (parakeet_capi.h).
+struct parakeet_ctx;
+struct parakeet_stream;
 
 namespace mozilla {
 
@@ -39,9 +42,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
   SpeechRecognitionParent();
 
-  ipc::IPCResult RecvIsModelAvailable(
-      const nsTArray<nsCString>& aLanguages,
-      IsModelAvailableResolver&& aResolver);
+  ipc::IPCResult RecvIsModelAvailable(const nsTArray<nsCString>& aLanguages,
+                                      IsModelAvailableResolver&& aResolver);
   mozilla::ipc::IPCResult RecvInstallModels(
       const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver);
   mozilla::ipc::IPCResult RecvInit(const nsCString& aEngineId,
@@ -73,6 +75,9 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   void InitializeParakeetContext(InitResolver&& aResolver);
   void RetrieveModel(InitResolver&& aResolver);
   void ProcessAudioOnBackgroundThread();
+  // Cache-aware streaming path (mudler/parakeet.cpp streaming C-API), selected
+  // by the media.webspeech.recognition.streaming_backend pref.
+  void ProcessAudioStreaming();
   void SignalError(const nsCString& aErrorMessage);
 
   parakeet_full_params GetParakeetParams();
@@ -91,10 +96,17 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   nsTArray<nsString> mPhrases MOZ_GUARDED_BY(mLock);
   // Model file handle - automatically closed on destruction
   // ScopedCloseFile is UniquePtr<FILE, FCloseDeleter>
-  mozilla::UniquePtr<FILE, mozilla::FCloseDeleter> mModelFile MOZ_GUARDED_BY(mLock);
+  mozilla::UniquePtr<FILE, mozilla::FCloseDeleter> mModelFile
+      MOZ_GUARDED_BY(mLock);
   // Parakeet instance. Initialized on the background thread, destroyed after
   // thread has been joined on another thread.
-  mozilla::UniquePtr<parakeet_context, mozilla::ParakeetContextDeleter> mParakeetCtx;
+  mozilla::UniquePtr<parakeet_context, mozilla::ParakeetContextDeleter>
+      mParakeetCtx;
+
+  // Streaming backend handles (mudler/parakeet.cpp). Created on the recognition
+  // thread, freed in ActorDestroy. Null when the legacy backend is selected.
+  parakeet_ctx* mCapiCtx = nullptr;
+  parakeet_stream* mCapiStream = nullptr;
 
   // Lock-free queue to convey audio from the IPC thread to the processing
   // thread. Producer is the IPC thread, consumer is the processing thread.
@@ -139,6 +151,11 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
     int32_t mMaxTextContext = 16384;   // Max text context chars
     bool mUseContextCarryover = true;  // Enable context carryover
 
+    // Backend selection: when true, use the mudler/parakeet.cpp cache-aware
+    // streaming C-API; when false, the legacy whisper.cpp-fork parakeet_full
+    // sliding-window path.
+    bool mStreamingBackend = true;
+
     // Performance
     int32_t mNumThreads = 4;           // Inference threads when not using GPU
     int32_t mAudioContextSize = 0;     // Whisper audio context (0=full)
@@ -154,8 +171,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   WavDumper mWhisperAudioDumper;
 
   // Flag to signal the recognition thread to stop processing. Set to true when
-  // starting, false when we want to stop. Checked periodically by the recognition
-  // thread during audio processing.
+  // starting, false when we want to stop. Checked periodically by the
+  // recognition thread during audio processing.
   std::atomic<bool> mShouldContinueProcessing;
 
   // Position in the audio stream that has been processed in samples
@@ -165,4 +182,4 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
 
 }  // namespace mozilla
 
-#endif // DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONPARENT_H_
+#endif  // DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONPARENT_H_

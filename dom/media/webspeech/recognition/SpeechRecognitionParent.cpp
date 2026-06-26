@@ -14,8 +14,10 @@
 #include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
@@ -69,9 +71,23 @@ static constexpr int32_t DEFAULT_NUM_THREADS = 4;
 
 SpeechRecognitionParent::ModelIdentifier
 SpeechRecognitionParent::LanguagesToModelIdentifier(
-    const nsTArray<nsCString>&) {
-  return {"cstr/parakeet-tdt-0.6b-v3-GGUF"_ns,
-          "parakeet-tdt-0.6b-v3-q4_0.gguf"_ns, "main"_ns};
+    const nsTArray<nsCString>& aLanguages) {
+  if (!mParams.mStreamingBackend) {
+    // Legacy whisper.cpp-fork offline model.
+    return {"cstr/parakeet-tdt-0.6b-v3-GGUF"_ns,
+            "parakeet-tdt-0.6b-v3-q4_0.gguf"_ns, "main"_ns};
+  }
+  // mudler/parakeet.cpp cache-aware streaming GGUFs, hosted on the Mozilla
+  // model hub under asr-test/parakeet. English uses the small EOU model;
+  // everything else uses the multilingual nemotron model.
+  const bool english =
+      aLanguages.IsEmpty() || StringBeginsWith(aLanguages[0], "en"_ns);
+  if (english) {
+    return {"asr-test/parakeet"_ns, "realtime_eou_120m-v1-q5_k.gguf"_ns,
+            "main"_ns};
+  }
+  return {"asr-test/parakeet"_ns, "nemotron-3.5-asr-streaming-0.6b-q5_k.gguf"_ns,
+          "main"_ns};
 }
 
 nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
@@ -264,6 +280,11 @@ void SpeechRecognitionParent::LoadPreferences() {
   mParams.mUseContextCarryover =
       Preferences::GetBool("media.webspeech.recognition.use_context", true);
 
+  // Backend selection: cache-aware streaming (mudler/parakeet.cpp) vs the
+  // legacy whisper.cpp-fork sliding-window path.
+  mParams.mStreamingBackend = Preferences::GetBool(
+      "media.webspeech.recognition.streaming_backend", true);
+
   // Performance parameters
   // Not used when using GPU -- a single thread is used for submitting work to
   // the GPU
@@ -379,9 +400,43 @@ void SpeechRecognitionParent::InitializeParakeetContext(
 #endif
 
   FILE* modelFile = nullptr;
+  nsCString language;
   {
     MutexAutoLock lock(mLock);
     modelFile = mModelFile.get();
+    language = mLanguage;
+  }
+
+  if (mParams.mStreamingBackend) {
+    // Cache-aware streaming backend (mudler/parakeet.cpp): load the model from
+    // the fd, then open a streaming session for the recognition language.
+    mCapiCtx = lib->parakeet_capi_load_fd(fileno(modelFile));
+    if (!mCapiCtx) {
+      LOGE("{} parakeet_capi_load_fd failed", __func__);
+      ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
+      return;
+    }
+    const char* langArg = language.IsEmpty() ? nullptr : language.get();
+    mCapiStream = lib->parakeet_capi_stream_begin_lang(mCapiCtx, langArg);
+    if (!mCapiStream && langArg) {
+      // The multilingual model rejects languages outside its dictionary; rather
+      // than fail the session, fall back to auto-detection.
+      LOGD("stream_begin_lang('{}') failed; falling back to auto-detection",
+           langArg);
+      mCapiStream = lib->parakeet_capi_stream_begin_lang(mCapiCtx, "auto");
+    }
+    if (!mCapiStream) {
+      LOGE("{} parakeet_capi_stream_begin_lang failed", __func__);
+      ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
+      return;
+    }
+    mShouldContinueProcessing.store(true);
+    ResolveOrRejectInitOnIPCThread(std::move(aResolver), true);
+    LOGD("Parakeet streaming session ready, starting streaming loop");
+    mRecognitionThread->Dispatch(NS_NewRunnableFunction(
+        "Parakeet streaming loop",
+        [self = RefPtr{this}] { self->ProcessAudioStreaming(); }));
+    return;
   }
 
   mParakeetCtx.reset(
@@ -435,6 +490,23 @@ void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   if (mRecognitionThread) {
     mRecognitionThread->Shutdown();
     mRecognitionThread = nullptr;
+  }
+
+  // The recognition thread is joined above, so the streaming handles are no
+  // longer in use and can be freed.
+  if (mCapiStream || mCapiCtx) {
+    mozilla::llama::LlamaLibWrapper* lib =
+        mozilla::llama::LlamaRuntimeLinker::Get();
+    if (lib) {
+      if (mCapiStream) {
+        lib->parakeet_capi_stream_free(mCapiStream);
+      }
+      if (mCapiCtx) {
+        lib->parakeet_capi_free(mCapiCtx);
+      }
+    }
+    mCapiStream = nullptr;
+    mCapiCtx = nullptr;
   }
 
   mParakeetCtx.reset();
@@ -739,6 +811,119 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
     dispatchResult(payload, /* isFinal */ true);
   }
   LOGD("Recognition loop exiting");
+}
+
+void SpeechRecognitionParent::ProcessAudioStreaming() {
+  LOGD("{} Starting cache-aware streaming loop", __func__);
+
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
+
+  // The model keeps its own encoder/decoder caches across feeds, so we just
+  // hand it new audio as it arrives. parakeet_capi_stream_feed returns the
+  // text newly committed by this feed (a cache-aware transducer never revises
+  // past output) plus, via the out-param, an EOU/EOB bitmask. Each committed
+  // delta is emitted as a final result at streaming latency.
+  // Feed promptly: the content process already streams audio in small blocks,
+  // and the model buffers internally until its chunk fills, so we just forward
+  // whatever has arrived. A small floor avoids spinning on sub-block wakeups.
+  const size_t minFeed = size_t(0.01 * PARAKEET_SAMPLE_RATE);  // 10 ms
+  const size_t maxFeed = size_t(PARAKEET_SAMPLE_RATE);         // 1 s
+
+  // Strip inline <...> markers (e.g. nemotron <en-US> language tags); the
+  // <EOU>/<EOB> markers are already surfaced via the event bitmask.
+  auto stripTags = [](nsCString& aText) {
+    int32_t open;
+    while ((open = aText.FindChar('<')) != kNotFound) {
+      int32_t close = aText.FindChar('>', open);
+      if (close == kNotFound) {
+        break;
+      }
+      aText.Cut(open, close - open + 1);
+    }
+  };
+
+  auto emit = [self = RefPtr{this}](const nsCString& aText, bool aFinal) {
+    if (aText.IsEmpty()) {
+      return;
+    }
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "SpeechRecognitionParent::StreamResult",
+        [self, payload = nsCString(aText), aFinal]() {
+          LOGV("Sending streaming result: '{}' (final={})", payload.get(),
+               aFinal);
+          if (self->CanSend()) {
+            (void)self->SendOnRecognitionResult(payload, aFinal);
+          }
+        }));
+  };
+
+  // The model emits committed text token-by-token (sentencepiece sub-words,
+  // word starts marked by a leading space). A feed can end mid-word, so we
+  // buffer committed text and emit only up to the last word boundary as a final
+  // result, holding the trailing partial word for the next feed. aForce (the
+  // end-of-stream flush) emits whatever remains.
+  nsCString pending;
+  auto consume = [&](char* aText, bool aForce) {
+    if (aText) {
+      nsCString delta(aText);
+      lib->parakeet_capi_free_string(aText);
+      stripTags(delta);
+      pending.Append(delta);
+    }
+    if (aForce) {
+      nsCString out(pending);
+      out.Trim(" \t\n\r");
+      pending.Truncate();
+      emit(out, /* isFinal */ true);
+      return;
+    }
+    int32_t lastSpace = pending.RFindChar(' ');
+    if (lastSpace == kNotFound) {
+      return;  // no complete word boundary yet
+    }
+    nsCString out(Substring(pending, 0, lastSpace));
+    out.Trim(" \t\n\r");
+    if (!out.IsEmpty()) {
+      emit(out, /* isFinal */ true);
+    }
+    pending.Cut(0, lastSpace + 1);  // keep the trailing partial word
+  };
+
+  nsTArray<float> chunk;
+
+  while (mShouldContinueProcessing.load()) {
+    size_t available = mAudioQueue.AvailableRead();
+    if (available < minFeed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+    size_t take = std::min(available, maxFeed);
+    chunk.SetLength(take);
+    size_t got = mAudioQueue.Dequeue(chunk.Elements(), AssertedCast<int>(take));
+    chunk.SetLength(got);
+    mProcessedAudioPos += got;
+
+    int eou = 0;
+    // The marker interval is the inference compute time; the text records the
+    // audio fed and how much was queued (the buffering-latency component), so a
+    // profile shows the real-time factor and end-to-end latency directly.
+    TimeStamp feedStart = TimeStamp::Now();
+    char* fed = lib->parakeet_capi_stream_feed(mCapiStream, chunk.Elements(),
+                                               AssertedCast<int>(got), &eou);
+    PROFILER_MARKER_TEXT(
+        "Parakeet stream_feed", MEDIA_PLAYBACK,
+        MarkerOptions(MarkerTiming::IntervalUntilNowFrom(feedStart)),
+        nsFmtCString("fed={:.0f}ms queued={:.0f}ms",
+                     1000.0 * got / PARAKEET_SAMPLE_RATE,
+                     1000.0 * available / PARAKEET_SAMPLE_RATE));
+    consume(fed, /* aForce */ false);
+    (void)eou;
+  }
+
+  // Flush the end-of-stream tail.
+  consume(lib->parakeet_capi_stream_finalize(mCapiStream), /* aForce */ true);
+  LOGD("Streaming loop exiting");
 }
 
 }  // namespace mozilla
