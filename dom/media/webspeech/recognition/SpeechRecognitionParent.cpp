@@ -10,6 +10,7 @@
 #include <chrono>
 #include <thread>
 
+#include "SpeechRecognitionModels.h"
 #include "mozIRemoteLazyInputStream.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
@@ -63,11 +64,71 @@ static constexpr int32_t DEFAULT_NUM_THREADS = 4;
 
 SpeechRecognitionParent::ModelIdentifier
 SpeechRecognitionParent::LanguagesToModelIdentifier(
-    const nsTArray<nsCString>&) {
-  // mudler/parakeet.cpp cache-aware streaming GGUF, hosted on the Mozilla
-  // model hub under asr-test/parakeet.
-  return {"asr-test/parakeet"_ns, "realtime_eou_120m-v1-q5_k.gguf"_ns,
-          "main"_ns};
+    const nsTArray<nsCString>& aLanguages) {
+  // Determine the primary-subtag locale prefix (e.g. "en" from "en-US").
+  nsCString prefix;
+  if (!aLanguages.IsEmpty()) {
+    prefix = aLanguages[0];
+    int32_t dash = prefix.FindChar('-');
+    if (dash != kNotFound) {
+      prefix.Truncate(dash);
+    }
+  }
+
+  // A pref may override the default model for a locale prefix:
+  // media.webspeech.recognition.model.<prefix> (or .multilingual for the
+  // fallback). Empty prefix uses the multilingual fallback.
+  nsAutoCString prefKey("media.webspeech.recognition.model.");
+  prefKey.Append(prefix.IsEmpty() ? "multilingual"_ns : prefix);
+  nsAutoCString prefModelId;
+  Preferences::GetCString(prefKey.get(), prefModelId);
+
+  auto toIdentifier = [](const dom::SpeechRecognitionModelInfo& m) {
+    return ModelIdentifier{nsCString(m.repo), nsCString(m.filename),
+                           nsCString(m.revision), m.size_mb};
+  };
+
+  if (!prefModelId.IsEmpty()) {
+    for (const auto& m : dom::kSpeechRecognitionModels) {
+      if (m.id && prefModelId.Equals(m.id)) {
+        return toIdentifier(m);
+      }
+    }
+    LOGD(
+        "LanguagesToModelIdentifier: pref '{}' names unknown model '{}', "
+        "ignoring",
+        prefKey.get(), prefModelId.get());
+  }
+
+  // No usable pref: pick the default model whose locale list matches the
+  // prefix, falling back to the default fallback model (empty locale list).
+  const dom::SpeechRecognitionModelInfo* fallback = nullptr;
+  for (const auto& m : dom::kSpeechRecognitionModels) {
+    if (!m.id) {
+      break;
+    }
+    if (!m.locales[0]) {
+      if (m.is_default && !fallback) {
+        fallback = &m;
+      }
+      continue;
+    }
+    for (const char* const* l = m.locales; *l; ++l) {
+      if (prefix.IsEmpty() ||
+          StringBeginsWith(prefix, nsDependentCString(*l))) {
+        if (m.is_default) {
+          return toIdentifier(m);
+        }
+      }
+    }
+  }
+
+  if (fallback) {
+    return toIdentifier(*fallback);
+  }
+
+  MOZ_ASSERT_UNREACHABLE("No default model found in kSpeechRecognitionModels");
+  return {};
 }
 
 nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {

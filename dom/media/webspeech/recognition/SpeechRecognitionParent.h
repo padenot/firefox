@@ -65,6 +65,7 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
     nsCString mModelName;
     nsCString mFileName;
     nsCString mRevision = "main"_ns;
+    uint32_t mSizeMB = 0;
     nsCString ToString() const;
   };
 

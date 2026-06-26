@@ -87,6 +87,9 @@ namespace mozilla::llama {
   /* mudler/parakeet.cpp cache-aware streaming C-API */                        \
   X(parakeet_ctx*, parakeet_capi_load_fd, (int fd))                            \
   X(void, parakeet_capi_free, (parakeet_ctx * ctx))                            \
+  X(char*, parakeet_capi_transcribe_pcm,                                       \
+    (parakeet_ctx * ctx, const float* samples, int n_samples, int sample_rate, \
+     int decoder))                                                              \
   X(parakeet_stream*, parakeet_capi_stream_begin_lang,                         \
     (parakeet_ctx * ctx, const char* target_lang))                             \
   X(char*, parakeet_capi_stream_feed,                                          \
