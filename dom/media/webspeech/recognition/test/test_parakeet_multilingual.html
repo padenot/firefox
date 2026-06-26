@@ -1,0 +1,134 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SpeechRecognition: parakeet multilingual (nemotron) backend</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
+  <style>
+    #results { font-family: monospace; font-size: 11px; margin-top: 10px; }
+    .recognized { color: #060; background: #efe; padding: 8px; white-space: pre-wrap; }
+    label { font-weight: bold; display: block; margin-top: 8px; }
+  </style>
+</head>
+<body>
+<div id="content"></div>
+<div id="results">
+  <label>Recognized:</label>
+  <div class="recognized" id="rec-text">waiting...</div>
+</div>
+<pre id="test">
+<script>
+"use strict";
+
+// End-to-end test for the multilingual streaming backend (nvidia
+// nemotron-3.5-asr-streaming-0.6b via parakeet.cpp). Selecting a non-"en-*"
+// language routes recognition to the multilingual model; "auto" makes it
+// auto-detect the spoken language. Here we feed the (English) Kennedy clip with
+// lang="auto" to exercise the full Firefox path for the larger prompt-
+// conditioned model: download over the model fd, cache-aware streaming, BCP-47
+// language resolution and inline <lang>-tag stripping. Per-language acoustic
+// accuracy is validated upstream (parakeet.cpp matches NeMo at WER 0).
+//
+// Requires (headless): pipewire + pipewire-pulse + wireplumber and
+// python3 testing/tools/serve_model.py (see test_parakeet_e2e.html).
+
+const SERVER_PORT = 8766;
+const LISTEN_DURATION_MS = 60000;
+
+SimpleTest.waitForExplicitFinish();
+SimpleTest.requestCompleteLog();
+SimpleTest.requestLongerTimeout(600);
+SimpleTest.requestFlakyTimeout("waiting for parakeet inference to complete");
+
+SpecialPowers.pushPrefEnv({
+  set: [
+    ["media.webspeech.recognition.enable", true],
+    ["browser.ml.modelHubRootUrl", `http://localhost:${SERVER_PORT}/`],
+    ["media.autoplay.default", 0],
+    ["media.autoplay.blocking_policy", 0],
+  ],
+}, async () => {
+  try {
+    const ctx = new AudioContext();
+    // Created suspended; must be explicitly resumed so the graph runs and the
+    // captured track carries audio (headless CI has no user gesture).
+    await ctx.resume();
+
+    // Kick the context into running state via a silent looping buffer source.
+    const kick = ctx.createBufferSource();
+    kick.buffer = ctx.createBuffer(1, 2048, ctx.sampleRate);
+    kick.loop = true;
+    kick.connect(ctx.destination);
+    kick.start(0);
+
+    const audio = document.createElement("audio");
+    audio.crossOrigin = "anonymous";
+    audio.src = `http://localhost:${SERVER_PORT}/kennedy-appolo.opus`;
+    document.getElementById("content").appendChild(audio);
+
+    const src = ctx.createMediaElementSource(audio);
+    const dst = ctx.createMediaStreamDestination();
+    src.connect(dst);
+    src.connect(ctx.destination);
+
+    await new Promise((resolve, reject) => {
+      audio.addEventListener("canplaythrough", resolve, { once: true });
+      audio.addEventListener("error", () => reject(new Error("Audio load failed")), { once: true });
+      audio.load();
+    });
+
+    const track = dst.stream.getAudioTracks()[0];
+    ok(track, "Got audio track");
+
+    audio.currentTime = 0;
+    audio.play().catch(e => info("play() error: " + e));
+    await new Promise(r => setTimeout(r, 500));
+
+    const sr = new SpeechRecognition();
+    sr.continuous = true;
+    // Non-"en-*" language selects the multilingual nemotron model; "auto" lets
+    // it detect the language itself.
+    sr.lang = "auto";
+
+    const transcript = await new Promise((resolve, reject) => {
+      let text = "";
+      sr.onresult = e => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) {
+            const sentence = e.results[i][0].transcript;
+            text += " " + sentence;
+            info("Recognized: " + sentence);
+          }
+        }
+        document.getElementById("rec-text").textContent = text.trim();
+      };
+      sr.onerror = e => { info("sr.onerror: " + e.error); reject(new Error(e.error)); };
+      sr.onend = () => { info("sr.onend"); resolve(text.trim()); };
+      sr.start(track);
+      setTimeout(() => { info("Stopping recognition"); sr.stop(); }, LISTEN_DURATION_MS);
+    });
+
+    audio.pause();
+    await ctx.close();
+
+    info("=== MULTILINGUAL TRANSCRIPT ===");
+    info(transcript);
+    info("=== END ===");
+
+    isnot(transcript.trim(), "", "Got a non-empty transcript from the multilingual model");
+    ok(transcript.length > 50,
+       "Transcript has substantial content (>50 chars): " + transcript.length + " chars");
+    // No inline <lang> markers should leak into the transcript.
+    ok(!/[<>]/.test(transcript), "No inline markers in transcript");
+
+    SimpleTest.finish();
+  } catch(e) {
+    ok(false, "Test threw: " + e + "\n" + e.stack);
+    SimpleTest.finish();
+  }
+});
+</script>
+</pre>
+</body>
+</html>
