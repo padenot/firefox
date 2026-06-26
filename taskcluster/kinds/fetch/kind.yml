@@ -22,4 +22,5 @@ tasks-from:
     - updatebot.yml
     - onnxruntime.yml
     - onnxruntime-web-fetch.yml
+    - parakeet-models-fetch.yml
     - openh264.yml

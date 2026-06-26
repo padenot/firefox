@@ -14,6 +14,13 @@ support-files = [
 
 ["test_preference_enable.html"]
 
+# The parakeet tests run in their own subsuite (mochitest-speech-recognition) so
+# the large model artifacts are fetched only for this task. The parakeet-asr tag
+# makes runtests.py start the local model hub (serve_model.py) for them.
 ["test_parakeet_e2e.html"]
+subsuite = "speech-recognition"
+tags = "mtg parakeet-asr"
 
 ["test_parakeet_multilingual.html"]
+subsuite = "speech-recognition"
+tags = "mtg parakeet-asr"
