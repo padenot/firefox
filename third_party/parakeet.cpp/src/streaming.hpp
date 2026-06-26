@@ -175,8 +175,10 @@ private:
 
     // Regroup word_tokens_ into words_ and advance words_finalized_ to all but
     // the last (still-open) word — flush_all=true (finalize) makes every word
-    // final, including the trailing one.
-    void regroup_words(bool flush_all);
+    // final, including the trailing one. `eou_word_tokens` is the word_tokens_
+    // count as of the chunk's last <EOU>/<EOB> (0 if the chunk had none): that
+    // token closes the utterance, so the words it ends are final as well.
+    void regroup_words(bool flush_all, size_t eou_word_tokens = 0);
 };
 
 // Drive a StreamingSession over a whole 16 kHz mono PCM clip in the model's
