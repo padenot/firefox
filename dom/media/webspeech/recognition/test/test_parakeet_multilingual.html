@@ -24,11 +24,13 @@
 // End-to-end test for the multilingual streaming backend (nvidia
 // nemotron-3.5-asr-streaming-0.6b via parakeet.cpp). Selecting a non-"en-*"
 // language routes recognition to the multilingual model; "auto" makes it
-// auto-detect the spoken language. Here we feed the (English) Kennedy clip with
+// auto-detect the spoken language. We feed the (English) Kennedy clip with
 // lang="auto" to exercise the full Firefox path for the larger prompt-
-// conditioned model: download over the model fd, cache-aware streaming, BCP-47
-// language resolution and inline <lang>-tag stripping. Per-language acoustic
-// accuracy is validated upstream (parakeet.cpp matches NeMo at WER 0).
+// conditioned model.
+//
+// Heavily instrumented (see test_parakeet_e2e.html): the log shows model
+// availability, AudioContext state, real audio flow into the captured track,
+// every recognition event, a periodic heartbeat, and a final summary.
 //
 // Requires (headless): pipewire + pipewire-pulse + wireplumber and
 // python3 testing/tools/serve_model.py (see test_parakeet_e2e.html).
@@ -41,6 +43,29 @@ SimpleTest.requestCompleteLog();
 SimpleTest.requestLongerTimeout(600);
 SimpleTest.requestFlakyTimeout("waiting for parakeet inference to complete");
 
+const T0 = performance.now();
+const ms = () => "+" + Math.round(performance.now() - T0) + "ms";
+function diag(msg) { info("[diag " + ms() + "] " + msg); }
+
+// Minimal FFT level probe to confirm audio is actually flowing on the track.
+function makeAnalyser(ctx, stream) {
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0.2;
+  const source = ctx.createMediaStreamSource(stream);
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  return {
+    levels() {
+      analyser.getByteFrequencyData(data);
+      let max = 0, sum = 0;
+      for (let i = 0; i < data.length; i++) { sum += data[i]; if (data[i] > max) max = data[i]; }
+      return { max, avg: +(sum / data.length).toFixed(1) };
+    },
+    disconnect() { source.disconnect(); },
+  };
+}
+
 SpecialPowers.pushPrefEnv({
   set: [
     ["media.webspeech.recognition.enable", true],
@@ -49,13 +74,20 @@ SpecialPowers.pushPrefEnv({
     ["media.autoplay.blocking_policy", 0],
   ],
 }, async () => {
+  let statusTimer = null;
   try {
+    // Model reachability for the multilingual (non-"en-*") model.
+    const availability =
+      await SpeechRecognition.available({ langs: ["fr-FR"], processLocally: true });
+    diag(`multilingual model availability (fr-FR proxy, on-device): ${availability}`);
+
     const ctx = new AudioContext();
+    diag(`AudioContext created: state=${ctx.state} sampleRate=${ctx.sampleRate}`);
     // Created suspended; must be explicitly resumed so the graph runs and the
     // captured track carries audio (headless CI has no user gesture).
     await ctx.resume();
+    diag(`AudioContext after resume(): state=${ctx.state}`);
 
-    // Kick the context into running state via a silent looping buffer source.
     const kick = ctx.createBufferSource();
     kick.buffer = ctx.createBuffer(1, 2048, ctx.sampleRate);
     kick.loop = true;
@@ -63,8 +95,9 @@ SpecialPowers.pushPrefEnv({
     kick.start(0);
 
     const audio = document.createElement("audio");
-    audio.crossOrigin = "anonymous";
-    audio.src = `http://localhost:${SERVER_PORT}/kennedy-appolo.opus`;
+    // Same-origin support file (served by the mochitest server); only the model
+    // comes from the local model hub (serve_model.py) via modelHubRootUrl.
+    audio.src = "kennedy-appolo.opus";
     document.getElementById("content").appendChild(audio);
 
     const src = ctx.createMediaElementSource(audio);
@@ -72,18 +105,36 @@ SpecialPowers.pushPrefEnv({
     src.connect(dst);
     src.connect(ctx.destination);
 
+    const analyser = makeAnalyser(ctx, dst.stream);
+
     await new Promise((resolve, reject) => {
       audio.addEventListener("canplaythrough", resolve, { once: true });
       audio.addEventListener("error", () => reject(new Error("Audio load failed")), { once: true });
       audio.load();
     });
+    diag(`audio loaded: readyState=${audio.readyState} duration=${audio.duration.toFixed(2)}s ` +
+         `muted=${audio.muted} volume=${audio.volume} error=${audio.error ? audio.error.code : "none"}`);
 
     const track = dst.stream.getAudioTracks()[0];
     ok(track, "Got audio track");
+    diag(`track: id=${track.id} readyState=${track.readyState} enabled=${track.enabled} muted=${track.muted}`);
 
     audio.currentTime = 0;
-    audio.play().catch(e => info("play() error: " + e));
-    await new Promise(r => setTimeout(r, 500));
+    await audio.play().then(() => diag("audio.play() resolved"),
+                            e => diag("audio.play() rejected: " + e));
+
+    // Verify real audio is flowing into the captured track.
+    let maxLevel = 0;
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 200));
+      const lvl = analyser.levels();
+      if (lvl.max > maxLevel) { maxLevel = lvl.max; }
+      diag(`audio flow t=${(i + 1) * 200}ms: ctx=${ctx.state} curTime=${audio.currentTime.toFixed(2)} ` +
+           `paused=${audio.paused} level(max=${lvl.max} avg=${lvl.avg})`);
+    }
+    ok(maxLevel > 0,
+       `audio is flowing into the track (peak FFT level ${maxLevel} > 0 over 2s). ` +
+       `If 0: silent track — no audio device, suspended context, or muted element.`);
 
     const sr = new SpeechRecognition();
     sr.continuous = true;
@@ -91,30 +142,63 @@ SpecialPowers.pushPrefEnv({
     // it detect the language itself.
     sr.lang = "auto";
 
+    let audiostartFired = false, soundstartFired = false, speechstartFired = false;
+    sr.onaudiostart = () => { audiostartFired = true; diag("event: audiostart"); };
+    sr.onsoundstart = () => { soundstartFired = true; diag("event: soundstart"); };
+    sr.onspeechstart = () => { speechstartFired = true; diag("event: speechstart"); };
+    sr.onspeechend = () => diag("event: speechend");
+    sr.onsoundend = () => diag("event: soundend");
+    sr.onaudioend = () => diag("event: audioend");
+    sr.onnomatch = () => diag("event: nomatch");
+
+    let finalCount = 0, interimCount = 0;
     const transcript = await new Promise((resolve, reject) => {
       let text = "";
       sr.onresult = e => {
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) {
+            finalCount++;
             const sentence = e.results[i][0].transcript;
             text += " " + sentence;
-            info("Recognized: " + sentence);
+            diag(`final result #${finalCount}: "${sentence}"`);
+          } else {
+            interimCount++;
           }
         }
         document.getElementById("rec-text").textContent = text.trim();
       };
-      sr.onerror = e => { info("sr.onerror: " + e.error); reject(new Error(e.error)); };
-      sr.onend = () => { info("sr.onend"); resolve(text.trim()); };
+      sr.onerror = e => {
+        diag(`event: ERROR error="${e.error}" message="${e.message}"`);
+        reject(new Error(e.error));
+      };
+      sr.onstart = () => diag("event: start");
+      sr.onend = () => { diag("event: end"); resolve(text.trim()); };
+
+      diag("calling sr.start(track)");
       sr.start(track);
-      setTimeout(() => { info("Stopping recognition"); sr.stop(); }, LISTEN_DURATION_MS);
+      diag(`listening for ${LISTEN_DURATION_MS / 1000}s...`);
+
+      statusTimer = setInterval(() => {
+        const lvl = analyser.levels();
+        diag(`status: ctx=${ctx.state} curTime=${audio.currentTime.toFixed(1)} ` +
+             `level(max=${lvl.max}) finals=${finalCount} interims=${interimCount}`);
+      }, 5000);
+
+      setTimeout(() => { diag("stopping recognition"); sr.stop(); }, LISTEN_DURATION_MS);
     });
 
+    clearInterval(statusTimer);
+    analyser.disconnect();
     audio.pause();
     await ctx.close();
 
-    info("=== MULTILINGUAL TRANSCRIPT ===");
-    info(transcript);
-    info("=== END ===");
+    diag("=== SUMMARY ===");
+    diag(`model availability: ${availability}`);
+    diag(`peak audio level seen: ${maxLevel} (0 == silent track)`);
+    diag(`events: audiostart=${audiostartFired} soundstart=${soundstartFired} speechstart=${speechstartFired}`);
+    diag(`results: ${finalCount} final, ${interimCount} interim`);
+    diag(`transcript (${transcript.length} chars): ${transcript}`);
+    diag("=== END ===");
 
     isnot(transcript.trim(), "", "Got a non-empty transcript from the multilingual model");
     ok(transcript.length > 50,
@@ -123,7 +207,8 @@ SpecialPowers.pushPrefEnv({
     ok(!/[<>]/.test(transcript), "No inline markers in transcript");
 
     SimpleTest.finish();
-  } catch(e) {
+  } catch (e) {
+    if (statusTimer) { clearInterval(statusTimer); }
     ok(false, "Test threw: " + e + "\n" + e.stack);
     SimpleTest.finish();
   }
