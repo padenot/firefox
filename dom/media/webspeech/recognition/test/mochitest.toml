@@ -15,3 +15,5 @@ support-files = [
 ["test_preference_enable.html"]
 
 ["test_parakeet_e2e.html"]
+
+["test_parakeet_multilingual.html"]
