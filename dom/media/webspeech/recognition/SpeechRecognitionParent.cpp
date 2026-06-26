@@ -8,6 +8,7 @@
 #include <chrono>
 #include <thread>
 
+#include "SpeechRecognitionModelMapping.h"
 #include "SpeechRecognitionParent.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
@@ -48,23 +49,6 @@ static constexpr int32_t DEFAULT_AUDIO_LENGTH_MS =
 // Sample rate the Parakeet models operate at.
 static constexpr int32_t PARAKEET_SAMPLE_RATE = 16000;
 static constexpr int32_t DEFAULT_NUM_THREADS = 4;
-
-SpeechRecognitionParent::ModelIdentifier
-SpeechRecognitionParent::LanguagesToModelIdentifier(
-    const nsTArray<nsCString>&) {
-  // For now this ignores the requested languages and always returns a single
-  // hardcoded model. Per-language selection and generalization to more models
-  // land in a later patch in this stack.
-  // mudler/parakeet.cpp cache-aware streaming GGUF, hosted on the Mozilla
-  // model hub under asr-test/parakeet.
-  return {"asr-test/parakeet"_ns, "realtime_eou_120m-v1-q5_k.gguf"_ns,
-          "main"_ns};
-}
-
-nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
-  return nsFmtCString("{}/{}/{}", mModelName.get(), mFileName.get(),
-                      mRevision.get());
-}
 
 void SpeechRecognitionParent::ResolveOrRejectInitOnIPCThread(
     InitResolver&& aResolver, bool aSuccess) {
