@@ -6,6 +6,7 @@
 
 #include <speex/speex_resampler.h>
 
+#include <algorithm>
 #include <type_traits>
 #include <utility>
 
@@ -159,14 +160,18 @@ IPCActorUserGuard::~IPCActorUserGuard() {
   }
 }
 
-static constexpr double IPC_BLOCK_SIZE_S = 0.5;
+// Audio is streamed to the inference process in small blocks to keep end-to-end
+// latency low. The block is well under the model's internal chunk (~80 ms), so
+// the buffering delay is hidden behind the model's own latency rather than
+// adding to it. The ring buffer is sized independently, with generous headroom
+// against resampling-thread scheduling jitter.
+static constexpr double IPC_BLOCK_SIZE_S = 0.04;
+static constexpr double RING_BUFFER_SIZE_S = 0.5;
 static constexpr uint32_t STREAMING_POLL_MS = 20;
 static constexpr int32_t SPEECH_RECOGNITION_TARGET_RATE = 16000;
 static constexpr auto SPEECH_RECOGNITION_ENGINE_ID = "parakeet-cpp"_ns;
-// The ring buffer holds graph-rate audio, not yet downsampled to
-// SPEECH_RECOGNITION_TARGET_RATE, with this much headroom for the resampling
-// thread being late to dequeue.
-static constexpr uint32_t RING_BUFFER_IPC_BLOCKS = 4;
+// DataCallback() downmixes into mMonoBuffer in slices of at most this many
+// frames, so this is the only allocation the graph thread normally needs.
 static constexpr uint32_t PER_CALLBACK_MONO_BUFFER_INITIAL_NUM_FRAMES = 512;
 
 /* static */
@@ -201,8 +206,8 @@ SpeechRecognitionBackend::SpeechRecognitionBackend(
     : mParent(aParent),
       mLanguage(NS_ConvertUTF16toUTF8(aLanguage)),
       mPhrases(aPhrases.Clone()),
-      mRingBuffer(MakeUnique<SPSCQueue<float>>(AssertedCast<int>(
-          aGraphRate * IPC_BLOCK_SIZE_S * RING_BUFFER_IPC_BLOCKS))),
+      mRingBuffer(MakeUnique<SPSCQueue<float>>(
+          AssertedCast<int>(aGraphRate * RING_BUFFER_SIZE_S))),
       mResamplingThread(aResamplingThread),
       mResamplingCapability(aResamplingThread),
       mMonoBuffer(PER_CALLBACK_MONO_BUFFER_INITIAL_NUM_FRAMES),
@@ -406,36 +411,37 @@ void SpeechRecognitionBackend::DataCallback(MediaTrackGraph* aGraph,
     return;
   }
 
-  size_t frameCount = static_cast<size_t>(aChunk.mDuration);
+  const size_t frameCount = static_cast<size_t>(aChunk.mDuration);
   // A null chunk is silence the graph did not bother to materialize, not an
   // absence of audio, so it is fed as zeros rather than dropped. Dropping it
   // would splice together the audio on either side of a silent gap, hiding the
   // silence that ends an utterance from the recognizer.
   const bool isSilence = aChunk.IsNull();
 
-  if (mMonoBuffer.Capacity() < frameCount) {
-    LOGE("Warning: chunk size {} exceeds pre-allocated buffer capacity {}",
-         frameCount, mMonoBuffer.Capacity());
-    mMonoBuffer.SetCapacity(frameCount);
-    MOZ_DIAGNOSTIC_CRASH("Implement chunked downmixing");
-  }
-
-  mMonoBuffer.SetLengthAndRetainStorage(frameCount);
-
+  // Downmix to mono into the fixed-size scratch buffer and enqueue. A single
+  // graph chunk can be larger than the scratch buffer, so process it in slices
+  // that fit, avoiding any allocation on the real-time graph thread.
   AudioDataValue* monoData = mMonoBuffer.Elements();
   Span<AudioDataValue* const> outputChannels(&monoData, 1);
+  const size_t capacity = mMonoBuffer.Capacity();
 
-  if (isSilence) {
-    PodZero(mMonoBuffer.Elements(), frameCount);
-  } else {
-    aChunk.DownMixTo(outputChannels);
-  }
+  for (size_t offset = 0; offset < frameCount; offset += capacity) {
+    const size_t sliceFrames = std::min(capacity, frameCount - offset);
+    mMonoBuffer.SetLengthAndRetainStorage(sliceFrames);
 
-  int written = mRingBuffer->Enqueue(mMonoBuffer.Elements(),
-                                     AssertedCast<int>(frameCount));
+    if (isSilence) {
+      PodZero(mMonoBuffer.Elements(), sliceFrames);
+    } else {
+      AudioChunk slice = aChunk;
+      slice.SliceTo(offset, offset + sliceFrames);
+      slice.DownMixTo(outputChannels);
+    }
 
-  if (written < static_cast<int>(frameCount)) {
-    LOG("Ring buffer overflow: wrote {} of {} frames", written, frameCount);
+    int written = mRingBuffer->Enqueue(mMonoBuffer.Elements(),
+                                       AssertedCast<int>(sliceFrames));
+    if (written < static_cast<int>(sliceFrames)) {
+      LOG("Ring buffer overflow: wrote {} of {} frames", written, sliceFrames);
+    }
   }
 }
 
@@ -462,9 +468,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
 
   int available = mRingBuffer->AvailableRead();
   double secondsAvailable = AssertedCast<double>(available) / mGraphRate;
-  bool flushed = false;
   if (secondsAvailable > IPC_BLOCK_SIZE_S) {
-    flushed = true;
     nsTArray<float> audioBuffer;
     audioBuffer.SetLength(available);
     int read = mRingBuffer->Dequeue(audioBuffer.Elements(), available);
