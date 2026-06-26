@@ -355,12 +355,13 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
   mSpeechRecognitionChild = sHWInferenceChild->CreateSpeechRecognitionSession();
 
   mSpeechRecognitionChild->SetResultCallback(
-      [self = RefPtr{this}](const nsCString& aTranscript, bool aIsFinal) {
+      [self = RefPtr{this}](const nsCString& aTranscript, bool aIsFinal,
+                            float aConfidence) {
         AssertOnIPCThread();
         LOG("Received recognition result: {} (final={})", aTranscript.get(),
             aIsFinal);
 
-        self->HandleRecognitionResult(aTranscript, aIsFinal);
+        self->HandleRecognitionResult(aTranscript, aIsFinal, aConfidence);
       });
 
   mSpeechRecognitionChild->SetErrorCallback(
@@ -434,15 +435,15 @@ void SpeechRecognitionBackend::StopSpeechRecognitionSession() {
 }
 
 void SpeechRecognitionBackend::HandleRecognitionResult(
-    const nsCString& aTranscript, bool aIsFinal) {
+    const nsCString& aTranscript, bool aIsFinal, float aConfidence) {
   MOZ_ASSERT(!NS_IsMainThread(), "Called from background thread");
   LOG("HandleRecognitionResult: {} (final={})", aTranscript.get(), aIsFinal);
 
   DispatchToParentIfAlive("SpeechRecognitionBackend::HandleRecognitionResult",
-                          [transcript = nsCString(aTranscript),
-                           aIsFinal](SpeechRecognition* aParent) {
+                          [transcript = nsCString(aTranscript), aIsFinal,
+                           aConfidence](SpeechRecognition* aParent) {
                             aParent->HandleRecognitionResultFromBackend(
-                                transcript, aIsFinal);
+                                transcript, aIsFinal, aConfidence);
                           });
 }
 

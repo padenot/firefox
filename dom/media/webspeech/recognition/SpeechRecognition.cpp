@@ -26,12 +26,12 @@
 #include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/MediaStreamError.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/SpeechGrammar.h"
 #include "mozilla/dom/SpeechRecognitionError.h"
 #include "mozilla/dom/SpeechRecognitionEvent.h"
 #include "mozilla/dom/SpeechRecognitionPhrase.h"
-#include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/intl/Locale.h"
 #include "nsCOMPtr.h"
 #include "nsComponentManagerUtils.h"
@@ -68,7 +68,7 @@ static LazyLogModule gSpeechRecognitionLog("SpeechRecognition");
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(SpeechRecognition)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(SpeechRecognition,
-                                               DOMEventTargetHelper)
+                                                DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mTrack, mSpeechGrammarList, mListener,
                                   mPhrases)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
@@ -80,7 +80,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(SpeechRecognition,
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 nsTHashSet<nsCString> SpeechRecognition::sDownloadingLanguages;
-
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(SpeechRecognition)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
@@ -113,10 +112,10 @@ NS_INTERFACE_MAP_END_INHERITING(DOMMediaStream::TrackListener)
 // listeners are present. When recognition ends (Reset is called -- directly or
 // indirectly), we unregister them.
 static constexpr nsStaticAtom* const kKeepAliveEventTypes[] = {
-    nsGkAtoms::onstart,      nsGkAtoms::onaudiostart, nsGkAtoms::onsoundstart,
+    nsGkAtoms::onstart,       nsGkAtoms::onaudiostart, nsGkAtoms::onsoundstart,
     nsGkAtoms::onspeechstart, nsGkAtoms::onspeechend,  nsGkAtoms::onsoundend,
-    nsGkAtoms::onaudioend,   nsGkAtoms::onresult,     nsGkAtoms::onnomatch,
-    nsGkAtoms::onerror,      nsGkAtoms::onend};
+    nsGkAtoms::onaudioend,    nsGkAtoms::onresult,     nsGkAtoms::onnomatch,
+    nsGkAtoms::onerror,       nsGkAtoms::onend};
 
 SpeechRecognition::SpeechRecognition(nsPIDOMWindowInner* aOwnerWindow)
     : DOMEventTargetHelper(aOwnerWindow),
@@ -703,10 +702,10 @@ void SpeechRecognition::DispatchError(SpeechRecognitionErrorCode aErrorCode,
 }
 
 void SpeechRecognition::HandleRecognitionResultFromBackend(
-    const nsCString& aTranscript, bool aIsFinal) {
+    const nsCString& aTranscript, bool aIsFinal, float aConfidence) {
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on main thread");
-  LOG("HandleRecognitionResultFromBackend: {} (final={})", aTranscript.get(),
-      aIsFinal);
+  LOG("HandleRecognitionResultFromBackend: {} (final={}, conf={})",
+      aTranscript.get(), aIsFinal, aConfidence);
 
   // Check if still active
   if (!mBackend) {
@@ -738,11 +737,10 @@ void SpeechRecognition::HandleRecognitionResultFromBackend(
       new SpeechRecognitionAlternative(this);
 
   alternative->mTranscript = NS_ConvertUTF8toUTF16(aTranscript);
-  // The confidence is for now always 1.0. We have per token confidence score,
-  // and we need the spec to define how to compute this number in an
-  // engine-independant way, and for text segment and not per token (e.g.
-  // average, median, take lowest for a conservative estimate, etc.).
-  alternative->mConfidence = 1.0f;
+  // Per-result confidence, aggregated by the backend from the model's per-word
+  // confidences (mean). The spec leaves the exact aggregation engine-defined;
+  // the legacy backend, which has no per-word scores, reports 1.0.
+  alternative->mConfidence = aConfidence;
 
   result->mItems.AppendElement(alternative);
 

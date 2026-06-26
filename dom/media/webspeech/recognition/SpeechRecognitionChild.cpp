@@ -12,8 +12,8 @@
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "nsDebug.h"
 
-static
-mozilla::LazyLogModule gSpeechRecognitionChildLog("SpeechRecognitionChild");
+static mozilla::LazyLogModule gSpeechRecognitionChildLog(
+    "SpeechRecognitionChild");
 #define LOG(level, ...) \
   MOZ_LOG_FMT(gSpeechRecognitionChildLog, level, ##__VA_ARGS__)
 
@@ -61,13 +61,14 @@ void SpeechRecognitionChild::SetSpeechChangeCallback(
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionResult(
-    const nsCString& aTranscript, const bool& aIsFinal) {
-  LOG(LogLevel::Info, "RecvOnRecognitionResult: '%s' (final=%s)",
-      aTranscript.get(), aIsFinal ? "true" : "false");
+    const nsCString& aTranscript, const bool& aIsFinal,
+    const float& aConfidence) {
+  LOG(LogLevel::Info, "RecvOnRecognitionResult: '%s' (final=%s, conf=%f)",
+      aTranscript.get(), aIsFinal ? "true" : "false", aConfidence);
 
   if (mResultCallback) {
     LOG(LogLevel::Debug, "Invoking result callback");
-    mResultCallback(aTranscript, aIsFinal);
+    mResultCallback(aTranscript, aIsFinal, aConfidence);
   } else {
     LOG(LogLevel::Warning, "Received result but no callback set");
   }

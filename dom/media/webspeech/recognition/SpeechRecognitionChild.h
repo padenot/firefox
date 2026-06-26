@@ -19,7 +19,8 @@ class HWInferenceManagerChild;
 class SpeechRecognitionChild final : public PSpeechRecognitionChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(SpeechRecognitionChild, override)
-  using RecognitionResultCallback = std::function<void(const nsCString&, bool)>;
+  using RecognitionResultCallback =
+      std::function<void(const nsCString&, bool, float)>;
   using RecognitionErrorCallback = std::function<void(const nsCString&)>;
   using SpeechChangeCallback = std::function<void(bool)>;
 
@@ -30,7 +31,8 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
   void SetSpeechChangeCallback(SpeechChangeCallback&& aCallback);
 
   mozilla::ipc::IPCResult RecvOnRecognitionResult(const nsCString& aTranscript,
-                                                  const bool& aIsFinal);
+                                                  const bool& aIsFinal,
+                                                  const float& aConfidence);
   mozilla::ipc::IPCResult RecvOnRecognitionError(const nsCString& aError);
   mozilla::ipc::IPCResult RecvOnSpeechChange(const bool& aSpeechDetected);
 
