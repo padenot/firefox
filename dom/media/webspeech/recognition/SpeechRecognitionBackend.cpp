@@ -8,6 +8,7 @@
 
 #include <speex/speex_resampler.h>
 
+#include <algorithm>
 #include <utility>
 
 #include "AudibilityMonitor.h"
@@ -18,6 +19,7 @@
 #include "SpeechTrackListener.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/SpeechRecognitionChild.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
@@ -25,7 +27,6 @@
 #include "mozilla/hwinference/HWInferenceManagerChild.h"
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/ProtocolUtils.h"
-#include "mozilla/SpeechRecognitionChild.h"
 #include "nsCOMPtr.h"
 #include "nsProxyRelease.h"
 #include "nsString.h"
@@ -88,7 +89,15 @@ static LazyLogModule gSpeechRecognitionBackendLog("SpeechRecognitionBackend");
   MOZ_LOG_FMT(gSpeechRecognitionBackendLog, mozilla::LogLevel::Error, fmt, \
               ##__VA_ARGS__)
 
-static constexpr double IPC_BLOCK_SIZE_S = 0.5;
+// Audio is streamed to the inference process in small blocks to keep end-to-end
+// latency low. The block is well under the model's internal chunk (~160 ms), so
+// the buffering delay is hidden behind the model's own latency rather than
+// adding to it. (Was 0.5 s when the backend drove whisper.cpp's offline batch
+// path.) The ring buffer is sized independently, with generous headroom against
+// resampling-thread scheduling jitter.
+static constexpr double IPC_BLOCK_SIZE_S = 0.04;
+static constexpr double RING_BUFFER_SIZE_S = 0.5;
+static constexpr uint32_t STREAMING_POLL_MS = 20;
 static constexpr int32_t SPEECH_RECOGNITION_TARGET_RATE = 16000;
 static constexpr auto SPEECH_RECOGNITION_ENGINE_ID = "whisper-cpp"_ns;
 
@@ -99,14 +108,12 @@ SpeechRecognitionBackend::SpeechRecognitionBackend(
       mLanguage(NS_ConvertUTF16toUTF8(aLanguage)),
       mPhrases(aPhrases.Clone()),
       mRingBuffer(MakeUnique<SPSCQueue<float>>(SPEECH_RECOGNITION_TARGET_RATE *
-                                               IPC_BLOCK_SIZE_S * 4)),
+                                               RING_BUFFER_SIZE_S * 4)),
       mResamplingCapability(NS_GetCurrentThread()),
       mMonoBuffer(512),
       mGraphRate(aGraphRate) {}
 
-SpeechRecognitionBackend::~SpeechRecognitionBackend() {
-  Abort();
-}
+SpeechRecognitionBackend::~SpeechRecognitionBackend() { Abort(); }
 
 nsresult SpeechRecognitionBackend::Start() {
   AssertIsOnMainThread();
@@ -153,7 +160,10 @@ void SpeechRecognitionBackend::Stop() {
     mResamplingThread = nullptr;
   }
 
-  mMonoBuffer.Clear();
+  // mMonoBuffer is graph-thread scratch (used only in DataCallback); it must
+  // not be touched from the main thread here, as DataCallback may still run
+  // until the track listener is removed. It is freed when this backend is
+  // destroyed.
 
   RefPtr<SpeechRecognition> parent(mParent);
   if (!parent) {
@@ -219,27 +229,28 @@ void SpeechRecognitionBackend::DataCallback(TrackTime aTime,
     return;
   }
 
-  size_t frameCount = static_cast<size_t>(aChunk.mDuration);
+  const size_t frameCount = static_cast<size_t>(aChunk.mDuration);
 
-  if (mMonoBuffer.Capacity() < frameCount) {
-    LOGE("Warning: chunk size {} exceeds pre-allocated buffer capacity {}",
-         frameCount, mMonoBuffer.Capacity());
-    mMonoBuffer.SetLength(frameCount);
-    MOZ_DIAGNOSTIC_CRASH("Implement chunked downmixing");
-  }
-
-  mMonoBuffer.SetLengthAndRetainStorage(frameCount);
-
+  // Downmix to mono into the fixed-size scratch buffer and enqueue. A single
+  // graph chunk can be larger than the scratch buffer, so process it in slices
+  // that fit, avoiding any allocation on the real-time graph thread.
   AudioDataValue* monoData = mMonoBuffer.Elements();
   Span<AudioDataValue* const> outputChannels(&monoData, 1);
+  const size_t capacity = mMonoBuffer.Capacity();
 
-  aChunk.DownMixTo(outputChannels);
+  for (size_t offset = 0; offset < frameCount; offset += capacity) {
+    const size_t sliceFrames = std::min(capacity, frameCount - offset);
+    mMonoBuffer.SetLengthAndRetainStorage(sliceFrames);
 
-  int written = mRingBuffer->Enqueue(mMonoBuffer.Elements(),
-                                     AssertedCast<int>(frameCount));
+    AudioChunk slice = aChunk;
+    slice.SliceTo(offset, offset + sliceFrames);
+    slice.DownMixTo(outputChannels);
 
-  if (written < static_cast<int>(frameCount)) {
-    LOG("Ring buffer overflow: wrote {} of {} frames", written, frameCount);
+    int written = mRingBuffer->Enqueue(mMonoBuffer.Elements(),
+                                       AssertedCast<int>(sliceFrames));
+    if (written < static_cast<int>(sliceFrames)) {
+      LOG("Ring buffer overflow: wrote {} of {} frames", written, sliceFrames);
+    }
   }
 }
 
@@ -268,9 +279,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
 
   int available = mRingBuffer->AvailableRead();
   double secondsAvailable = AssertedCast<double>(available) / mGraphRate;
-  bool flushed = false;
   if (secondsAvailable > IPC_BLOCK_SIZE_S) {
-    flushed = true;
     nsTArray<float> audioBuffer;
     audioBuffer.SetLength(available);
     int read = mRingBuffer->Dequeue(audioBuffer.Elements(), available);
@@ -278,9 +287,9 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     if (!mAudioStartDispatched) {
       mAudioStartDispatched = true;
       DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchAudioStart",
-                       [](SpeechRecognition* aParent) {
-                         aParent->DispatchTrustedEvent(u"audiostart"_ns);
-                       });
+                              [](SpeechRecognition* aParent) {
+                                aParent->DispatchTrustedEvent(u"audiostart"_ns);
+                              });
     }
 
     if (mAudibilityMonitor) {
@@ -294,9 +303,9 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
 
         nsString eventName = nowAudible ? u"soundstart"_ns : u"soundend"_ns;
         DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchSoundEvent",
-                         [eventName](SpeechRecognition* aParent) {
-                           aParent->DispatchTrustedEvent(eventName);
-                         });
+                                [eventName](SpeechRecognition* aParent) {
+                                  aParent->DispatchTrustedEvent(eventName);
+                                });
       }
     }
 
@@ -319,9 +328,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
         self->ProcessAudioChunk();
       });
 
-  uint32_t nextProcessingTime =
-      flushed ? AssertedCast<uint32_t>(IPC_BLOCK_SIZE_S * 1000) : 100;
-  mResamplingThread->DelayedDispatch(nextChunk.forget(), nextProcessingTime);
+  mResamplingThread->DelayedDispatch(nextChunk.forget(), STREAMING_POLL_MS);
 }
 
 void SpeechRecognitionBackend::SendAudioDataViaIPC(
@@ -431,21 +438,23 @@ void SpeechRecognitionBackend::HandleRecognitionResult(
   MOZ_ASSERT(!NS_IsMainThread(), "Called from background thread");
   LOG("HandleRecognitionResult: {} (final={})", aTranscript.get(), aIsFinal);
 
-  DispatchToParentIfAlive(
-      "SpeechRecognitionBackend::HandleRecognitionResult",
-      [transcript = nsCString(aTranscript), aIsFinal](SpeechRecognition* aParent) {
-        aParent->HandleRecognitionResultFromBackend(transcript, aIsFinal);
-      });
+  DispatchToParentIfAlive("SpeechRecognitionBackend::HandleRecognitionResult",
+                          [transcript = nsCString(aTranscript),
+                           aIsFinal](SpeechRecognition* aParent) {
+                            aParent->HandleRecognitionResultFromBackend(
+                                transcript, aIsFinal);
+                          });
 }
 
 void SpeechRecognitionBackend::HandleRecognitionError(const nsCString& aError) {
   MOZ_ASSERT(!NS_IsMainThread(), "Called from background thread");
   LOGE("HandleRecognitionError: {}", aError.get());
 
-  DispatchToParentIfAlive("SpeechRecognitionBackend::HandleRecognitionError",
-                   [error = nsCString(aError)](SpeechRecognition* aParent) {
-                     aParent->HandleRecognitionErrorFromBackend(error);
-                   });
+  DispatchToParentIfAlive(
+      "SpeechRecognitionBackend::HandleRecognitionError",
+      [error = nsCString(aError)](SpeechRecognition* aParent) {
+        aParent->HandleRecognitionErrorFromBackend(error);
+      });
 }
 
 void SpeechRecognitionBackend::AssertOnResamplingThread() {
@@ -659,11 +668,12 @@ RefPtr<GenericPromise> SpeechRecognitionBackend::EnsureIPC() {
 
           LOG("EnsureIPC - Creating endpoint pair");
 
-          mozilla::ipc::Endpoint<hwinference::PHWInferenceManagerParent> parentEp;
+          mozilla::ipc::Endpoint<hwinference::PHWInferenceManagerParent>
+              parentEp;
           mozilla::ipc::Endpoint<hwinference::PHWInferenceManagerChild> childEp;
 
-          MOZ_ALWAYS_SUCCEEDS(
-              hwinference::PHWInferenceManager::CreateEndpoints(&parentEp, &childEp));
+          MOZ_ALWAYS_SUCCEEDS(hwinference::PHWInferenceManager::CreateEndpoints(
+              &parentEp, &childEp));
           DebugOnly<bool> ok = contentChild->SendRequestHWInferenceConnection(
               std::move(parentEp));
           MOZ_ASSERT(ok);
@@ -676,9 +686,11 @@ RefPtr<GenericPromise> SpeechRecognitionBackend::EnsureIPC() {
 
                 LOG("EnsureIPC - Opening connection on the SpeechIPC thread");
                 [&]() MOZ_NO_THREAD_SAFETY_ANALYSIS {
-                  mozilla::hwinference::HWInferenceManagerChild::OpenForProcess(std::move(childEp));
+                  mozilla::hwinference::HWInferenceManagerChild::OpenForProcess(
+                      std::move(childEp));
                 }();
-                sHWInferenceChild = mozilla::hwinference::HWInferenceManagerChild::GetSingleton();
+                sHWInferenceChild = mozilla::hwinference::
+                    HWInferenceManagerChild::GetSingleton();
 
                 if (sHWInferenceChild->CanSend()) {
                   LOG("EnsureIPC - Connection established");
