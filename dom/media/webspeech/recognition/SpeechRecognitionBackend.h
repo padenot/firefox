@@ -151,8 +151,8 @@ class SpeechRecognitionBackend {
   // == IPC thread
   void StartSpeechRecognitionSession(const nsACString& aLanguage)
       MOZ_REQUIRES(sIPCCapability);
-  void HandleRecognitionResult(const nsACString& aTranscript, bool aIsFinal)
-      MOZ_REQUIRES(sIPCCapability);
+  void HandleRecognitionResult(const nsACString& aTranscript, bool aIsFinal,
+                               float aConfidence) MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsACString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
