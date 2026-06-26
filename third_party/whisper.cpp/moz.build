@@ -28,7 +28,7 @@ DEFINES['PARAKEET_BUILD'] = '1'
 CXXFLAGS += [
     '-Wno-unreachable-code',
     '-Wno-unused-function',
-    '-Wno-unused-value',     # Windows STL [[nodiscard]] on std::runtime_error triggers on throw
+    '-Wno-macro-redefined',  # _USE_MATH_DEFINES is set globally on Windows
 ]
 
 LOCAL_INCLUDES += [

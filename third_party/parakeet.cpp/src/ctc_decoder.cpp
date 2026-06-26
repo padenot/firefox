@@ -6,6 +6,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include "moz-overrides.h"
 
 namespace pk {
 

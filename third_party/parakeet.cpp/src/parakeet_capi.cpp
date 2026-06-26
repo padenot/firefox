@@ -1,11 +1,4 @@
 #include "parakeet_capi.h"
-#include "parakeet.h"     // pk::Decoder
-#include "model.hpp"      // pk::Model
-#include "streaming.hpp"  // pk::StreamingSession
-#include "mel.hpp"        // pk::MelFrontend
-
-#include "transcription.hpp"  // pk::Transcription, pk::Word
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +7,13 @@
 #include <new>
 #include <string>
 #include <vector>
+#include "parakeet.h"     // pk::Decoder
+#include "model.hpp"      // pk::Model
+#include "streaming.hpp"  // pk::StreamingSession
+#include "mel.hpp"        // pk::MelFrontend
+
+#include "transcription.hpp"  // pk::Transcription, pk::Word
+#include "moz-overrides.h"
 
 // ABI version. Bump on breaking changes.
 // v3: target_lang variants (transcribe_path_lang / transcribe_pcm_lang /

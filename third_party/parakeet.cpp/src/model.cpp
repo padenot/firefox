@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
+#include "moz-overrides.h"
 
 namespace pk {
 

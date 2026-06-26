@@ -12,6 +12,7 @@
 #include "MediaEnginePrefs.h"
 #include "SpeechRecognitionAlternative.h"
 #include "SpeechRecognitionBackend.h"
+#include "SpeechRecognitionPermissionRequest.h"
 #include "SpeechRecognitionResult.h"
 #include "SpeechRecognitionResultList.h"
 #include "SpeechTrackListener.h"
@@ -466,22 +467,17 @@ already_AddRefed<Promise> SpeechRecognition::Install(
     }
   }
 
-  // Mark languages as downloading
-  for (const nsCString& lang : languagesUtf8) {
-    sDownloadingLanguages.Insert(lang);
+  RefPtr<Promise> promise = Promise::Create(global, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
   }
 
-  nsTArray<nsString> languages;
-  for (const nsString& lang : aOptions.mLangs) {
-    languages.AppendElement(lang);
-  }
-
-  RefPtr<Promise> promise =
-      SpeechRecognitionBackend::Install(global, languages);
-
-  RefPtr<InstallCompletionHandler> handler =
-      new InstallCompletionHandler(std::move(languagesUtf8));
-  promise->AppendNativeHandler(handler);
+  // Ask the user for permission before initiating the potentially large
+  // model download. SpeechRecognitionPermissionRequest::Allow() marks the
+  // languages as downloading and calls SpeechRecognitionBackend::Install().
+  auto permRequest = MakeRefPtr<SpeechRecognitionPermissionRequest>(
+      window, promise, aOptions.mLangs);
+  NS_DispatchToMainThread(permRequest.forget());
 
   return promise.forget();
 }

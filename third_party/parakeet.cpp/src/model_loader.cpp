@@ -10,6 +10,7 @@
 #include <vector>
 #include <utility>
 #include <stdexcept>
+#include "moz-overrides.h"
 namespace pk {
 
 int PromptCfg::resolve_index_or_throw(const std::string& target_lang) const {
