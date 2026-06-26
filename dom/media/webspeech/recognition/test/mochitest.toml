@@ -5,6 +5,7 @@ support-files = [
   "head.js",
   "hello.ogg",
   "hello.ogg^headers^",
+  "kennedy-appolo.opus",
   "sinoid+hello.ogg",
   "sinoid+hello.ogg^headers^",
   "silence.ogg",
@@ -12,3 +13,5 @@ support-files = [
 ]
 
 ["test_preference_enable.html"]
+
+["test_parakeet_e2e.html"]

@@ -1,0 +1,196 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SpeechRecognition: parakeet end-to-end</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
+  <style>
+    #results { font-family: monospace; font-size: 11px; margin-top: 10px; }
+    .reference { color: #006; background: #eef; padding: 8px; white-space: pre-wrap; }
+    .recognized { color: #060; background: #efe; padding: 8px; white-space: pre-wrap; }
+    label { font-weight: bold; display: block; margin-top: 8px; }
+  </style>
+</head>
+<body>
+<div id="content"></div>
+<div id="results">
+  <label>Reference (first 60s of speech):</label>
+  <div class="reference" id="ref-text">loading...</div>
+  <label>Recognized:</label>
+  <div class="recognized" id="rec-text">waiting...</div>
+</div>
+<pre id="test">
+<script>
+"use strict";
+
+// End-to-end quality test for local speech recognition via parakeet.
+//
+// Requires:
+//   XDG_RUNTIME_DIR=/run/user/$(id -u)
+//   pipewire & pipewire-pulse & wireplumber &  (for headless audio)
+//   python3 testing/tools/serve_model.py &
+//
+// Run:
+//   XDG_RUNTIME_DIR=/run/user/$(id -u) ./mach mochitest --headless \
+//       dom/media/webspeech/recognition/test/test_parakeet_e2e.html
+
+const SERVER_PORT = 8766;
+// How long to listen in milliseconds — longer = better quality assessment.
+const LISTEN_DURATION_MS = 60000;
+
+SimpleTest.waitForExplicitFinish();
+SimpleTest.requestCompleteLog();
+SimpleTest.requestLongerTimeout(600);
+SimpleTest.requestFlakyTimeout("waiting for parakeet inference to complete");
+
+// Inline AudioStreamAnalyser from dom/media/webrtc/tests/mochitests/head.js
+function AudioStreamAnalyser(ac, stream) {
+  this.audioContext = ac;
+  this.analyser = this.audioContext.createAnalyser();
+  this.analyser.smoothingTimeConstant = 0.2;
+  this.analyser.fftSize = 1024;
+  this.sourceNodes = [];
+  this.connectTrack = t => {
+    let source = this.audioContext.createMediaStreamSource(new MediaStream([t]));
+    this.sourceNodes.push(source);
+    source.connect(this.analyser);
+  };
+  stream.getAudioTracks().forEach(t => this.connectTrack(t));
+  this.data = new Uint8Array(this.analyser.frequencyBinCount);
+}
+AudioStreamAnalyser.prototype.getByteFrequencyData = function() {
+  this.analyser.getByteFrequencyData(this.data);
+  return this.data;
+};
+AudioStreamAnalyser.prototype.enableDebugCanvas = function() {
+  var cvs = this.debugCanvas = document.createElement("canvas");
+  document.getElementById("content").insertBefore(cvs, null);
+  cvs.width = this.analyser.frequencyBinCount;
+  cvs.height = 64;
+  cvs.style.border = "1px solid red";
+  var c = cvs.getContext("2d");
+  var self = this;
+  (function render() {
+    c.clearRect(0, 0, cvs.width, cvs.height);
+    var a = self.getByteFrequencyData();
+    for (var i = 0; i < a.length; i++) { c.fillRect(i, cvs.height - a[i]/4, 1, cvs.height); }
+    if (!cvs.stopDrawing) requestAnimationFrame(render);
+  })();
+};
+AudioStreamAnalyser.prototype.hasNonSilence = function() {
+  return this.getByteFrequencyData().some(v => v > 0);
+};
+AudioStreamAnalyser.prototype.disconnect = function() {
+  if (this.debugCanvas) this.debugCanvas.stopDrawing = true;
+  this.sourceNodes.forEach(n => n.disconnect());
+};
+
+SpecialPowers.pushPrefEnv({
+  set: [
+    ["media.webspeech.recognition.enable", true],
+    ["browser.ml.modelHubRootUrl", `http://localhost:${SERVER_PORT}/`],
+    ["media.webspeech.recognition.audio_length_ms", 5000],
+    ["media.webspeech.recognition.interval_ms", 1000],
+    ["media.webspeech.recognition.num_threads", 4],
+    ["media.autoplay.default", 0],
+    ["media.autoplay.blocking_policy", 0],
+  ],
+}, async () => {
+  try {
+    // Fetch reference transcript.
+    const refResp = await fetch(`http://localhost:${SERVER_PORT}/transcript.txt`);
+    const refText = refResp.ok ? await refResp.text() : "(reference unavailable)";
+    document.getElementById("ref-text").textContent = refText.slice(0, 800) + "...";
+    info("Reference transcript fetched");
+
+    const ctx = new AudioContext();
+    // Autoplay is allowed via prefs, but the context is still created suspended
+    // and must be explicitly resumed; otherwise the graph never runs and the
+    // captured track is silent (headless CI has no user gesture to resume it).
+    await ctx.resume();
+
+    // Kick the context into running state via a silent looping buffer source.
+    const kickBuf = ctx.createBuffer(1, 2048, ctx.sampleRate);
+    const kick = ctx.createBufferSource();
+    kick.buffer = kickBuf;
+    kick.loop = true;
+    kick.connect(ctx.destination);
+    kick.start(0);
+
+    const audio = document.createElement("audio");
+    audio.id = "audioElement";
+    audio.controls = true;
+    audio.crossOrigin = "anonymous";
+    audio.src = `http://localhost:${SERVER_PORT}/kennedy-appolo.opus`;
+    document.getElementById("content").appendChild(audio);
+
+    const src = ctx.createMediaElementSource(audio);
+    const dst = ctx.createMediaStreamDestination();
+    src.connect(dst);
+    src.connect(ctx.destination);
+
+    const analyser = new AudioStreamAnalyser(ctx, dst.stream);
+    analyser.enableDebugCanvas();
+
+    await new Promise((resolve, reject) => {
+      audio.addEventListener("canplaythrough", resolve, { once: true });
+      audio.addEventListener("error", () => reject(new Error("Audio load failed")), { once: true });
+      audio.load();
+    });
+    info(`Audio loaded, ctx.state=${ctx.state}`);
+
+    const track = dst.stream.getAudioTracks()[0];
+    ok(track, "Got audio track");
+
+    // Start from beginning of speech for best quality assessment.
+    audio.currentTime = 0;
+    audio.play().catch(e => info("play() error: " + e));
+
+    await new Promise(r => setTimeout(r, 500));
+    info(`ctx.state=${ctx.state} hasNonSilence=${analyser.hasNonSilence()}`);
+
+    const sr = new SpeechRecognition();
+    sr.continuous = true;
+    sr.lang = "en-US";
+
+    const transcript = await new Promise((resolve, reject) => {
+      let text = "";
+      sr.onresult = e => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) {
+            const sentence = e.results[i][0].transcript;
+            text += " " + sentence;
+            info("Recognized: " + sentence);
+          }
+        }
+        document.getElementById("rec-text").textContent = text.trim();
+      };
+      sr.onerror = e => { info("sr.onerror: " + e.error); reject(new Error(e.error)); };
+      sr.onend = () => { info("sr.onend"); resolve(text.trim()); };
+      sr.start(track);
+      info(`Listening for ${LISTEN_DURATION_MS / 1000}s...`);
+      setTimeout(() => { info("Stopping recognition"); sr.stop(); }, LISTEN_DURATION_MS);
+    });
+
+    analyser.disconnect();
+    audio.pause();
+    await ctx.close();
+
+    info("=== FINAL TRANSCRIPT ===");
+    info(transcript);
+    info("=== END ===");
+
+    isnot(transcript.trim(), "", "Got a non-empty transcript");
+    ok(transcript.length > 50, "Transcript has substantial content (>50 chars): " + transcript.length + " chars");
+
+    SimpleTest.finish();
+  } catch(e) {
+    ok(false, "Test threw: " + e + "\n" + e.stack);
+    SimpleTest.finish();
+  }
+});
+</script>
+</pre>
+</body>
+</html>
