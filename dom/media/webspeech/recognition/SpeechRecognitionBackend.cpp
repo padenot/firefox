@@ -815,6 +815,79 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Available(
 }
 
 /* static */
+RefPtr<GenericPromise> SpeechRecognitionBackend::IsModelInstalledNative(
+    const nsTArray<nsString>& aLanguages) {
+  AssertIsOnMainThread();
+
+  nsTArray<nsCString> languages;
+  for (const nsString& lang : aLanguages) {
+    languages.AppendElement(NS_ConvertUTF16toUTF8(lang));
+  }
+  if (languages.IsEmpty()) {
+    languages.AppendElement("en-US"_ns);
+  }
+
+  LOG("SpeechRecognitionBackend::IsModelInstalledNative - Starting installed "
+      "check for {} languages",
+      languages.Length());
+
+  RefPtr<GenericPromise::Private> resultPromise =
+      new GenericPromise::Private(__func__);
+
+  RunWithTransientSession(
+      std::move(languages),
+      [](SpeechRecognitionChild* aChild, nsTArray<nsCString>& aLangs) {
+        return aChild->SendIsModelInstalled(aLangs);
+      },
+      [resultPromise](bool aInstalled) {
+        LOG("SpeechRecognitionBackend::IsModelInstalledNative - Received "
+            "response: {}",
+            aInstalled ? "true" : "false");
+        resultPromise->Resolve(aInstalled, __func__);
+      },
+      [resultPromise]() { resultPromise->Resolve(false, __func__); });
+
+  return resultPromise;
+}
+
+/* static */
+already_AddRefed<Promise> SpeechRecognitionBackend::GetModelDownloadSize(
+    nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages) {
+  AssertIsOnMainThread();
+
+  if (!aGlobal) {
+    return nullptr;
+  }
+
+  ErrorResult rv;
+  RefPtr<Promise> promise = Promise::Create(aGlobal, rv);
+  if (rv.Failed()) {
+    return nullptr;
+  }
+
+  nsTArray<nsCString> languages;
+  for (const nsString& lang : aLanguages) {
+    languages.AppendElement(NS_ConvertUTF16toUTF8(lang));
+  }
+
+  nsMainThreadPtrHandle<Promise> promiseHandle(
+      MakeAndAddRef<nsMainThreadPtrHolder<Promise>>(
+          "SpeechRecognitionBackend::GetModelDownloadSize", promise));
+
+  RunWithTransientSession(
+      std::move(languages),
+      [](SpeechRecognitionChild* aChild, nsTArray<nsCString>& aLangs) {
+        return aChild->SendGetModelDownloadSize(aLangs);
+      },
+      [promiseHandle](uint32_t aSizeMB) {
+        promiseHandle->MaybeResolve(aSizeMB);
+      },
+      [promiseHandle]() { promiseHandle->MaybeResolve(0); });
+
+  return promise.forget();
+}
+
+/* static */
 SpeechRecognitionBackend::EnsureIPCResult
 SpeechRecognitionBackend::EnsureIPC() {
   AssertIsOnMainThread();

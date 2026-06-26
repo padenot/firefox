@@ -28,6 +28,12 @@ class HWInferenceParent final : public PHWInferenceParent {
       nsCString&& aEngine, nsCString&& aModel, nsCString&& aRevision,
       nsCString&& aFilename, IsModelAvailableResolver&& aResolver);
 
+  // Whether the model is already downloaded to the local cache, used to skip
+  // the install() permission prompt when there is nothing to download.
+  mozilla::ipc::IPCResult RecvIsModelInstalled(
+      nsCString&& aEngine, nsCString&& aModel, nsCString&& aRevision,
+      nsCString&& aFilename, IsModelInstalledResolver&& aResolver);
+
   // Install (download) a model for a specific task
   mozilla::ipc::IPCResult RecvInstallModel(nsCString&& aTask,
                                            nsCString&& aModel,

@@ -237,6 +237,23 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
       std::move(aResolver), mIsModelAvailableRequest);
 }
 
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelInstalled(
+    const nsTArray<nsCString>& aLanguages,
+    IsModelInstalledResolver&& aResolver) {
+  ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
+  LOGD("{} languages: {} mapped to model={}", __func__,
+       fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
+
+  return RunHWInferenceBoolQuery(
+      __func__,
+      [modelIdentifier](hwinference::HWInferenceChild* aChild) {
+        return aChild->SendIsModelInstalled(
+            "parakeet-gguf"_ns, modelIdentifier.mModelName,
+            modelIdentifier.mRevision, modelIdentifier.mFileName);
+      },
+      std::move(aResolver), mIsModelInstalledRequest);
+}
+
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
     const nsTArray<nsCString>& aLanguages, InstallModelsResolver&& aResolver) {
   ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
@@ -251,6 +268,13 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
             modelIdentifier.mRevision, modelIdentifier.mFileName);
       },
       std::move(aResolver), mInstallModelRequest);
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvGetModelDownloadSize(
+    const nsTArray<nsCString>& aLanguages,
+    GetModelDownloadSizeResolver&& aResolver) {
+  aResolver(LanguagesToModelIdentifier(aLanguages).mSizeMB);
+  return IPC_OK();
 }
 
 SpeechRecognitionParent::SpeechRecognitionParent()
@@ -520,6 +544,7 @@ void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   // resolve/reject callbacks never run and try to resolve a dead IPDL
   // resolver after this actor is torn down.
   mIsModelAvailableRequest.DisconnectIfExists();
+  mIsModelInstalledRequest.DisconnectIfExists();
   mInstallModelRequest.DisconnectIfExists();
   mGetModelFileRequest.DisconnectIfExists();
 

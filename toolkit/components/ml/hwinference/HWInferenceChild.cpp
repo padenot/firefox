@@ -57,6 +57,21 @@ HWInferenceChild::SendIsModelAvailable(const nsCString& aEngine,
                                                  aFilename);
 }
 
+RefPtr<HWInferenceChild::IsModelInstalledPromise>
+HWInferenceChild::SendIsModelInstalled(const nsCString& aEngine,
+                                       const nsCString& aModel,
+                                       const nsCString& aRevision,
+                                       const nsCString& aFilename) {
+  LOGD(
+      "[{} - {}] Sending model installed check to parent process: "
+      "engine={} model={} revision={} filename={}",
+      fmt::ptr(this), __func__, aEngine.get(), aModel.get(), aRevision.get(),
+      aFilename.get());
+
+  return PHWInferenceChild::SendIsModelInstalled(aEngine, aModel, aRevision,
+                                                 aFilename);
+}
+
 RefPtr<HWInferenceChild::InstallModelPromise>
 HWInferenceChild::SendInstallModel(const nsCString& aTask,
                                    const nsCString& aModel,

@@ -101,6 +101,7 @@ class SpeechRecognition final : public DOMEventTargetHelper,
       const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
       ErrorResult& aRv);
 
+  static void AddDownloadingLanguage(const nsCString& aLanguage);
   static void RemoveDownloadingLanguage(const nsCString& aLanguage);
 
   void Start(const Optional<NonNull<MediaStreamTrack>>& aTrack,

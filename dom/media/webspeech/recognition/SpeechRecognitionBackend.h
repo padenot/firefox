@@ -114,6 +114,16 @@ class SpeechRecognitionBackend
       nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages);
   static already_AddRefed<Promise> Install(
       nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages);
+  // Resolves(true) iff the model is already downloaded to the local cache,
+  // so install() can skip its permission prompt when there is nothing to
+  // download. Resolves(false) (never rejects) otherwise.
+  static RefPtr<GenericPromise> IsModelInstalledNative(
+      const nsTArray<nsString>& aLanguages);
+  // Resolves with the model download size in MB (0 if unknown), for the
+  // download permission prompt. Keeps the model table out of the content
+  // process: the size is computed in the utility process.
+  static already_AddRefed<Promise> GetModelDownloadSize(
+      nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages);
 
  private:
   virtual ~SpeechRecognitionBackend();
@@ -176,7 +186,6 @@ class SpeechRecognitionBackend
 
   static void AssertOnIPCThread() MOZ_ASSERT_CAPABILITY(sIPCCapability);
   static void StopIPCThreadIfPossible();
-  void AssertOnResamplingThread() MOZ_ASSERT_CAPABILITY(mResamplingCapability);
 
   // Closes sHWInferenceChild if open. Called on the IPC thread, both from a
   // live idle-close (StopIPCThreadIfPossible) and from the thread's own
@@ -198,6 +207,8 @@ class SpeechRecognitionBackend
   };
   static void AcquireIPCThreadUser();
   static void ReleaseIPCThreadUser();
+
+  void AssertOnResamplingThread() MOZ_ASSERT_CAPABILITY(mResamplingCapability);
 
   template <typename Func>
   static void OnIPCThread(Func&& aFunc) MOZ_ASSERT_CAPABILITY(sIPCCapability);

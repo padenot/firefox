@@ -2192,6 +2192,77 @@ class StorageAccessPermissionPrompt extends PermissionPromptForRequest {
   }
 }
 
+class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptForRequest {
+  #sizeMB;
+
+  constructor(request) {
+    super();
+    this.request = request;
+    let types = request.types.QueryInterface(Ci.nsIArray);
+    let perm = types.queryElementAt(0, Ci.nsIContentPermissionType);
+    this.#sizeMB = perm.options.length
+      ? perm.options.queryElementAt(0, Ci.nsISupportsString).data
+      : null;
+  }
+
+  get type() {
+    return "speech-recognition-model-download";
+  }
+
+  get popupOptions() {
+    return {
+      displayURI: false,
+      checkbox: { show: false },
+    };
+  }
+
+  get notificationID() {
+    return "speech-recognition-model-download";
+  }
+
+  get anchorID() {
+    return "default-notification-icon";
+  }
+
+  get message() {
+    if (this.#sizeMB) {
+      return lazy.gBrowserBundle.formatStringFromName(
+        "speechRecognitionModelDownload.message",
+        [this.#sizeMB]
+      );
+    }
+    return lazy.gBrowserBundle.GetStringFromName(
+      "speechRecognitionModelDownload.messageFallback"
+    );
+  }
+
+  get promptActions() {
+    return [
+      {
+        label: lazy.gBrowserBundle.GetStringFromName(
+          "speechRecognitionModelDownload.allow"
+        ),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
+          "speechRecognitionModelDownload.allow.accesskey"
+        ),
+        action: lazy.SitePermissions.ALLOW,
+        callback: () => this.allow(),
+      },
+      {
+        label: lazy.gBrowserBundle.GetStringFromName(
+          "speechRecognitionModelDownload.notNow"
+        ),
+        accessKey: lazy.gBrowserBundle.GetStringFromName(
+          "speechRecognitionModelDownload.notNow.accesskey"
+        ),
+        action: lazy.SitePermissions.BLOCK,
+        dismiss: true,
+        callback: () => this.cancel(),
+      },
+    ];
+  }
+}
+
 export const PermissionUI = {
   PermissionPromptForRequest,
   GeolocationPermissionPrompt,
@@ -2203,5 +2274,6 @@ export const PermissionUI = {
   StorageAccessPermissionPrompt,
   LoopbackNetworkPermissionPrompt,
   LocalNetworkPermissionPrompt,
+  SpeechRecognitionModelDownloadPermissionPrompt,
   getSiteCategory,
 };

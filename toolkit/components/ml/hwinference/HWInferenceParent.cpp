@@ -222,6 +222,50 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelInstalled(
+    nsCString&& aEngine, nsCString&& aModel, nsCString&& aRevision,
+    nsCString&& aFilename, IsModelInstalledResolver&& aResolver) {
+  LOGD("{}: engine={} model={} revision={} filename={}", __func__, aEngine,
+       aModel, aRevision, aFilename);
+
+  if (StaticPrefs::media_webspeech_recognition_testing()) {
+    bool installed =
+        sMockInstalledModels && sMockInstalledModels->Contains(
+                                    MockModelKey(aModel, aRevision, aFilename));
+    LOGD("{} - testing mock: installed={}", __func__, installed);
+    aResolver(installed);
+    return IPC_OK();
+  }
+
+  nsCOMPtr<nsIMLModelHub> modelHubService =
+      do_GetService("@mozilla.org/ml-modelhub;1");
+
+  if (!modelHubService) {
+    LOGE("{} - Failed to get ModelHub XPCOM service", __func__);
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  RefPtr<dom::Promise> promise;
+  nsresult rv = modelHubService->IsModelInstalled(
+      aEngine, aModel, aRevision, aFilename, getter_AddRefs(promise));
+
+  if (NS_FAILED(rv) || !promise) {
+    LOGE("{}  ERROR: ModelHub call failed with nsresult={:x}", __func__,
+         static_cast<uint32_t>(rv));
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  (void)promise->AddCallbacksWithCycleCollectedArgs(
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aArg,
+                  ErrorResult& aRv) { aResolver(JS::ToBoolean(aArg)); },
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aArg,
+                  ErrorResult& aRv) { aResolver(false); });
+
+  return IPC_OK();
+}
+
 ipc::IPCResult HWInferenceParent::RecvInstallModel(
     nsCString&& aTask, nsCString&& aModel, nsCString&& aRevision,
     nsCString&& aFilename, InstallModelResolver&& aResolver) {

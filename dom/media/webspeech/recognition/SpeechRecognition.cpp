@@ -12,6 +12,7 @@
 #include "MediaEnginePrefs.h"
 #include "SpeechRecognitionAlternative.h"
 #include "SpeechRecognitionBackend.h"
+#include "SpeechRecognitionPermissionRequest.h"
 #include "SpeechRecognitionResult.h"
 #include "SpeechRecognitionResultList.h"
 #include "SpeechTrackListener.h"
@@ -24,6 +25,7 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h"
+#include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/MediaStreamError.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
@@ -428,6 +430,57 @@ class InstallCompletionHandler final : public PromiseNativeHandler {
 
 NS_IMPL_ISUPPORTS0(InstallCompletionHandler)
 
+// Receives the model download size (computed in the utility process) and shows
+// the download permission prompt with it.
+class SpeechModelSizeHandler final : public PromiseNativeHandler {
+ public:
+  NS_DECL_ISUPPORTS
+
+  SpeechModelSizeHandler(nsPIDOMWindowInner* aWindow, Promise* aInstallPromise,
+                         nsTArray<nsString>&& aLanguages)
+      : mWindow(aWindow),
+        mInstallPromise(aInstallPromise),
+        mLanguages(std::move(aLanguages)) {}
+
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
+    uint32_t sizeMB =
+        aValue.isNumber() ? static_cast<uint32_t>(aValue.toNumber()) : 0;
+    Prompt(sizeMB);
+  }
+
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
+    Prompt(0);
+  }
+
+ private:
+  ~SpeechModelSizeHandler() = default;
+
+  void Prompt(uint32_t aSizeMB) {
+    AssertIsOnMainThread();
+    if (!mWindow || !mWindow->IsFullyActive() || !mWindow->GetExtantDoc()) {
+      mInstallPromise->MaybeResolve(false);
+      return;
+    }
+    auto permRequest = MakeRefPtr<SpeechRecognitionPermissionRequest>(
+        mWindow, mInstallPromise, mLanguages, aSizeMB);
+    NS_DispatchToMainThread(permRequest.forget());
+  }
+
+  RefPtr<nsPIDOMWindowInner> mWindow;
+  RefPtr<Promise> mInstallPromise;
+  nsTArray<nsString> mLanguages;
+};
+
+NS_IMPL_ISUPPORTS0(SpeechModelSizeHandler)
+
+/* static */
+void SpeechRecognition::AddDownloadingLanguage(const nsCString& aLanguage) {
+  AssertIsOnMainThread();
+  sDownloadingLanguages.Insert(aLanguage);
+}
+
 /* static */
 void SpeechRecognition::RemoveDownloadingLanguage(const nsCString& aLanguage) {
   AssertIsOnMainThread();
@@ -499,22 +552,28 @@ already_AddRefed<Promise> SpeechRecognition::Install(
     }
   }
 
-  // Mark languages as downloading
-  for (const nsCString& lang : languagesUtf8) {
-    sDownloadingLanguages.Insert(lang);
+  RefPtr<Promise> promise = Promise::Create(global, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
   }
 
-  nsTArray<nsString> languages;
-  for (const nsString& lang : aOptions.mLangs) {
-    languages.AppendElement(lang);
+  // Fetch the model download size (computed in the utility process, which owns
+  // the model table) before prompting, then show the download permission
+  // prompt. The prompt itself is skipped if the model turns out to already be
+  // available (see SpeechRecognitionPermissionRequest::Run()).
+  nsTArray<nsString> languages(aOptions.mLangs.Elements(),
+                               aOptions.mLangs.Length());
+  RefPtr<Promise> sizePromise =
+      SpeechRecognitionBackend::GetModelDownloadSize(global, languages);
+  if (!sizePromise) {
+    auto permRequest = MakeRefPtr<SpeechRecognitionPermissionRequest>(
+        window, promise, languages, 0);
+    NS_DispatchToMainThread(permRequest.forget());
+    return promise.forget();
   }
-
-  RefPtr<Promise> promise =
-      SpeechRecognitionBackend::Install(global, languages);
-
-  RefPtr<InstallCompletionHandler> handler =
-      new InstallCompletionHandler(std::move(languagesUtf8));
-  promise->AppendNativeHandler(handler);
+  auto sizeHandler =
+      MakeRefPtr<SpeechModelSizeHandler>(window, promise, std::move(languages));
+  sizePromise->AppendNativeHandler(sizeHandler);
 
   return promise.forget();
 }

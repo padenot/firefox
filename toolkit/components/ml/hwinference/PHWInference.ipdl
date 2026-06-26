@@ -35,6 +35,14 @@ protocol PHWInference
                            nsCString revision,
                            nsCString filename) returns (bool available);
 
+    // Whether the model is already downloaded to the local cache (no
+    // network involved), as opposed to IsModelAvailable which also reports
+    // true for a model that is merely downloadable.
+    async IsModelInstalled(nsCString engine,
+                           nsCString model,
+                           nsCString revision,
+                           nsCString filename) returns (bool installed);
+
     // Install (download) a model for a specific task
     async InstallModel(nsCString task,
                        nsCString model,
