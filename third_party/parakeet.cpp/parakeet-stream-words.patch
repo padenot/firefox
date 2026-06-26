@@ -1,0 +1,86 @@
+# Firefox-local: typed drain of finalized words (text + timing + confidence)
+# from a streaming session, so the host derives a per-result confidence and
+# keeps per-word timestamps without parsing the JSON feed. Applies on top of
+# parakeet-fd-loading.patch. Upstreamable to https://github.com/mudler/parakeet.cpp
+#
+--- a/include/parakeet_capi.h
++++ b/include/parakeet_capi.h
+@@ -242,6 +242,26 @@
+ // Safe on NULL.
+ void parakeet_capi_free_events(parakeet_stream_event* events);
+ 
++// Firefox-local: a finalized word with timing + confidence. Same data the JSON
++// "words" array carries, in a typed form so the host need not parse JSON.
++typedef struct parakeet_stream_word {
++    const char* text;  // malloc'd UTF-8; freed by parakeet_capi_free_words
++    float start;       // seconds from stream start
++    float end;
++    float conf;        // 0..1
++} parakeet_stream_word;
++
++// Drain the words finalized since the previous call (the same set whose text
++// stream_feed returned). Returns the count (>= 0), or -1 on error; on success
++// *out_words is a malloc'd array of `count` entries (free with
++// parakeet_capi_free_words). Mutually exclusive with the JSON feed entry points.
++int parakeet_capi_stream_drain_words(parakeet_stream* s,
++                                     parakeet_stream_word** out_words);
++
++// Free a word array (and each word's text) from parakeet_capi_stream_drain_words.
++// Safe on NULL.
++void parakeet_capi_free_words(parakeet_stream_word* words, int count);
++
+ // Like parakeet_capi_stream_feed but returns a malloc'd UTF-8 JSON document
+ // instead of bare text:
+ //   {"text":"...","eou":0,"eob":0,"frame_sec":0.080000,
+--- a/src/parakeet_capi.cpp
++++ b/src/parakeet_capi.cpp
+@@ -649,6 +649,49 @@
+     std::free(events);
+ }
+ 
++// Firefox-local: typed drain of finalized words (timing + confidence), so the
++// host gets per-word data without parsing the JSON feed.
++extern "C" int parakeet_capi_stream_drain_words(
++    parakeet_stream* s, parakeet_stream_word** out_words) {
++    if (out_words) *out_words = nullptr;
++    if (!s || !out_words) return -1;
++    if (!s->ctx || !s->ctx->model || !s->sess) return -1;
++    try {
++        std::vector<pk::Word> ws = s->sess->drain_words();
++        s->ctx->last_error.clear();
++        if (ws.empty()) return 0;
++        auto* arr = static_cast<parakeet_stream_word*>(
++            std::calloc(ws.size(), sizeof(parakeet_stream_word)));
++        if (!arr) { s->ctx->last_error = "out of memory"; return -1; }
++        for (size_t i = 0; i < ws.size(); ++i) {
++            char* t = static_cast<char*>(std::malloc(ws[i].text.size() + 1));
++            if (t) {
++                std::memcpy(t, ws[i].text.c_str(), ws[i].text.size() + 1);
++            }
++            arr[i].text  = t;
++            arr[i].start = ws[i].start;
++            arr[i].end   = ws[i].end;
++            arr[i].conf  = ws[i].conf;
++        }
++        *out_words = arr;
++        return (int)ws.size();
++    } catch (const std::exception& e) {
++        s->ctx->last_error = e.what();
++        return -1;
++    } catch (...) {
++        s->ctx->last_error = "unknown error";
++        return -1;
++    }
++}
++
++extern "C" void parakeet_capi_free_words(parakeet_stream_word* words, int count) {
++    if (!words) return;
++    for (int i = 0; i < count; ++i) {
++        std::free(const_cast<char*>(words[i].text));
++    }
++    std::free(words);
++}
++
+ namespace {
+ 
+ // Serialize a streaming feed/finalize result to JSON: the newly-finalized text,

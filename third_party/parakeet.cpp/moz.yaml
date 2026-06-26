@@ -35,3 +35,4 @@ vendoring:
 
   patches:
     - parakeet-fd-loading.patch # load a model from an fd (sandboxed process)
+    - parakeet-stream-words.patch # typed per-word drain (timing + confidence)
