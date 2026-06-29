@@ -594,6 +594,17 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
     mPhrases = aPhrases.Clone();
   }
 
+  // The testing mock (see RecvIsModelAvailable/RecvIsModelInstalled/
+  // RecvInstallModel) has no equivalent for GetModelFile: there's no
+  // lightweight stand-in for an actual parseable model file, so tests that
+  // only care about session/IPC lifecycle (not real recognition) skip
+  // loading a model entirely rather than needing one to succeed.
+  if (StaticPrefs::media_webspeech_recognition_testing()) {
+    LOGD("{} - testing mock: skipping model retrieval", __func__);
+    aResolver(""_ns);
+    return IPC_OK();
+  }
+
   RetrieveModel(std::move(aResolver));
 
   return IPC_OK();

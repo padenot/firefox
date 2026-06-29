@@ -3,7 +3,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/StaticPtr.h"
+#include "nsTHashSet.h"
 #include "HWInferenceParent.h"
 #include "HWInferenceManagerParent.h"
 #include "mozilla/dom/Blob.h"
@@ -26,7 +28,6 @@
 #  include <windows.h>
 #endif
 
-
 namespace mozilla::hwinference {
 
 extern LazyLogModule gHWInferenceLog;
@@ -36,13 +37,32 @@ extern LazyLogModule gHWInferenceLog;
 
 StaticRefPtr<HWInferenceParent> HWInferenceParent::sSingleton;
 
+// Set of model identifiers considered "installed" by the testing mock
+// (media.webspeech.recognition.testing). Lives in the parent process and
+// persists for the process lifetime, so an install() makes a subsequent
+// available() resolve to "available".
+static StaticAutoPtr<nsTHashSet<nsCString>> sMockInstalledModels;
+
+// Key identifying a model across IsModelAvailable/InstallModel calls. Languages
+// that share a model (e.g. en-US and en-GB) produce the same key, so installing
+// one makes the others available.
+static nsCString MockModelKey(const nsACString& aModel,
+                              const nsACString& aRevision,
+                              const nsACString& aFilename) {
+  nsCString key(aModel);
+  key.Append('/');
+  key.Append(aRevision);
+  key.Append('/');
+  key.Append(aFilename);
+  return key;
+}
+
 class ModelDownloadProgressCallback final
     : public nsIMLModelDownloadProgressCallback {
  public:
   NS_DECL_ISUPPORTS
 
-  explicit ModelDownloadProgressCallback(nsACString& aModel)
-      : mModel(aModel) {}
+  explicit ModelDownloadProgressCallback(nsACString& aModel) : mModel(aModel) {}
 
   NS_IMETHOD OnProgress(int32_t aProgress, int64_t aCurrentLoaded,
                         int64_t aTotalLoaded, int64_t aTotal) override {
@@ -134,8 +154,8 @@ static nsresult BlobJSObjectToFileDescriptor(JSContext* aCx,
     return getRv;
   }
 
-  ipc::FileDescriptor fd(
-      ipc::FileDescriptor::PlatformHandleType(PR_FileDesc2NativeHandle(fileDesc)));
+  ipc::FileDescriptor fd(ipc::FileDescriptor::PlatformHandleType(
+      PR_FileDesc2NativeHandle(fileDesc)));
   if (!fd.IsValid()) {
     LOGE("BlobJSObjectToFileDescriptor - ERROR: Failed to get native handle");
     return NS_ERROR_UNEXPECTED;
@@ -186,6 +206,15 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
   LOGD("{}: engine={} model={} revision={} filename={}", __func__, aEngine,
        aModel, aRevision, aFilename);
 
+  if (StaticPrefs::media_webspeech_recognition_testing()) {
+    bool available =
+        sMockInstalledModels && sMockInstalledModels->Contains(
+                                    MockModelKey(aModel, aRevision, aFilename));
+    LOGD("{} - testing mock: available={}", __func__, available);
+    aResolver(available);
+    return IPC_OK();
+  }
+
   // ModelHub is the module that handles model management, and is implemented in
   // JavaScript. We're already on the main thread, so we can call into it
   // directly.
@@ -211,13 +240,9 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
 
   (void)promise->AddCallbacksWithCycleCollectedArgs(
       [aResolver](JSContext* aCx, JS::Handle<JS::Value> aArg,
-                  ErrorResult& aRv) {
-        aResolver(JS::ToBoolean(aArg));
-      },
+                  ErrorResult& aRv) { aResolver(JS::ToBoolean(aArg)); },
       [aResolver](JSContext* aCx, JS::Handle<JS::Value> aArg,
-                  ErrorResult& aRv) {
-        aResolver(false);
-      });
+                  ErrorResult& aRv) { aResolver(false); });
 
   return IPC_OK();
 }
@@ -269,8 +294,20 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelInstalled(
 ipc::IPCResult HWInferenceParent::RecvInstallModel(
     nsCString&& aTask, nsCString&& aModel, nsCString&& aRevision,
     nsCString&& aFilename, InstallModelResolver&& aResolver) {
-  LOGD("{} task=%s model=%s revision=%s filename=%s", __func__, aTask,
-       aModel, aRevision, aFilename);
+  LOGD("{} task=%s model=%s revision=%s filename=%s", __func__, aTask, aModel,
+       aRevision, aFilename);
+
+  if (StaticPrefs::media_webspeech_recognition_testing()) {
+    if (!sMockInstalledModels) {
+      sMockInstalledModels = new nsTHashSet<nsCString>();
+      ClearOnShutdown(&sMockInstalledModels);
+    }
+    sMockInstalledModels->Insert(MockModelKey(aModel, aRevision, aFilename));
+    LOGD("{} - testing mock: installed {}", __func__,
+         MockModelKey(aModel, aRevision, aFilename).get());
+    aResolver(true);
+    return IPC_OK();
+  }
 
   // ModelHub handles model management and is implemented in JavaScript. We're
   // already on the main thread, so we can call it directly.
@@ -348,9 +385,8 @@ ipc::IPCResult HWInferenceParent::RecvGetModelFile(
   }
 
   promise->AddCallbacksWithCycleCollectedArgs(
-      [aResolver](
-          JSContext* aCx, JS::Handle<JS::Value> aValue,
-          ErrorResult& aRv) {
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aValue,
+                  ErrorResult& aRv) {
         GetModelFileSuccess success;
         nsresult rv = BlobJSObjectToFileDescriptor(aCx, aValue, &success.fd());
         if (NS_FAILED(rv)) {
@@ -360,9 +396,8 @@ ipc::IPCResult HWInferenceParent::RecvGetModelFile(
         MOZ_ASSERT(success.fd().IsValid());
         aResolver(GetModelFileResult(std::move(success)));
       },
-      [aResolver](
-          JSContext* aCx, JS::Handle<JS::Value> aValue,
-          ErrorResult& aRv) {
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aValue,
+                  ErrorResult& aRv) {
         LOGE("RecvGetModelFile - ERROR: promise rejected in RecvGetModelFile");
         GetModelError error;
         error.errorCode() = NS_ERROR_FAILURE;
