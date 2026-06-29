@@ -1191,7 +1191,7 @@ if CONFIG["MOZ_WEBSPEECH"]:
         "SpeechGrammarList.webidl",
         "SpeechRecognition.webidl",
         "SpeechRecognitionAlternative.webidl",
-        "SpeechRecognitionError.webidl",
+        "SpeechRecognitionErrorEvent.webidl",
         "SpeechRecognitionEvent.webidl",
         "SpeechRecognitionPhrase.webidl",
         "SpeechRecognitionResult.webidl",

@@ -102,7 +102,7 @@ EXPORTS.mozilla.dom += [
 ]
 
 if CONFIG["MOZ_WEBSPEECH"]:
-    EXPORTS.mozilla.dom += ["SpeechRecognitionError.h"]
+    EXPORTS.mozilla.dom += ["SpeechRecognitionErrorEvent.h"]
 
 UNIFIED_SOURCES += [
     "AnimationEvent.cpp",
@@ -171,7 +171,7 @@ SOURCES += [
 ]
 
 if CONFIG["MOZ_WEBSPEECH"]:
-    UNIFIED_SOURCES += ["SpeechRecognitionError.cpp"]
+    UNIFIED_SOURCES += ["SpeechRecognitionErrorEvent.cpp"]
 
 include("/ipc/chromium/chromium-config.mozbuild")
 
