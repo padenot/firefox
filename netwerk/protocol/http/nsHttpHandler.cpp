@@ -2347,6 +2347,16 @@ nsHttpHandler::Observe(nsISupports* subject, const char* topic,
     }
 
     mActivityDistributor = nullptr;
+
+    if (!strcmp(topic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
+      // Clear the static HTTP atom table now, while XPCOM is still up. The
+      // table holds nsCString entries; if it survived to its own static
+      // destructor at process exit, releasing those strings would call into
+      // the refcount logger after the logger's lock has itself been
+      // destroyed, crashing. ~nsHttpHandler also clears the table, but the
+      // handler may still be referenced here and never destroyed.
+      nsHttp::DestroyAtomTable();
+    }
   } else if (!strcmp(topic, "profile-change-net-restore")) {
     // initialize connection manager
     rv = InitConnectionMgr();
