@@ -137,6 +137,16 @@ class SpeechRecognitionBackend
 
   static void AssertOnIPCThread() MOZ_ASSERT_CAPABILITY(sIPCCapability);
   static void StopIPCThreadIfPossible();
+
+  // Mark a transient operation (Available/Install) as using the shared IPC
+  // thread. Acquire when the operation starts and Release when its promise
+  // settles, both on the main thread, so the thread stays alive for the whole
+  // operation and is torn down once no operation needs it.
+ public:
+  static void AcquireIPCThreadUser();
+  static void ReleaseIPCThreadUser();
+
+ private:
   void AssertOnResamplingThread() MOZ_ASSERT_CAPABILITY(mResamplingCapability);
 
   template <typename Func>

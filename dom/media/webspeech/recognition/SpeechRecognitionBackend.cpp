@@ -23,6 +23,7 @@
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/SpeechRecognitionBinding.h"
 #include "mozilla/hwinference/HWInferenceManagerChild.h"
 #include "mozilla/ipc/MessageChannel.h"
@@ -56,13 +57,7 @@ bool IPCThreadUserCounter::IsZero() const { return !mCount; }
 
 TransientSpeechRecognitionSession::TransientSpeechRecognitionSession()
     : mChild(SpeechRecognitionBackend::sHWInferenceChild
-                 ->CreateSpeechRecognitionSession()) {
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "TransientSpeechRecognitionSession::Increment", []() {
-        AssertIsOnMainThread();
-        SpeechRecognitionBackend::sIPCThreadUsers.Increment();
-      }));
-}
+                 ->CreateSpeechRecognitionSession()) {}
 
 TransientSpeechRecognitionSession::~TransientSpeechRecognitionSession() {
   SpeechRecognitionBackend::AssertOnIPCThread();
@@ -70,11 +65,6 @@ TransientSpeechRecognitionSession::~TransientSpeechRecognitionSession() {
     SpeechRecognitionChild::Send__delete__(mChild);
     mChild = nullptr;
   }
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "TransientSpeechRecognitionSession::Decrement", []() {
-        AssertIsOnMainThread();
-        SpeechRecognitionBackend::sIPCThreadUsers.Decrement();
-      }));
 }
 
 static LazyLogModule gSpeechRecognitionBackendLog("SpeechRecognitionBackend");
@@ -88,6 +78,27 @@ static LazyLogModule gSpeechRecognitionBackendLog("SpeechRecognitionBackend");
 #define LOGE(fmt, ...)                                                     \
   MOZ_LOG_FMT(gSpeechRecognitionBackendLog, mozilla::LogLevel::Error, fmt, \
               ##__VA_ARGS__)
+
+// Releases the IPC-thread hold taken by a transient operation once its promise
+// settles, matching the AcquireIPCThreadUser() call made when it started.
+class IPCThreadUserReleaser final : public PromiseNativeHandler {
+ public:
+  NS_DECL_ISUPPORTS
+
+  void ResolvedCallback(JSContext*, JS::Handle<JS::Value>,
+                        ErrorResult&) override {
+    SpeechRecognitionBackend::ReleaseIPCThreadUser();
+  }
+  void RejectedCallback(JSContext*, JS::Handle<JS::Value>,
+                        ErrorResult&) override {
+    SpeechRecognitionBackend::ReleaseIPCThreadUser();
+  }
+
+ private:
+  ~IPCThreadUserReleaser() = default;
+};
+
+NS_IMPL_ISUPPORTS0(IPCThreadUserReleaser)
 
 // Audio is streamed to the inference process in small blocks to keep end-to-end
 // latency low. The block is well under the model's internal chunk (~160 ms), so
@@ -500,6 +511,18 @@ void SpeechRecognitionBackend::StopIPCThreadIfPossible() {
 }
 
 /* static */
+void SpeechRecognitionBackend::AcquireIPCThreadUser() {
+  AssertIsOnMainThread();
+  sIPCThreadUsers.Increment();
+}
+
+/* static */
+void SpeechRecognitionBackend::ReleaseIPCThreadUser() {
+  AssertIsOnMainThread();
+  sIPCThreadUsers.Decrement();
+}
+
+/* static */
 void SpeechRecognitionBackend::AssertOnIPCThread() {
   sIPCCapability->AssertOnCurrentThread();
 }
@@ -540,6 +563,11 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Available(
   if (rv.Failed()) {
     return nullptr;
   }
+
+  // Hold the shared IPC thread for the whole operation, releasing when the
+  // promise settles.
+  AcquireIPCThreadUser();
+  promise->AppendNativeHandler(new IPCThreadUserReleaser());
 
   nsTArray<nsCString> languages;
   for (const nsString& lang : aLanguages) {
@@ -724,6 +752,11 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Install(
     promise->MaybeResolve(false);
     return promise.forget();
   }
+
+  // Hold the shared IPC thread for the whole operation, releasing when the
+  // promise settles.
+  AcquireIPCThreadUser();
+  promise->AppendNativeHandler(new IPCThreadUserReleaser());
 
   nsTArray<nsCString> languages;
   for (const nsString& lang : aLanguages) {
