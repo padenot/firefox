@@ -17,24 +17,27 @@
 #include "SpeechRecognitionResultList.h"
 #include "SpeechTrackListener.h"
 #include "VideoUtils.h"
+#include "js/Value.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/MediaManager.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h"
-#include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/MediaStreamError.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/RootedDictionary.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/SpeechGrammar.h"
 #include "mozilla/dom/SpeechRecognitionErrorEvent.h"
 #include "mozilla/dom/SpeechRecognitionEvent.h"
 #include "mozilla/dom/SpeechRecognitionPhrase.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "mozilla/intl/Locale.h"
 #include "nsCOMPtr.h"
 #include "nsComponentManagerUtils.h"
@@ -60,6 +63,7 @@ class Promise;
 };
 
 namespace mozilla::dom {
+
 static LazyLogModule gSpeechRecognitionLog("SpeechRecognition");
 
 #define LOG(...) \
@@ -334,6 +338,9 @@ void SpeechRecognition::OnDeletePhrases(SpeechRecognitionPhrase& aPhrase,
   mPhrases.RemoveElementAt(aIndex);
 }
 
+// https://webaudio.github.io/web-speech-api/#dom-speechrecognition-available
+// Runs the availability algorithm:
+// https://webaudio.github.io/web-speech-api/#availability-algorithm
 /* static */
 already_AddRefed<Promise> SpeechRecognition::Available(
     const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
@@ -420,6 +427,7 @@ class InstallCompletionHandler final : public PromiseNativeHandler {
   ~InstallCompletionHandler() = default;
 
   void Cleanup() {
+    AssertIsOnMainThread();
     for (const nsCString& lang : mLanguages) {
       SpeechRecognition::RemoveDownloadingLanguage(lang);
     }
@@ -487,27 +495,57 @@ void SpeechRecognition::RemoveDownloadingLanguage(const nsCString& aLanguage) {
   sDownloadingLanguages.Remove(aLanguage);
 }
 
+// https://webaudio.github.io/web-speech-api/#dom-speechrecognition-install
 /* static */
 already_AddRefed<Promise> SpeechRecognition::Install(
     const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
     ErrorResult& aRv) {
   AssertIsOnMainThread();
+  // Step 1: the document must be fully active.
   nsCOMPtr<nsPIDOMWindowInner> window =
       do_QueryInterface(aGlobal.GetAsSupports());
-  if (!window) {
-    aRv.ThrowAbortError("No global object for SpeechRecognition::Install");
-    return nullptr;
+  nsCOMPtr<Document> doc = window ? window->GetExtantDoc() : nullptr;
+  if (!window || !window->IsFullyActive() || !doc) {
+    // `this` may belong to a now-detached frame. Gecko drops promise reaction
+    // jobs whose realm is dead, so a promise rejected in the frame's (dead)
+    // realm would never settle for the caller. Create the rejection in the
+    // caller's (entry) realm so it settles, but build the DOMException in the
+    // frame's realm so cross-realm `instanceof` checks still see the frame's
+    // exception.
+    nsCOMPtr<nsIGlobalObject> entry = GetEntryGlobal();
+    nsCOMPtr<nsIGlobalObject> frameGlobal =
+        do_QueryInterface(aGlobal.GetAsSupports());
+    JSObject* frameJSGlobal =
+        frameGlobal ? frameGlobal->GetGlobalJSObject() : nullptr;
+    if (!entry || !frameJSGlobal) {
+      aRv.ThrowInvalidStateError("The document is not fully active.");
+      return nullptr;
+    }
+    JSContext* cx = aGlobal.Context();
+    JS::Rooted<JS::Value> error(cx);
+    {
+      JSAutoRealm ar(cx, frameJSGlobal);
+      RefPtr<DOMException> exception =
+          DOMException::Create(NS_ERROR_DOM_INVALID_STATE_ERR,
+                               "The document is not fully active."_ns);
+      if (!ToJSValue(cx, exception, &error)) {
+        JS_ClearPendingException(cx);
+        aRv.ThrowInvalidStateError("The document is not fully active.");
+        return nullptr;
+      }
+    }
+    RefPtr<Promise> promise = Promise::Create(entry, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
+    promise->MaybeReject(error);
+    return promise.forget();
   }
 
-  nsCOMPtr<Document> doc = window->GetExtantDoc();
-  if (!doc) {
-    aRv.ThrowAbortError("No document for SpeechRecognition::Install");
-    return nullptr;
-  }
-
-  if (!doc->IsCurrentActiveDocument()) {
-    aRv.ThrowInvalidStateError(
-        "Document not active for SpeechRecognition::Install");
+  // install() initiates a potentially large download, so it requires transient
+  // user activation.
+  if (!doc->HasValidTransientUserGestureActivation()) {
+    aRv.ThrowNotAllowedError("install() requires transient user activation");
     return nullptr;
   }
 
@@ -517,20 +555,25 @@ already_AddRefed<Promise> SpeechRecognition::Install(
     return nullptr;
   }
 
-  // Not specced yet:
-  // https://github.com/WebAudio/web-speech-api/issues/174
-  if (aOptions.mLangs.IsEmpty()) {
-    aRv.ThrowRangeError("empty lang");
+  RefPtr<Promise> promise = Promise::Create(global, aRv);
+  if (aRv.Failed()) {
     return nullptr;
   }
 
-  // Validate all language tags according to spec
+  // Step 3: install resolves false when langs is empty or any requested
+  // language's on-device pack is unsupported. A tag we cannot parse as BCP47
+  // is necessarily unsupported, so it resolves false rather than throwing.
+  // (Per spec step 2 a strictly-invalid tag is a SyntaxError; the deployed Web
+  // Speech behaviour, exercised by WPT, resolves false for such tags.)
+  if (aOptions.mLangs.IsEmpty()) {
+    promise->MaybeResolve(false);
+    return promise.forget();
+  }
   for (const nsString& lang : aOptions.mLangs) {
-    if (!ValidateBCP47Language(lang, aRv)) {
-      return nullptr;
-    }
-    if (aRv.Failed()) {
-      return nullptr;
+    IgnoredErrorResult validateRv;
+    if (!ValidateBCP47Language(lang, validateRv)) {
+      promise->MaybeResolve(false);
+      return promise.forget();
     }
   }
 
@@ -543,18 +586,9 @@ already_AddRefed<Promise> SpeechRecognition::Install(
   for (const nsCString& lang : languagesUtf8) {
     if (sDownloadingLanguages.Contains(lang)) {
       LOG("Install: language {} already downloading", lang.get());
-      RefPtr<Promise> promise = Promise::Create(global, aRv);
-      if (aRv.Failed()) {
-        return nullptr;
-      }
       promise->MaybeResolve(false);
       return promise.forget();
     }
-  }
-
-  RefPtr<Promise> promise = Promise::Create(global, aRv);
-  if (aRv.Failed()) {
-    return nullptr;
   }
 
   // Fetch the model download size (computed in the utility process, which owns
