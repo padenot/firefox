@@ -2487,6 +2487,10 @@ preferences-ai-controls-key-points-control =
     .label = Key points in link previews
     .description = See a quick summary before opening a link.
 
+preferences-ai-controls-speech-recognition-control =
+    .label = On-device speech recognition
+    .description = Transcribe speech locally in the browser using the Web Speech API.
+
 preferences-ai-controls-sidebar-chatbot-group =
     .label = AI chatbot providers in sidebar
     .description = Keep a chatbot in view as you browse. Choose from Anthropic Claude, ChatGPT, Copilot, Google Gemini, and Le Chat Mistral.

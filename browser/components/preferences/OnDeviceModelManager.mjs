@@ -32,6 +32,7 @@ const OnDeviceModelFeatures = Object.freeze({
   Translations: "translations",
   SidebarChatbot: "sidebarChatbot",
   SmartWindow: "smartWindow",
+  SpeechRecognition: "speechRecognition",
 });
 
 /** @type {Record<OnDeviceModelFeaturesEnum, string[]>} */
@@ -66,6 +67,9 @@ const FeaturePrefs = Object.freeze({
     // this pref externally.
     "browser.ai.control.smartWindow",
   ],
+  // Speech recognition state is entirely managed by the pref; the C++ side
+  // reads it directly. No JS teardown is needed on block/unblock.
+  [OnDeviceModelFeatures.SpeechRecognition]: [],
 });
 
 export const OnDeviceModelManager = {
@@ -135,6 +139,16 @@ export const OnDeviceModelManager = {
         return lazy.GenAI;
       case OnDeviceModelFeatures.SmartWindow:
         return lazy.AIWindow;
+      case OnDeviceModelFeatures.SpeechRecognition:
+        return {
+          hasDistinctEnabledState: false,
+          isManagedByPolicy: false,
+          aiControlState: "available",
+          isAllowed: true,
+          async makeAvailable() {},
+          async enable() {},
+          async block() {},
+        };
       default:
         throw new Error(`Unknown feature "${feature}"`);
     }
@@ -159,6 +173,8 @@ export const OnDeviceModelManager = {
         return "browser.ai.control.sidebarChatbot";
       case OnDeviceModelFeatures.SmartWindow:
         return "browser.ai.control.smartWindow";
+      case OnDeviceModelFeatures.SpeechRecognition:
+        return "browser.ai.control.speechRecognition";
       default:
         throw new Error(`Unknown feature "${feature}"`);
     }
