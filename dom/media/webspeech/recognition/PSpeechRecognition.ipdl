@@ -23,8 +23,11 @@ parent: // HWUtility
   // Install speech recognition models for the given languages
   async InstallModels(nsCString[] languages) returns (bool success);
   // Initialize the speech recognition session with a language and a list of
-  // biasing phrases
-  async Init(nsCString engineId, nsCString language, nsString[] phrases) returns (bool success);
+  // biasing phrases. Resolves with an empty string on success, otherwise with
+  // the Web Speech error token describing the failure (e.g.
+  // "concurrent-session" when another session is active, "network" when the
+  // model could not be retrieved or the engine failed to start).
+  async Init(nsCString engineId, nsCString language, nsString[] phrases) returns (nsCString error);
   // Send audio data for speech recognition (always 16kHz mono f32 samples)
   async ProcessAudioData(float[] audioData);
   // Stop the speech recognition session

@@ -179,10 +179,18 @@ class SpeechRecognitionBackend
   nsTArray<AudioDataValue> mMonoBuffer;
   std::atomic<bool> mResamplingThreadRunning{false};
   uint32_t mGraphRate = 0;
+  // Main-thread only. Stop()/Abort() run at most one teardown; the destructor
+  // also calls Abort()->Stop(), where re-running it would resurrect an object
+  // already at refcount zero.
+  bool mStopped = false;
   bool mCurrentlyAudible = false;
   bool mAudioStartDispatched = false;
   UniquePtr<mozilla::AudibilityMonitor> mAudibilityMonitor;
   RefPtr<SpeechRecognitionChild> mSpeechRecognitionChild;
+  // IPC-thread only. Set when teardown was requested so that a session-init
+  // task still queued on the IPC thread does not open a session nobody will
+  // tear down (which would leak the inference process' single-session slot).
+  bool mStopRequested = false;
   UniquePtr<AudioConverter> mAudioConverter;
 };
 

@@ -160,12 +160,29 @@ void SpeechRecognitionBackend::Stop() {
   AssertIsOnMainThread();
   LOG("SpeechRecognitionBackend::Stop");
 
-  if (mResamplingThread) {
-    RefPtr<SpeechRecognitionBackend> self = this;
+  // Idempotent: ~SpeechRecognitionBackend() also runs Abort()->Stop(). Once the
+  // teardown below has run, it must not run again from the destructor, where
+  // capturing RefPtr{this} would resurrect an object already at refcount zero
+  // and double-free it.
+  if (mStopped) {
+    return;
+  }
+  mStopped = true;
+
+  // Tear down the IPC session unconditionally, not only once the resampling
+  // thread exists. Start() may be stopped or aborted (including via
+  // ~SpeechRecognitionBackend) while session init is still in flight, before
+  // the resampling thread is created. Skipping teardown in that window leaks
+  // the inference process' single-session slot and makes the next session fail
+  // with a spurious concurrent-session error.
+  if (sIPCThread) {
     OnIPCThread([self = RefPtr{this}]() {
       AssertOnIPCThread();
       self->StopSpeechRecognitionSession();
     });
+  }
+
+  if (mResamplingThread) {
     mResamplingThreadRunning.store(false, std::memory_order_release);
     mResamplingThread->Shutdown();
     mResamplingThread = nullptr;
@@ -363,6 +380,13 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
     const nsCString& aLanguage) {
   AssertOnIPCThread();
 
+  if (mStopRequested) {
+    // Stop()/Abort() ran before this init task reached the IPC thread; do not
+    // open a session that nobody will tear down.
+    LOG("Session init skipped, teardown already requested");
+    return;
+  }
+
   mSpeechRecognitionChild = sHWInferenceChild->CreateSpeechRecognitionSession();
 
   mSpeechRecognitionChild->SetResultCallback(
@@ -399,13 +423,12 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
       ->SendInit(SPEECH_RECOGNITION_ENGINE_ID, aLanguage, mPhrases)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [self = RefPtr{this}](bool aSuccess) {
+          [self = RefPtr{this}](const nsCString& aError) {
             AssertOnIPCThread();
-            if (!aSuccess) {
-              LOGE(
-                  "Failed to initialize speech recognition session - likely "
-                  "another session is active");
-              self->HandleRecognitionError(nsCString("concurrent-session"));
+            if (!aError.IsEmpty()) {
+              LOGE("Failed to initialize speech recognition session: {}",
+                   aError.get());
+              self->HandleRecognitionError(aError);
             } else {
               LOG("Speech recognition session initialized successfully");
               self->mResamplingThreadRunning.store(true,
@@ -439,6 +462,12 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
 
 void SpeechRecognitionBackend::StopSpeechRecognitionSession() {
   AssertOnIPCThread();
+  mStopRequested = true;
+  if (!mSpeechRecognitionChild) {
+    // Session init has not reached the IPC thread yet (or already failed);
+    // mStopRequested above keeps it from opening a leaked session.
+    return;
+  }
   LOG("Stopping HWInference speech recognition session");
   mSpeechRecognitionChild->SendStop();
   SpeechRecognitionChild::Send__delete__(mSpeechRecognitionChild);
