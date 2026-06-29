@@ -1671,6 +1671,10 @@ export var UITour = {
             "browser.ai.control.smartWindow",
             "default"
           ),
+          speechRecognition: Services.prefs.getStringPref(
+            "browser.ai.control.speechRecognition",
+            "default"
+          ),
         });
         break;
       default:

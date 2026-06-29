@@ -32,6 +32,7 @@ const OnDeviceModelFeatures = Object.freeze({
   Translations: "translations",
   SidebarChatbot: "sidebarChatbot",
   SmartWindow: "smartWindow",
+  SpeechRecognition: "speechRecognition",
 });
 
 /** @type {Record<OnDeviceModelFeaturesEnum, string[]>} */
@@ -65,6 +66,13 @@ const FeaturePrefs = Object.freeze({
     // unpredictable order. This is triggered e.g. when UITour overrides
     // this pref externally.
     "browser.ai.control.smartWindow",
+  ],
+  // Speech recognition has no separate feature pref: the AI Controls pref is
+  // the source of truth, and the C++ SpeechRecognition implementation reads it
+  // directly to gate available()/install()/start(). Observe the control pref so
+  // the AI Controls UI reflects state changes; no JS teardown is needed.
+  [OnDeviceModelFeatures.SpeechRecognition]: [
+    "browser.ai.control.speechRecognition",
   ],
 });
 
@@ -135,6 +143,38 @@ export const OnDeviceModelManager = {
         return lazy.GenAI;
       case OnDeviceModelFeatures.SmartWindow:
         return lazy.AIWindow;
+      case OnDeviceModelFeatures.SpeechRecognition: {
+        const controlPref = "browser.ai.control.speechRecognition";
+        const resolvedState = () => {
+          let state = Services.prefs.getStringPref(controlPref, "default");
+          if (state === "default") {
+            state = Services.prefs.getStringPref(
+              "browser.ai.control.default",
+              "available"
+            );
+          }
+          return state;
+        };
+        return {
+          hasDistinctEnabledState: false,
+          isManagedByPolicy: Services.prefs.prefIsLocked(controlPref),
+          get aiControlState() {
+            return resolvedState() === "blocked" ? "blocked" : "available";
+          },
+          get isAllowed() {
+            return resolvedState() !== "blocked";
+          },
+          async makeAvailable() {
+            Services.prefs.setStringPref(controlPref, "available");
+          },
+          async enable() {
+            Services.prefs.setStringPref(controlPref, "available");
+          },
+          async block() {
+            Services.prefs.setStringPref(controlPref, "blocked");
+          },
+        };
+      }
       default:
         throw new Error(`Unknown feature "${feature}"`);
     }
@@ -159,6 +199,8 @@ export const OnDeviceModelManager = {
         return "browser.ai.control.sidebarChatbot";
       case OnDeviceModelFeatures.SmartWindow:
         return "browser.ai.control.smartWindow";
+      case OnDeviceModelFeatures.SpeechRecognition:
+        return "browser.ai.control.speechRecognition";
       default:
         throw new Error(`Unknown feature "${feature}"`);
     }

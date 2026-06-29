@@ -160,6 +160,7 @@ export var Policies = {
           "browser.ai.control.smartTabGroups",
         ],
         ["SmartWindow", [], "browser.ai.control.smartWindow"],
+        ["SpeechRecognition", [], "browser.ai.control.speechRecognition"],
       ];
 
       const defaultItem = param.Default;
