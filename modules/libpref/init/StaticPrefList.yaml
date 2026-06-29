@@ -13078,6 +13078,15 @@
   value: false
   mirror: always
 
+# When set, the HWInference parent resolves model availability and install
+# requests from an in-process mock instead of the ModelHub (no network,
+# IndexedDB or downloads). The full content->utility->parent IPC chain is
+# still exercised. Used by tests.
+- name: media.webspeech.recognition.testing
+  type: bool
+  value: false
+  mirror: always
+
 - name: media.webspeech.synth.enabled
   type: bool
   value: true

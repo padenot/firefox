@@ -42,7 +42,9 @@ class HWInferenceParent final : public PHWInferenceParent {
                                            nsCString&& aFilename,
                                            GetModelFileResolver&& aResolver);
 
-  ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
+  ipc::UtilityActorName GetActorName() {
+    return ipc::UtilityActorName::HwInference;
+  }
 
   nsresult BindToUtilityProcess(
       const RefPtr<ipc::UtilityProcessParent>& aUtilityParent);
@@ -57,4 +59,4 @@ class HWInferenceParent final : public PHWInferenceParent {
 
 }  // namespace mozilla::hwinference
 
-#endif // TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEPARENT_H_
+#endif  // TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEPARENT_H_
