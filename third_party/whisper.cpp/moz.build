@@ -29,6 +29,7 @@ CXXFLAGS += [
     '-Wno-unreachable-code',
     '-Wno-unused-function',
     '-Wno-macro-redefined',  # _USE_MATH_DEFINES is set globally on Windows
+    '-Wno-unused-value',     # moz-overrides.h #define throw leaves a discarded [[nodiscard]] temporary
 ]
 
 LOCAL_INCLUDES += [

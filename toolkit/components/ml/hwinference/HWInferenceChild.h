@@ -41,7 +41,9 @@ class HWInferenceChild final : public PHWInferenceChild {
                                                const nsACString& aRevision,
                                                const nsACString& aFilename);
 
-  ipc::UtilityActorName GetActorName() { return ipc::UtilityActorName::HwInference; }
+  ipc::UtilityActorName GetActorName() {
+    return ipc::UtilityActorName::HwInference;
+  }
 
  private:
   friend PHWInferenceChild;

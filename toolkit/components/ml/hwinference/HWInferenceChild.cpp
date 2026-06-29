@@ -81,8 +81,7 @@ HWInferenceChild::SendGetModelFile(const nsACString& aEngineId,
   LOGD(
       "[{} - {}] Sending model file request to parent process: engineId={} "
       "task={} model={} revision={} filename={}",
-      fmt::ptr(this), __func__, aEngineId, aTask, aModel,
-      aRevision, aFilename);
+      fmt::ptr(this), __func__, aEngineId, aTask, aModel, aRevision, aFilename);
 
   return PHWInferenceChild::SendGetModelFile(aEngineId, aTask, aModel,
                                              aRevision, aFilename);

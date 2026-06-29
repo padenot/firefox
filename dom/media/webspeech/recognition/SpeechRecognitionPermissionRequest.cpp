@@ -44,6 +44,7 @@ class SpeechRecognitionInstallHandler final : public PromiseNativeHandler {
   ~SpeechRecognitionInstallHandler() = default;
 
   void Cleanup() {
+    AssertIsOnMainThread();
     for (const nsCString& lang : mLanguages) {
       SpeechRecognition::RemoveDownloadingLanguage(lang);
     }
@@ -65,7 +66,7 @@ NS_IMPL_QUERY_INTERFACE_CYCLE_COLLECTION_INHERITED(
 NS_IMPL_ADDREF_INHERITED(SpeechRecognitionPermissionRequest,
                          ContentPermissionRequestBase)
 NS_IMPL_RELEASE_INHERITED(SpeechRecognitionPermissionRequest,
-                           ContentPermissionRequestBase)
+                          ContentPermissionRequestBase)
 
 // Returns the expected download size in MB for the model that will be
 // fetched for the given language set. Mirrors the selection logic in
@@ -92,7 +93,8 @@ SpeechRecognitionPermissionRequest::GetTypes(nsIArray** aTypes) {
   nsTArray<nsString> options;
   options.AppendElement(
       NS_ConvertUTF8toUTF16(nsPrintfCString("%u", ModelSizeMB(mLanguages))));
-  return nsContentPermissionUtils::CreatePermissionArray(mType, options, aTypes);
+  return nsContentPermissionUtils::CreatePermissionArray(mType, options,
+                                                         aTypes);
 }
 
 NS_IMETHODIMP
@@ -103,6 +105,7 @@ SpeechRecognitionPermissionRequest::Cancel() {
 
 NS_IMETHODIMP
 SpeechRecognitionPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
+  AssertIsOnMainThread();
   MOZ_ASSERT(aChoices.isUndefined());
 
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(mWindow.get());
@@ -114,8 +117,7 @@ SpeechRecognitionPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   nsTArray<nsCString> languagesUtf8;
   for (const nsString& lang : mLanguages) {
     languagesUtf8.AppendElement(NS_ConvertUTF16toUTF8(lang));
-    SpeechRecognition::sDownloadingLanguages.Insert(
-        NS_ConvertUTF16toUTF8(lang));
+    SpeechRecognition::AddDownloadingLanguage(NS_ConvertUTF16toUTF8(lang));
   }
 
   RefPtr<Promise> installPromise =
@@ -138,8 +140,7 @@ SpeechRecognitionPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
 NS_IMETHODIMP
 SpeechRecognitionPermissionRequest::Run() {
   if (Preferences::GetBool(
-          "media.webspeech.recognition.model-download.prompt.testing",
-          false)) {
+          "media.webspeech.recognition.model-download.prompt.testing", false)) {
     if (Preferences::GetBool("media.navigator.permission.disabled", false)) {
       Allow(JS::UndefinedHandleValue);
     } else {

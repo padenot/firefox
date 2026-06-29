@@ -104,7 +104,9 @@ class UtilityProcessChild final : public PUtilityProcessChild {
     return mUtilityMediaServiceInstance;
   }
 
-  hwinference::HWInferenceChild* GetHWInferenceChild() const { return mHWInferenceInstance; }
+  hwinference::HWInferenceChild* GetHWInferenceChild() const {
+    return mHWInferenceInstance;
+  }
 
  protected:
   friend class UtilityProcessImpl;

@@ -3635,6 +3635,7 @@ pref("browser.ai.control.smartTabGroups", "default");
 pref("browser.ai.control.linkPreviewKeyPoints", "default");
 pref("browser.ai.control.sidebarChatbot", "default");
 pref("browser.ai.control.smartWindow", "default");
+pref("browser.ai.control.speechRecognition", "default");
 
 // Enable the experimental machine learning inference engine.
 pref("browser.ml.enable", true);

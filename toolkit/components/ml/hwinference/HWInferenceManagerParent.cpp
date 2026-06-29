@@ -56,9 +56,10 @@ HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
 
 bool HWInferenceManagerParent::DeallocPSpeechRecognitionParent(
     PSpeechRecognitionParent* aActor) {
-  LOGD("[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
-       "actor={:p}",
-       (void*)this, (void*)aActor);
+  LOGD(
+      "[{}] HWInferenceManagerParent::DeallocPSpeechRecognitionParent "
+      "actor={:p}",
+      (void*)this, (void*)aActor);
   return true;
 }
 

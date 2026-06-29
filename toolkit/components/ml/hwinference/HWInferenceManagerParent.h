@@ -20,8 +20,9 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceManagerParent, override);
 
-  static bool CreateForContent(ipc::Endpoint<PHWInferenceManagerParent>&& aEndpoint,
-                               dom::ContentParentId aContentId);
+  static bool CreateForContent(
+      ipc::Endpoint<PHWInferenceManagerParent>&& aEndpoint,
+      dom::ContentParentId aContentId);
 
   already_AddRefed<PSpeechRecognitionParent> AllocPSpeechRecognitionParent();
   bool DeallocPSpeechRecognitionParent(PSpeechRecognitionParent* aActor);
@@ -37,4 +38,4 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
 
 }  // namespace mozilla::hwinference
 
-#endif // TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEMANAGERPARENT_H_
+#endif  // TOOLKIT_COMPONENTS_ML_HWINFERENCE_HWINFERENCEMANAGERPARENT_H_

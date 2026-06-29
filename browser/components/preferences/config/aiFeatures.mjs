@@ -502,6 +502,11 @@ makeAiControlSetting({
   pref: "browser.ai.control.linkPreviewKeyPoints",
   feature: OnDeviceModelManager.features.KeyPoints,
 });
+makeAiControlSetting({
+  id: "aiControlSpeechRecognitionSelect",
+  pref: "browser.ai.control.speechRecognition",
+  feature: OnDeviceModelManager.features.SpeechRecognition,
+});
 
 // sidebar chatbot
 Preferences.addSetting({ id: "chatbotProviderItem" });
@@ -1368,6 +1373,21 @@ SettingGroupManager.registerGroups({
                       inputlayout: "inline-end",
                     },
                     supportPage: "use-link-previews-firefox",
+                    options: [...AI_CONTROL_OPTIONS],
+                  },
+                ],
+              },
+              {
+                control: "moz-box-item",
+                items: [
+                  {
+                    id: "aiControlSpeechRecognitionSelect",
+                    l10nId:
+                      "preferences-ai-controls-speech-recognition-control",
+                    control: "moz-select",
+                    controlAttrs: {
+                      inputlayout: "inline-end",
+                    },
                     options: [...AI_CONTROL_OPTIONS],
                   },
                 ],

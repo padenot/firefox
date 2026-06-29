@@ -61,7 +61,8 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   using PKCS11ModulePromise = LaunchPromise<RefPtr<psm::PKCS11ModuleParent>>;
 #endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
-  using HWInferencePromise = LaunchPromise<RefPtr<hwinference::HWInferenceParent>>;
+  using HWInferencePromise =
+      LaunchPromise<RefPtr<hwinference::HWInferenceParent>>;
 
   static RefPtr<UtilityProcessManager> GetSingleton();
 
