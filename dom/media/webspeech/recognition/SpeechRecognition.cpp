@@ -632,11 +632,8 @@ already_AddRefed<Promise> SpeechRecognition::Install(
   }
 
   // install() initiates a potentially large download, so it requires transient
-  // user activation. The testing pref bypasses this so automated tests can
-  // call install() without a synthetic user gesture.
-  if (!Preferences::GetBool(
-          "media.webspeech.recognition.model-download.prompt.testing", false) &&
-      !doc->HasValidTransientUserGestureActivation()) {
+  // user activation.
+  if (!doc->HasValidTransientUserGestureActivation()) {
     aRv.ThrowNotAllowedError("install() requires transient user activation");
     return nullptr;
   }

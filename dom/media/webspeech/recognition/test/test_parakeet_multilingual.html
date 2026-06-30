@@ -84,9 +84,11 @@ SpecialPowers.pushPrefEnv({
     diag(`multilingual model availability (fr-FR proxy, on-device): ${availability}`);
 
     // Install the model through the proper permission flow (auto-approved via
-    // the testing pref, since tests cannot generate a real user gesture).
+    // the testing pref). install() requires transient user activation, so
+    // synthesize a user gesture first.
     if (availability !== "available") {
       diag("installing multilingual model...");
+      SpecialPowers.wrap(document).notifyUserGestureActivation();
       const installed = await SpeechRecognition.install({ langs: ["fr-FR"], processLocally: true });
       diag(`install() => ${installed}`);
       ok(installed, "Multilingual model installed successfully");

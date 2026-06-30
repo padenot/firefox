@@ -115,9 +115,11 @@ SpecialPowers.pushPrefEnv({
     diag(`model availability (${LANG}, on-device): ${availability}`);
 
     // Install the model through the proper permission flow (auto-approved via
-    // the testing pref, since tests cannot generate a real user gesture).
+    // the testing pref). install() requires transient user activation, so
+    // synthesize a user gesture first.
     if (availability !== "available") {
       diag("installing model...");
+      SpecialPowers.wrap(document).notifyUserGestureActivation();
       const installed = await SpeechRecognition.install({ langs: [LANG], processLocally: true });
       diag(`install() => ${installed}`);
       ok(installed, "Model installed successfully");
