@@ -91,3 +91,76 @@ add_task(async function test_install_not_now_resolves_false() {
 
   await SpecialPowers.popPrefEnv();
 });
+
+// Regression: install() must drive the download (show the prompt) even when
+// available() reports "available". available() means "possible to download",
+// not "already installed", so install() must not short-circuit on it.
+add_task(async function test_install_prompts_even_when_available() {
+  // Mock backend; auto-allow the first install so the model becomes "available".
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["media.webspeech.recognition.enable", true],
+      ["media.webspeech.recognition.testing", true],
+      ["media.webspeech.recognition.model-download.prompt.testing", true],
+      ["media.navigator.permission.disabled", true],
+    ],
+  });
+
+  await BrowserTestUtils.withNewTab(PAGE, async browser => {
+    await SpecialPowers.spawn(browser, [], () => {
+      content.document.notifyUserGestureActivation();
+      return content.SpeechRecognition.install({
+        langs: ["en-US"],
+        processLocally: true,
+      });
+    });
+    let status = await SpecialPowers.spawn(browser, [], () =>
+      content.SpeechRecognition.available({
+        langs: ["en-US"],
+        processLocally: true,
+      })
+    );
+    is(status, "available", "model reports available after first install");
+  });
+
+  // Real prompt path. The model now reports "available", but install() must
+  // still show the prompt (the regression was that it silently resolved).
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["media.webspeech.recognition.model-download.prompt.testing", false],
+      ["media.navigator.permission.disabled", false],
+    ],
+  });
+
+  await BrowserTestUtils.withNewTab(PAGE, async browser => {
+    let popupShown = BrowserTestUtils.waitForEvent(
+      PopupNotifications.panel,
+      "popupshown"
+    );
+
+    await SpecialPowers.spawn(browser, [], () => {
+      content.document.notifyUserGestureActivation();
+      content.SpeechRecognition.install({
+        langs: ["en-US"],
+        processLocally: true,
+      });
+    });
+
+    await popupShown;
+    let notification = PopupNotifications.getNotification(
+      "speech-recognition-model-download",
+      browser
+    );
+    ok(notification, "install() shows the download prompt even when available");
+
+    let popupHidden = BrowserTestUtils.waitForEvent(
+      PopupNotifications.panel,
+      "popuphidden"
+    );
+    notification.remove();
+    await popupHidden;
+  });
+
+  await SpecialPowers.popPrefEnv();
+  await SpecialPowers.popPrefEnv();
+});

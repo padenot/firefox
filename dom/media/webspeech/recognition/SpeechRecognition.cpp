@@ -445,8 +445,7 @@ class InstallCompletionHandler final : public PromiseNativeHandler {
 NS_IMPL_ISUPPORTS0(InstallCompletionHandler)
 
 // Receives the model download size (computed in the utility process) and shows
-// the download permission prompt with it. Created by InstallGateHandler once a
-// download is actually required.
+// the download permission prompt with it.
 class SpeechModelSizeHandler final : public PromiseNativeHandler {
  public:
   NS_DECL_ISUPPORTS
@@ -485,69 +484,6 @@ class SpeechModelSizeHandler final : public PromiseNativeHandler {
 };
 
 NS_IMPL_ISUPPORTS0(SpeechModelSizeHandler)
-
-// Receives the result of Available() inside Install(). If the model is already
-// present, resolves the outer install promise immediately without prompting.
-// Otherwise fetches the download size and shows the permission prompt.
-class InstallGateHandler final : public PromiseNativeHandler {
- public:
-  NS_DECL_ISUPPORTS
-
-  InstallGateHandler(nsPIDOMWindowInner* aWindow, Promise* aInstallPromise,
-                     nsTArray<nsString>&& aLanguages,
-                     nsTArray<nsCString>&& aLanguagesUtf8)
-      : mWindow(aWindow),
-        mInstallPromise(aInstallPromise),
-        mLanguages(std::move(aLanguages)),
-        mLanguagesUtf8(std::move(aLanguagesUtf8)) {}
-
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
-                        ErrorResult& aRv) override {
-    AssertIsOnMainThread();
-    // aValue is the AvailabilityStatus string ("available", "downloadable", …).
-    nsAutoJSString statusStr;
-    if (aValue.isString() && statusStr.init(aCx, aValue.toString()) &&
-        statusStr.EqualsLiteral("available")) {
-      mInstallPromise->MaybeResolve(true);
-      return;
-    }
-    // Re-check downloading (state may have changed while Available() was in
-    // flight).
-    for (const nsCString& lang : mLanguagesUtf8) {
-      if (SpeechRecognition::IsLanguageDownloading(lang)) {
-        mInstallPromise->MaybeResolve(false);
-        return;
-      }
-    }
-    // Fetch the model download size (computed in the utility process, which
-    // owns the model table) before prompting, then show the prompt with it.
-    nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(mWindow);
-    RefPtr<Promise> sizePromise =
-        SpeechRecognitionBackend::GetModelDownloadSize(global, mLanguages);
-    auto sizeHandler = MakeRefPtr<SpeechModelSizeHandler>(
-        mWindow, mInstallPromise, std::move(mLanguages));
-    if (!sizePromise) {
-      sizeHandler->RejectedCallback(aCx, JS::UndefinedHandleValue, aRv);
-      return;
-    }
-    sizePromise->AppendNativeHandler(sizeHandler);
-  }
-
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
-                        ErrorResult& aRv) override {
-    mInstallPromise->MaybeResolve(false);
-  }
-
- private:
-  ~InstallGateHandler() = default;
-
-  RefPtr<nsPIDOMWindowInner> mWindow;
-  RefPtr<Promise> mInstallPromise;
-  nsTArray<nsString> mLanguages;
-  nsTArray<nsCString> mLanguagesUtf8;
-};
-
-NS_IMPL_ISUPPORTS0(InstallGateHandler)
 
 /* static */
 void SpeechRecognition::AddDownloadingLanguage(const nsCString& aLanguage) {
@@ -685,20 +621,23 @@ already_AddRefed<Promise> SpeechRecognition::Install(
     }
   }
 
-  // Check availability first: if the model is already installed there is no
-  // download and no permission prompt is needed. The gate handler resolves the
-  // promise immediately in that case, or dispatches the permission request.
+  // Fetch the model download size (computed in the utility process, which owns
+  // the model table) before prompting, then show the download permission
+  // prompt. install() always drives the download flow; the download itself is
+  // idempotent if the model is already present.
   nsTArray<nsString> languages(aOptions.mLangs.Elements(),
                                aOptions.mLangs.Length());
-  RefPtr<Promise> availPromise =
-      SpeechRecognitionBackend::Available(global, languages);
-  if (!availPromise) {
-    promise->MaybeResolve(false);
+  RefPtr<Promise> sizePromise =
+      SpeechRecognitionBackend::GetModelDownloadSize(global, languages);
+  if (!sizePromise) {
+    auto permRequest = MakeRefPtr<SpeechRecognitionPermissionRequest>(
+        window, promise, languages, 0);
+    NS_DispatchToMainThread(permRequest.forget());
     return promise.forget();
   }
-  auto gate = MakeRefPtr<InstallGateHandler>(
-      window, promise, std::move(languages), std::move(languagesUtf8));
-  availPromise->AppendNativeHandler(gate);
+  auto sizeHandler =
+      MakeRefPtr<SpeechModelSizeHandler>(window, promise, std::move(languages));
+  sizePromise->AppendNativeHandler(sizeHandler);
 
   return promise.forget();
 }
