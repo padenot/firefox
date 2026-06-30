@@ -10,6 +10,7 @@
 #include <chrono>
 #include <thread>
 
+#include "SpeechRecognitionModels.h"
 #include "mozIRemoteLazyInputStream.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
@@ -77,17 +78,71 @@ SpeechRecognitionParent::LanguagesToModelIdentifier(
     return {"cstr/parakeet-tdt-0.6b-v3-GGUF"_ns,
             "parakeet-tdt-0.6b-v3-q4_0.gguf"_ns, "main"_ns};
   }
-  // mudler/parakeet.cpp cache-aware streaming GGUFs, hosted on the Mozilla
-  // model hub under asr-test/parakeet. English uses the small EOU model;
-  // everything else uses the multilingual nemotron model.
-  const bool english =
-      aLanguages.IsEmpty() || StringBeginsWith(aLanguages[0], "en"_ns);
-  if (english) {
-    return {"asr-test/parakeet"_ns, "realtime_eou_120m-v1-q5_k.gguf"_ns,
-            "main"_ns};
+
+  // Determine the primary-subtag locale prefix (e.g. "en" from "en-US").
+  nsCString prefix;
+  if (!aLanguages.IsEmpty()) {
+    prefix = aLanguages[0];
+    int32_t dash = prefix.FindChar('-');
+    if (dash != kNotFound) {
+      prefix.Truncate(dash);
+    }
   }
-  return {"asr-test/parakeet"_ns, "nemotron-3.5-asr-streaming-0.6b-q5_k.gguf"_ns,
-          "main"_ns};
+
+  // A pref may override the default model for a locale prefix:
+  // media.webspeech.recognition.model.<prefix> (or .multilingual for the
+  // fallback). Empty prefix uses the multilingual fallback.
+  nsAutoCString prefKey("media.webspeech.recognition.model.");
+  prefKey.Append(prefix.IsEmpty() ? "multilingual"_ns : prefix);
+  nsAutoCString prefModelId;
+  Preferences::GetCString(prefKey.get(), prefModelId);
+
+  auto toIdentifier = [](const dom::SpeechRecognitionModelInfo& m) {
+    return ModelIdentifier{nsCString(m.repo), nsCString(m.filename),
+                           nsCString(m.revision), m.size_mb};
+  };
+
+  if (!prefModelId.IsEmpty()) {
+    for (const auto& m : dom::kSpeechRecognitionModels) {
+      if (m.id && prefModelId.Equals(m.id)) {
+        return toIdentifier(m);
+      }
+    }
+    LOGD(
+        "LanguagesToModelIdentifier: pref '{}' names unknown model '{}', "
+        "ignoring",
+        prefKey.get(), prefModelId.get());
+  }
+
+  // No usable pref: pick the default model whose locale list matches the
+  // prefix, falling back to the default fallback model (empty locale list).
+  const dom::SpeechRecognitionModelInfo* fallback = nullptr;
+  for (const auto& m : dom::kSpeechRecognitionModels) {
+    if (!m.id) {
+      break;
+    }
+    if (!m.locales[0]) {
+      if (m.is_default && !fallback) {
+        fallback = &m;
+      }
+      continue;
+    }
+    for (const char* const* l = m.locales; *l; ++l) {
+      if (prefix.IsEmpty() ||
+          StringBeginsWith(prefix, nsDependentCString(*l))) {
+        if (m.is_default) {
+          return toIdentifier(m);
+        }
+      }
+    }
+  }
+
+  if (fallback) {
+    return toIdentifier(*fallback);
+  }
+
+  MOZ_ASSERT_UNREACHABLE("No default model found in kSpeechRecognitionModels");
+  return {};
 }
 
 nsCString SpeechRecognitionParent::ModelIdentifier::ToString() const {
@@ -226,6 +281,13 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
             aResolver(false);
           });
 
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvGetModelDownloadSize(
+    const nsTArray<nsCString>& aLanguages,
+    GetModelDownloadSizeResolver&& aResolver) {
+  aResolver(LanguagesToModelIdentifier(aLanguages).mSizeMB);
   return IPC_OK();
 }
 
@@ -673,7 +735,7 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
           // The legacy sliding-window backend has no per-word confidence.
           if (self->CanSend() &&
               !self->SendOnRecognitionResult(aPayload, aIsFinal, 1.0f,
-                                            TimeStamp::Now())) {
+                                             TimeStamp::Now())) {
             self->SignalError(
                 nsFmtCString("Couldn't send recognition result {}, final={}",
                              aPayload.get(), aIsFinal));
@@ -874,7 +936,7 @@ void SpeechRecognitionParent::ProcessAudioStreaming() {
                payload.get(), aFinal, aConfidence);
           if (self->CanSend()) {
             (void)self->SendOnRecognitionResult(payload, aFinal, aConfidence,
-                                               TimeStamp::Now());
+                                                TimeStamp::Now());
           }
         }));
   };

@@ -320,12 +320,11 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     if (!mAudioStartDispatched) {
       mAudioStartDispatched = true;
       TimeStamp audioStartTs = TimeStamp::Now();
-      DispatchToParentIfAlive(
-          "SpeechRecognitionBackend::DispatchAudioStart",
-          [audioStartTs](SpeechRecognition* aParent) {
-            aParent->DispatchTrustedEventWithTimestamp(u"audiostart"_ns,
-                                                      audioStartTs);
-          });
+      DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchAudioStart",
+                              [audioStartTs](SpeechRecognition* aParent) {
+                                aParent->DispatchTrustedEventWithTimestamp(
+                                    u"audiostart"_ns, audioStartTs);
+                              });
     }
 
     if (mAudibilityMonitor) {
@@ -498,7 +497,7 @@ void SpeechRecognitionBackend::HandleRecognitionResult(
       [transcript = nsCString(aTranscript), aIsFinal, aConfidence,
        aEventTime](SpeechRecognition* aParent) {
         aParent->HandleRecognitionResultFromBackend(transcript, aIsFinal,
-                                                   aConfidence, aEventTime);
+                                                    aConfidence, aEventTime);
       });
 }
 
@@ -697,6 +696,72 @@ already_AddRefed<Promise> SpeechRecognitionBackend::Available(
         LOG("SpeechRecognitionBackend::Available - IPC initialization failed");
         promiseHandle->MaybeResolve(AvailabilityStatus::Unavailable);
       });
+
+  return promise.forget();
+}
+
+/* static */
+already_AddRefed<Promise> SpeechRecognitionBackend::GetModelDownloadSize(
+    nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages) {
+  AssertIsOnMainThread();
+
+  if (!aGlobal) {
+    return nullptr;
+  }
+
+  ErrorResult rv;
+  RefPtr<Promise> promise = Promise::Create(aGlobal, rv);
+  if (rv.Failed()) {
+    return nullptr;
+  }
+
+  AcquireIPCThreadUser();
+  promise->AppendNativeHandler(new IPCThreadUserReleaser());
+
+  nsTArray<nsCString> languages;
+  for (const nsString& lang : aLanguages) {
+    languages.AppendElement(NS_ConvertUTF16toUTF8(lang));
+  }
+
+  nsMainThreadPtrHandle<Promise> promiseHandle(
+      MakeAndAddRef<nsMainThreadPtrHolder<Promise>>(
+          "SpeechRecognitionBackend::GetModelDownloadSize", promise));
+
+  EnsureIPC()->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [promiseHandle, languages = std::move(languages)](bool aSuccess) mutable {
+        AssertIsOnMainThread();
+        if (!aSuccess) {
+          promiseHandle->MaybeResolve(0);
+          return;
+        }
+        OnIPCThread([promiseHandle,
+                     languages = std::move(languages)]() mutable {
+          auto session = MakeUnique<TransientSpeechRecognitionSession>();
+          if (!session->get()) {
+            NS_DispatchToMainThread(NS_NewRunnableFunction(
+                "SpeechRecognitionBackend::ResolveSizeZero",
+                [promiseHandle]() { promiseHandle->MaybeResolve(0); }));
+            return;
+          }
+          session->get()->SendGetModelDownloadSize(languages)->Then(
+              GetCurrentSerialEventTarget(), __func__,
+              [promiseHandle, session = std::move(session)](uint32_t aSizeMB) {
+                NS_DispatchToMainThread(NS_NewRunnableFunction(
+                    "SpeechRecognitionBackend::ResolveSize",
+                    [promiseHandle, aSizeMB]() {
+                      promiseHandle->MaybeResolve(aSizeMB);
+                    }));
+              },
+              [promiseHandle,
+               session = std::move(session)](ResponseRejectReason reason) {
+                NS_DispatchToMainThread(NS_NewRunnableFunction(
+                    "SpeechRecognitionBackend::ResolveSizeZero",
+                    [promiseHandle]() { promiseHandle->MaybeResolve(0); }));
+              });
+        });
+      },
+      [promiseHandle](nsresult aError) { promiseHandle->MaybeResolve(0); });
 
   return promise.forget();
 }

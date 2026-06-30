@@ -24,9 +24,12 @@ class SpeechRecognitionPermissionRequest final
     : public ContentPermissionRequestBase,
       public nsIRunnable {
  public:
+  // aSizeMB is the model download size shown in the prompt, computed in the
+  // utility process so the content process does not need the model table.
   SpeechRecognitionPermissionRequest(nsPIDOMWindowInner* aWindow,
                                      Promise* aPromise,
-                                     const nsTArray<nsString>& aLanguages);
+                                     const nsTArray<nsString>& aLanguages,
+                                     uint32_t aSizeMB);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIRUNNABLE
@@ -42,6 +45,7 @@ class SpeechRecognitionPermissionRequest final
 
   RefPtr<Promise> mPromise;
   nsTArray<nsString> mLanguages;
+  uint32_t mSizeMB;
 };
 
 }  // namespace mozilla::dom

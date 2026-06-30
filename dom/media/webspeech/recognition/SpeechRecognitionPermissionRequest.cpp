@@ -8,7 +8,6 @@
 
 #include "SpeechRecognition.h"
 #include "SpeechRecognitionBackend.h"
-#include "SpeechRecognitionModels.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
@@ -69,70 +68,20 @@ NS_IMPL_ADDREF_INHERITED(SpeechRecognitionPermissionRequest,
 NS_IMPL_RELEASE_INHERITED(SpeechRecognitionPermissionRequest,
                           ContentPermissionRequestBase)
 
-// Returns the size in MB of the model that will be downloaded for the given
-// language set, mirroring the selection logic in LanguagesToModelIdentifier.
-static uint32_t ModelSizeMB(const nsTArray<nsString>& aLanguages) {
-  // Derive the locale prefix the same way LanguagesToModelIdentifier does.
-  nsCString prefix;
-  if (!aLanguages.IsEmpty()) {
-    prefix = NS_ConvertUTF16toUTF8(aLanguages[0]);
-    int32_t dash = prefix.FindChar('-');
-    if (dash != kNotFound) {
-      prefix.Truncate(dash);
-    }
-  }
-
-  nsAutoCString prefKey("media.webspeech.recognition.model.");
-  prefKey.Append(prefix.IsEmpty() ? "multilingual"_ns : prefix);
-  nsAutoCString prefModelId;
-  Preferences::GetCString(prefKey.get(), prefModelId);
-
-  if (!prefModelId.IsEmpty()) {
-    for (const auto& m : kSpeechRecognitionModels) {
-      if (m.id && prefModelId.Equals(m.id)) {
-        return m.size_mb;
-      }
-    }
-  }
-
-  // No pref: use the default model for this locale prefix.
-  uint32_t fallbackSize = 0;
-  for (const auto& m : kSpeechRecognitionModels) {
-    if (!m.id) {
-      break;
-    }
-    if (!m.locales[0]) {
-      if (m.is_default && !fallbackSize) {
-        fallbackSize = m.size_mb;
-      }
-      continue;
-    }
-    for (const char* const* l = m.locales; *l; ++l) {
-      if (StringBeginsWith(prefix, nsDependentCString(*l)) ||
-          prefix.IsEmpty()) {
-        if (m.is_default) {
-          return m.size_mb;
-        }
-      }
-    }
-  }
-  return fallbackSize;
-}
-
 SpeechRecognitionPermissionRequest::SpeechRecognitionPermissionRequest(
     nsPIDOMWindowInner* aWindow, Promise* aPromise,
-    const nsTArray<nsString>& aLanguages)
+    const nsTArray<nsString>& aLanguages, uint32_t aSizeMB)
     : ContentPermissionRequestBase(aWindow->GetDoc()->NodePrincipal(), aWindow,
                                    ""_ns,
                                    "speech-recognition-model-download"_ns),
       mPromise(aPromise),
-      mLanguages(aLanguages.Clone()) {}
+      mLanguages(aLanguages.Clone()),
+      mSizeMB(aSizeMB) {}
 
 NS_IMETHODIMP
 SpeechRecognitionPermissionRequest::GetTypes(nsIArray** aTypes) {
   nsTArray<nsString> options;
-  options.AppendElement(
-      NS_ConvertUTF8toUTF16(nsPrintfCString("%u", ModelSizeMB(mLanguages))));
+  options.AppendElement(NS_ConvertUTF8toUTF16(nsPrintfCString("%u", mSizeMB)));
   return nsContentPermissionUtils::CreatePermissionArray(mType, options,
                                                          aTypes);
 }

@@ -24,6 +24,9 @@ parent: // HWUtility
   async IsModelAvailable(nsCString[] languages) returns (bool available);
   // Install speech recognition models for the given languages
   async InstallModels(nsCString[] languages) returns (bool success);
+  // Approximate download size in MB of the model selected for the given
+  // languages, for display in the download permission prompt.
+  async GetModelDownloadSize(nsCString[] languages) returns (uint32_t sizeMB);
   // Initialize the speech recognition session with a language and a list of
   // biasing phrases. Resolves with an empty string on success, otherwise with
   // the Web Speech error token describing the failure (e.g.

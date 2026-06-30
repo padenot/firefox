@@ -112,6 +112,11 @@ class SpeechRecognitionBackend
       nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages);
   static already_AddRefed<Promise> Install(
       nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages);
+  // Resolves with the model download size in MB (0 if unknown), for the
+  // download permission prompt. Keeps the model table out of the content
+  // process: the size is computed in the utility process.
+  static already_AddRefed<Promise> GetModelDownloadSize(
+      nsIGlobalObject* aGlobal, const nsTArray<nsString>& aLanguages);
 
  private:
   virtual ~SpeechRecognitionBackend();
@@ -128,8 +133,8 @@ class SpeechRecognitionBackend
       MOZ_REQUIRES(sIPCCapability);
   void StopSpeechRecognitionSession() MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal,
-                               float aConfidence,
-                               TimeStamp aEventTime) MOZ_REQUIRES(sIPCCapability);
+                               float aConfidence, TimeStamp aEventTime)
+      MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsCString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
