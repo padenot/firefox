@@ -24,3 +24,7 @@ tags = "mtg parakeet-asr"
 ["test_parakeet_multilingual.html"]
 subsuite = "speech-recognition"
 tags = "mtg parakeet-asr"
+
+["test_model_available_after_install.html"]
+subsuite = "speech-recognition"
+tags = "mtg parakeet-asr"
