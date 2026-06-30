@@ -8,6 +8,7 @@
 
 #include "SpeechRecognition.h"
 #include "SpeechRecognitionBackend.h"
+#include "SpeechRecognitionModels.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
@@ -68,15 +69,54 @@ NS_IMPL_ADDREF_INHERITED(SpeechRecognitionPermissionRequest,
 NS_IMPL_RELEASE_INHERITED(SpeechRecognitionPermissionRequest,
                           ContentPermissionRequestBase)
 
-// Returns the expected download size in MB for the model that will be
-// fetched for the given language set. Mirrors the selection logic in
-// SpeechRecognitionParent::LanguagesToModelIdentifier().
-// parakeet-eou-120m: 141 151 648 bytes (~135 MB)
-// parakeet-nemotron-0.6b: 784 801 888 bytes (~748 MB)
+// Returns the size in MB of the model that will be downloaded for the given
+// language set, mirroring the selection logic in LanguagesToModelIdentifier.
 static uint32_t ModelSizeMB(const nsTArray<nsString>& aLanguages) {
-  const bool english =
-      aLanguages.IsEmpty() || StringBeginsWith(aLanguages[0], u"en"_ns);
-  return english ? 135 : 748;
+  // Derive the locale prefix the same way LanguagesToModelIdentifier does.
+  nsCString prefix;
+  if (!aLanguages.IsEmpty()) {
+    prefix = NS_ConvertUTF16toUTF8(aLanguages[0]);
+    int32_t dash = prefix.FindChar('-');
+    if (dash != kNotFound) {
+      prefix.Truncate(dash);
+    }
+  }
+
+  nsAutoCString prefKey("media.webspeech.recognition.model.");
+  prefKey.Append(prefix.IsEmpty() ? "multilingual"_ns : prefix);
+  nsAutoCString prefModelId;
+  Preferences::GetCString(prefKey.get(), prefModelId);
+
+  if (!prefModelId.IsEmpty()) {
+    for (const auto& m : kSpeechRecognitionModels) {
+      if (m.id && prefModelId.Equals(m.id)) {
+        return m.size_mb;
+      }
+    }
+  }
+
+  // No pref: use the default model for this locale prefix.
+  uint32_t fallbackSize = 0;
+  for (const auto& m : kSpeechRecognitionModels) {
+    if (!m.id) {
+      break;
+    }
+    if (!m.locales[0]) {
+      if (m.is_default && !fallbackSize) {
+        fallbackSize = m.size_mb;
+      }
+      continue;
+    }
+    for (const char* const* l = m.locales; *l; ++l) {
+      if (StringBeginsWith(prefix, nsDependentCString(*l)) ||
+          prefix.IsEmpty()) {
+        if (m.is_default) {
+          return m.size_mb;
+        }
+      }
+    }
+  }
+  return fallbackSize;
 }
 
 SpeechRecognitionPermissionRequest::SpeechRecognitionPermissionRequest(

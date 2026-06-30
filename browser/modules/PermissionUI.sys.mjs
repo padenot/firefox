@@ -2209,10 +2209,6 @@ class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptFor
     return "speech-recognition-model-download";
   }
 
-  get permissionKey() {
-    return "speech-recognition-model-download";
-  }
-
   get popupOptions() {
     return {
       displayURI: false,
@@ -2250,6 +2246,7 @@ class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptFor
           "speechRecognitionModelDownload.allow.accesskey"
         ),
         action: lazy.SitePermissions.ALLOW,
+        callback: () => this.allow(),
       },
       {
         label: lazy.gBrowserBundle.GetStringFromName(
@@ -2260,6 +2257,7 @@ class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptFor
         ),
         action: lazy.SitePermissions.BLOCK,
         dismiss: true,
+        callback: () => this.cancel(),
       },
     ];
   }

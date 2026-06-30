@@ -20,6 +20,7 @@
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/SpeechRecognitionChild.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
@@ -199,16 +200,20 @@ void SpeechRecognitionBackend::Stop() {
   }
 
   if (mCurrentlyAudible) {
+    TimeStamp soundendTs = TimeStamp::Now();
     nsCOMPtr<nsIRunnable> soundendRunnable = NS_NewRunnableFunction(
-        "SpeechRecognitionBackend::DispatchSoundEnd",
-        [parent]() { parent->DispatchTrustedEvent(u"soundend"_ns); });
+        "SpeechRecognitionBackend::DispatchSoundEnd", [parent, soundendTs]() {
+          parent->DispatchTrustedEventWithTimestamp(u"soundend"_ns, soundendTs);
+        });
     NS_DispatchToMainThread(soundendRunnable.forget());
     mCurrentlyAudible = false;
   }
 
+  TimeStamp audioendTs = TimeStamp::Now();
   nsCOMPtr<nsIRunnable> audioendRunnable = NS_NewRunnableFunction(
-      "SpeechRecognitionBackend::DispatchAudioEnd",
-      [parent]() { parent->DispatchTrustedEvent(u"audioend"_ns); });
+      "SpeechRecognitionBackend::DispatchAudioEnd", [parent, audioendTs]() {
+        parent->DispatchTrustedEventWithTimestamp(u"audioend"_ns, audioendTs);
+      });
   NS_DispatchToMainThread(audioendRunnable.forget());
 }
 
@@ -314,10 +319,13 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
 
     if (!mAudioStartDispatched) {
       mAudioStartDispatched = true;
-      DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchAudioStart",
-                              [](SpeechRecognition* aParent) {
-                                aParent->DispatchTrustedEvent(u"audiostart"_ns);
-                              });
+      TimeStamp audioStartTs = TimeStamp::Now();
+      DispatchToParentIfAlive(
+          "SpeechRecognitionBackend::DispatchAudioStart",
+          [audioStartTs](SpeechRecognition* aParent) {
+            aParent->DispatchTrustedEventWithTimestamp(u"audiostart"_ns,
+                                                      audioStartTs);
+          });
     }
 
     if (mAudibilityMonitor) {
@@ -330,10 +338,12 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
         mCurrentlyAudible = nowAudible;
 
         nsString eventName = nowAudible ? u"soundstart"_ns : u"soundend"_ns;
-        DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchSoundEvent",
-                                [eventName](SpeechRecognition* aParent) {
-                                  aParent->DispatchTrustedEvent(eventName);
-                                });
+        TimeStamp soundTs = TimeStamp::Now();
+        DispatchToParentIfAlive(
+            "SpeechRecognitionBackend::DispatchSoundEvent",
+            [eventName, soundTs](SpeechRecognition* aParent) {
+              aParent->DispatchTrustedEventWithTimestamp(eventName, soundTs);
+            });
       }
     }
 
@@ -391,12 +401,13 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
 
   mSpeechRecognitionChild->SetResultCallback(
       [self = RefPtr{this}](const nsCString& aTranscript, bool aIsFinal,
-                            float aConfidence) {
+                            float aConfidence, TimeStamp aEventTime) {
         AssertOnIPCThread();
         LOG("Received recognition result: {} (final={})", aTranscript.get(),
             aIsFinal);
 
-        self->HandleRecognitionResult(aTranscript, aIsFinal, aConfidence);
+        self->HandleRecognitionResult(aTranscript, aIsFinal, aConfidence,
+                                      aEventTime);
       });
 
   mSpeechRecognitionChild->SetErrorCallback(
@@ -408,14 +419,16 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
       });
 
   mSpeechRecognitionChild->SetSpeechChangeCallback(
-      [self = RefPtr{this}](bool aSpeechDetected) {
+      [self = RefPtr{this}](bool aSpeechDetected, TimeStamp aEventTime) {
         LOG("Speech change: {}", aSpeechDetected ? "started" : "ended");
 
         self->DispatchToParentIfAlive(
             "SpeechRecognitionBackend::HandleSpeechChange",
-            [speechDetected = aSpeechDetected](SpeechRecognition* aParent) {
-              aParent->DispatchTrustedEvent(speechDetected ? u"speechstart"_ns
-                                                           : u"speechend"_ns);
+            [speechDetected = aSpeechDetected,
+             aEventTime](SpeechRecognition* aParent) {
+              aParent->DispatchTrustedEventWithTimestamp(
+                  speechDetected ? u"speechstart"_ns : u"speechend"_ns,
+                  aEventTime);
             });
       });
 
@@ -475,16 +488,18 @@ void SpeechRecognitionBackend::StopSpeechRecognitionSession() {
 }
 
 void SpeechRecognitionBackend::HandleRecognitionResult(
-    const nsCString& aTranscript, bool aIsFinal, float aConfidence) {
+    const nsCString& aTranscript, bool aIsFinal, float aConfidence,
+    TimeStamp aEventTime) {
   MOZ_ASSERT(!NS_IsMainThread(), "Called from background thread");
   LOG("HandleRecognitionResult: {} (final={})", aTranscript.get(), aIsFinal);
 
-  DispatchToParentIfAlive("SpeechRecognitionBackend::HandleRecognitionResult",
-                          [transcript = nsCString(aTranscript), aIsFinal,
-                           aConfidence](SpeechRecognition* aParent) {
-                            aParent->HandleRecognitionResultFromBackend(
-                                transcript, aIsFinal, aConfidence);
-                          });
+  DispatchToParentIfAlive(
+      "SpeechRecognitionBackend::HandleRecognitionResult",
+      [transcript = nsCString(aTranscript), aIsFinal, aConfidence,
+       aEventTime](SpeechRecognition* aParent) {
+        aParent->HandleRecognitionResultFromBackend(transcript, aIsFinal,
+                                                   aConfidence, aEventTime);
+      });
 }
 
 void SpeechRecognitionBackend::HandleRecognitionError(const nsCString& aError) {

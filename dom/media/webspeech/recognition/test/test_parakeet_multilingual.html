@@ -72,6 +72,8 @@ SpecialPowers.pushPrefEnv({
     ["browser.ml.modelHubRootUrl", `http://localhost:${SERVER_PORT}/`],
     ["media.autoplay.default", 0],
     ["media.autoplay.blocking_policy", 0],
+    ["media.webspeech.recognition.model-download.prompt.testing", true],
+    ["media.navigator.permission.disabled", true],
   ],
 }, async () => {
   let statusTimer = null;
@@ -80,6 +82,22 @@ SpecialPowers.pushPrefEnv({
     const availability =
       await SpeechRecognition.available({ langs: ["fr-FR"], processLocally: true });
     diag(`multilingual model availability (fr-FR proxy, on-device): ${availability}`);
+
+    // Install the model through the proper permission flow (auto-approved via
+    // the testing pref, since tests cannot generate a real user gesture).
+    if (availability !== "available") {
+      diag("installing multilingual model...");
+      const installed = await SpeechRecognition.install({ langs: ["fr-FR"], processLocally: true });
+      diag(`install() => ${installed}`);
+      ok(installed, "Multilingual model installed successfully");
+      if (!installed) {
+        ok(false, "install() returned false; cannot proceed");
+        SimpleTest.finish();
+        return;
+      }
+    } else {
+      diag("multilingual model already available, skipping install()");
+    }
 
     const ctx = new AudioContext();
     diag(`AudioContext created: state=${ctx.state} sampleRate=${ctx.sampleRate}`);

@@ -10,6 +10,7 @@
 #include <functional>
 
 #include "mozilla/PSpeechRecognitionChild.h"
+#include "mozilla/TimeStamp.h"
 #include "nsISupportsImpl.h"
 
 namespace mozilla {
@@ -20,9 +21,9 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(SpeechRecognitionChild, override)
   using RecognitionResultCallback =
-      std::function<void(const nsCString&, bool, float)>;
+      std::function<void(const nsCString&, bool, float, TimeStamp)>;
   using RecognitionErrorCallback = std::function<void(const nsCString&)>;
-  using SpeechChangeCallback = std::function<void(bool)>;
+  using SpeechChangeCallback = std::function<void(bool, TimeStamp)>;
 
   SpeechRecognitionChild();
 
@@ -32,9 +33,11 @@ class SpeechRecognitionChild final : public PSpeechRecognitionChild {
 
   mozilla::ipc::IPCResult RecvOnRecognitionResult(const nsCString& aTranscript,
                                                   const bool& aIsFinal,
-                                                  const float& aConfidence);
+                                                  const float& aConfidence,
+                                                  const TimeStamp& aEventTime);
   mozilla::ipc::IPCResult RecvOnRecognitionError(const nsCString& aError);
-  mozilla::ipc::IPCResult RecvOnSpeechChange(const bool& aSpeechDetected);
+  mozilla::ipc::IPCResult RecvOnSpeechChange(const bool& aSpeechDetected,
+                                              const TimeStamp& aEventTime);
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 

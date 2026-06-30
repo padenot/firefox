@@ -96,6 +96,8 @@ SpecialPowers.pushPrefEnv({
     ["media.webspeech.recognition.num_threads", 4],
     ["media.autoplay.default", 0],
     ["media.autoplay.blocking_policy", 0],
+    ["media.webspeech.recognition.model-download.prompt.testing", true],
+    ["media.navigator.permission.disabled", true],
   ],
 }, async () => {
   let statusTimer = null;
@@ -111,6 +113,22 @@ SpecialPowers.pushPrefEnv({
     const availability =
       await SpeechRecognition.available({ langs: [LANG], processLocally: true });
     diag(`model availability (${LANG}, on-device): ${availability}`);
+
+    // Install the model through the proper permission flow (auto-approved via
+    // the testing pref, since tests cannot generate a real user gesture).
+    if (availability !== "available") {
+      diag("installing model...");
+      const installed = await SpeechRecognition.install({ langs: [LANG], processLocally: true });
+      diag(`install() => ${installed}`);
+      ok(installed, "Model installed successfully");
+      if (!installed) {
+        ok(false, "install() returned false; cannot proceed");
+        SimpleTest.finish();
+        return;
+      }
+    } else {
+      diag("model already available, skipping install()");
+    }
 
     // 2. AudioContext must actually run. Created suspended; resume explicitly.
     const ctx = new AudioContext();

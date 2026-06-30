@@ -672,7 +672,8 @@ void SpeechRecognitionParent::ProcessAudioOnBackgroundThread() {
           LOGV("Sending result: '{}' (final={})", aPayload.get(), aIsFinal);
           // The legacy sliding-window backend has no per-word confidence.
           if (self->CanSend() &&
-              !self->SendOnRecognitionResult(aPayload, aIsFinal, 1.0f)) {
+              !self->SendOnRecognitionResult(aPayload, aIsFinal, 1.0f,
+                                            TimeStamp::Now())) {
             self->SignalError(
                 nsFmtCString("Couldn't send recognition result {}, final={}",
                              aPayload.get(), aIsFinal));
@@ -872,7 +873,8 @@ void SpeechRecognitionParent::ProcessAudioStreaming() {
           LOGV("Sending streaming result: '{}' (final={}, conf={})",
                payload.get(), aFinal, aConfidence);
           if (self->CanSend()) {
-            (void)self->SendOnRecognitionResult(payload, aFinal, aConfidence);
+            (void)self->SendOnRecognitionResult(payload, aFinal, aConfidence,
+                                               TimeStamp::Now());
           }
         }));
   };

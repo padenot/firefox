@@ -10,6 +10,7 @@
 #include "SpeechRecognitionResultList.h"
 #include "js/TypeDecls.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/SpeechRecognitionBinding.h"
@@ -107,6 +108,8 @@ class SpeechRecognition final : public DOMEventTargetHelper,
       MOZ_REQUIRES(sMainThreadCapability);
   static void RemoveDownloadingLanguage(const nsCString& aLanguage)
       MOZ_REQUIRES(sMainThreadCapability);
+  static bool IsLanguageDownloading(const nsCString& aLanguage)
+      MOZ_REQUIRES(sMainThreadCapability);
 
   void Start(const Optional<NonNull<MediaStreamTrack>>& aTrack,
              CallerType aCallerType, ErrorResult& aRv);
@@ -154,9 +157,12 @@ class SpeechRecognition final : public DOMEventTargetHelper,
                      const char (&aMessage)[N]) {
     DispatchError(aErrorCode, nsLiteralCString(aMessage));
   }
+  void DispatchTrustedEventWithTimestamp(const nsAString& aEventName,
+                                         TimeStamp aTimeStamp);
   // Backend methods
   void HandleRecognitionResultFromBackend(const nsCString& aTranscript,
-                                          bool aIsFinal, float aConfidence);
+                                          bool aIsFinal, float aConfidence,
+                                          TimeStamp aEventTime);
   void HandleRecognitionErrorFromBackend(const nsCString& aError);
 
  private:

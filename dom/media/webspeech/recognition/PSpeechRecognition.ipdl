@@ -5,6 +5,8 @@
 
 include protocol PHWInferenceManager;
 
+using class mozilla::TimeStamp from "mozilla/TimeStamp.h";
+
 namespace mozilla {
 
 // This protocol handles speech recognition operations in the HWInference
@@ -36,10 +38,10 @@ parent: // HWUtility
 
 child: // Content process
   // Speech recognition results
-  async OnRecognitionResult(nsCString transcript, bool isFinal, float confidence);
+  async OnRecognitionResult(nsCString transcript, bool isFinal, float confidence, TimeStamp eventTime);
   async OnRecognitionError(nsCString error);
   // Speech detection events (true = speech started, false = speech ended)
-  async OnSpeechChange(bool speechDetected);
+  async OnSpeechChange(bool speechDetected, TimeStamp eventTime);
 };
 
 } // namespace mozilla

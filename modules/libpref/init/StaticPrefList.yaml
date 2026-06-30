@@ -13087,6 +13087,19 @@
   value: false
   mirror: always
 
+# Override the default model for a locale prefix.  The value is a model id
+# from models.yaml (e.g. "english_tdt_ctc_q5_k").  Empty string means use the
+# model marked default: true in models.yaml for that locale.
+- name: media.webspeech.recognition.model.en
+  type: String
+  value: ""
+  mirror: never
+
+- name: media.webspeech.recognition.model.multilingual
+  type: String
+  value: ""
+  mirror: never
+
 - name: media.webspeech.synth.enabled
   type: bool
   value: true

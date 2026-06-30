@@ -4,6 +4,11 @@
 
 MOCHITEST_MANIFESTS += ["test/mochitest.toml"]
 
+GENERATED_FILES += ["SpeechRecognitionModels.h"]
+speech_models = GENERATED_FILES["SpeechRecognitionModels.h"]
+speech_models.script = "gen_speech_models.py:gen_models_header"
+speech_models.inputs = ["models.yaml"]
+
 EXPORTS.mozilla.dom += [
     "SpeechGrammar.h",
     "SpeechGrammarList.h",

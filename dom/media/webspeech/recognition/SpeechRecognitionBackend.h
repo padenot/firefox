@@ -19,6 +19,7 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/ThreadSafeWeakPtr.h"
 #include "mozilla/ThreadSafety.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/Promise.h"
@@ -127,7 +128,8 @@ class SpeechRecognitionBackend
       MOZ_REQUIRES(sIPCCapability);
   void StopSpeechRecognitionSession() MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal,
-                               float aConfidence) MOZ_REQUIRES(sIPCCapability);
+                               float aConfidence,
+                               TimeStamp aEventTime) MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsCString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
