@@ -25,6 +25,7 @@
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessChild.h"
 #include "mozilla/llama/LlamaRuntimeLinker.h"
+#include "mozilla/media/MediaUtils.h"
 #include "nsDebug.h"
 #include "nsGkAtoms.h"
 #include "nsNetUtil.h"
@@ -212,22 +213,28 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
       "mapped to model={}",
       __func__, fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
 
+  // Shared by both continuations below so the resolver is moved-from exactly
+  // once, whichever one actually runs (MozPromise::Then() invokes only one of
+  // the two, but both closures are constructed eagerly).
+  auto resolver = MakeRefPtr<media::Refcountable<IsModelAvailableResolver>>();
+  *resolver = std::move(aResolver);
+
   hwInferenceChild
       ->SendIsModelAvailable("parakeet-gguf"_ns, modelIdentifier.mModelName,
                              modelIdentifier.mRevision,
                              modelIdentifier.mFileName)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [self = RefPtr{this}, aResolver](bool aAvailable) mutable {
+          [self = RefPtr{this}, resolver](bool aAvailable) mutable {
             LOGD("Sending response back to content process: available={}",
                  aAvailable ? "true" : "false");
-            aResolver(aAvailable);
+            (*resolver)(aAvailable);
           },
           [self = RefPtr{this},
-           aResolver](ResponseRejectReason aReason) mutable {
+           resolver](ResponseRejectReason aReason) mutable {
             LOGE("{} IPC call to main process failed: {}", __func__,
                  static_cast<int>(aReason));
-            aResolver(false);
+            (*resolver)(false);
           });
 
   return IPC_OK();
@@ -262,23 +269,29 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
       "HWInference: model={}",
       __func__, modelIdentifier.ToString().get());
 
+  // Shared by both continuations below so the resolver is moved-from exactly
+  // once, whichever one actually runs (MozPromise::Then() invokes only one of
+  // the two, but both closures are constructed eagerly).
+  auto resolver = MakeRefPtr<media::Refcountable<InstallModelsResolver>>();
+  *resolver = std::move(aResolver);
+
   hwInferenceChild
       ->SendInstallModel("speech-recognition"_ns, modelIdentifier.mModelName,
                          modelIdentifier.mRevision, modelIdentifier.mFileName)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [self = RefPtr(this), aResolver](bool aSuccess) mutable {
+          [self = RefPtr(this), resolver](bool aSuccess) mutable {
             LOGD(
                 "{} Received installation response from main process: "
                 "success={}",
                 __func__, aSuccess ? "true" : "false");
-            aResolver(aSuccess);
+            (*resolver)(aSuccess);
           },
           [self = RefPtr(this),
-           aResolver](ResponseRejectReason aReason) mutable {
+           resolver](ResponseRejectReason aReason) mutable {
             LOGE("{} IPC call to main process failed: {}", __func__,
                  static_cast<int>(aReason));
-            aResolver(false);
+            (*resolver)(false);
           });
 
   return IPC_OK();
@@ -401,20 +414,26 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
   LOGD("{} Requesting model: model={}", __func__,
        modelIdentifier.ToString().get());
 
+  // Shared by both continuations below so the resolver is moved-from exactly
+  // once, whichever one actually runs (MozPromise::Then() invokes only one of
+  // the two, but both closures are constructed eagerly).
+  auto resolver = MakeRefPtr<media::Refcountable<InitResolver>>();
+  *resolver = std::move(aResolver);
+
   hwInferenceChild
       ->SendGetModelFile("parakeet-gguf"_ns, "speech-recognition"_ns,
                          modelIdentifier.mModelName, modelIdentifier.mRevision,
                          modelIdentifier.mFileName)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
-          [self = RefPtr{this}, resolver = aResolver](
+          [self = RefPtr{this}, resolver](
               const mozilla::hwinference::GetModelFileResult& aResult) mutable {
             if (aResult.type() ==
                 mozilla::hwinference::GetModelFileResult::TGetModelError) {
               LOGE("{} GetModelError with nsresult={:x}", __func__,
                    static_cast<uint32_t>(
                        aResult.get_GetModelError().errorCode()));
-              self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+              self->ResolveOrRejectInitOnIPCThread(std::move(*resolver), false);
               return;
             }
 
@@ -425,7 +444,7 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
             FILE* file = FileDescriptorToFILE(fd, "rb");
             if (!file) {
               LOGE("{} Failed to convert FileDescriptor to FILE*", __func__);
-              self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+              self->ResolveOrRejectInitOnIPCThread(std::move(*resolver), false);
               return;
             }
             // Store the file handle on the main thread
@@ -440,20 +459,20 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
                 "Parakeet", getter_AddRefs(self->mRecognitionThread),
                 NS_NewRunnableFunction(
                     "Initialize parakeet context",
-                    [self, resolver = std::move(resolver)]() mutable {
-                      self->InitializeParakeetContext(std::move(resolver));
+                    [self, resolver]() mutable {
+                      self->InitializeParakeetContext(std::move(*resolver));
                     }));
             if (NS_FAILED(rv)) {
               LOGE("Failed to create recognition thread: {:x}",
                    static_cast<uint32_t>(rv));
-              self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+              self->ResolveOrRejectInitOnIPCThread(std::move(*resolver), false);
             }
           },
-          [self = RefPtr{this}, resolver = aResolver](
+          [self = RefPtr{this}, resolver](
               mozilla::ipc::ResponseRejectReason aReason) mutable {
             LOGE("{} Promise rejected with reason {}", __func__,
                  static_cast<int>(aReason));
-            self->ResolveOrRejectInitOnIPCThread(std::move(resolver), false);
+            self->ResolveOrRejectInitOnIPCThread(std::move(*resolver), false);
           });
 }
 
