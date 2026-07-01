@@ -28,3 +28,13 @@ tags = "mtg parakeet-asr"
 ["test_parakeet_multilingual.html"]
 subsuite = "speech-recognition"
 tags = "mtg parakeet-asr"
+
+# Fuzz-style stress tests that interleave Web Speech API calls in randomized
+# order, using the in-process mock backend (no real model hub/microphone
+# needed). These are nets for concurrency bugs in the IPC/session lifecycle
+# (see bug 1940906), not targeted regression tests for a single bug.
+["test_fuzz_availability_install.html"]
+
+["test_fuzz_session_lifecycle.html"]
+
+["test_fuzz_iframe_teardown.html"]

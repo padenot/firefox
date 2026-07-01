@@ -35,7 +35,9 @@ def gen_models_header(output, input):
     # Emit per-model locale arrays.
     for m in models:
         locales = m["locales"]
-        entries = ", ".join(f'"{l}"' for l in locales) + (", " if locales else "") + "nullptr"
+        entries = (
+            ", ".join(f'"{l}"' for l in locales) + (", " if locales else "") + "nullptr"
+        )
         output.write(
             f"static const char* const kSpeechModelLocales_{m['id']}[] = {{{entries}}};\n"
         )
@@ -43,16 +45,20 @@ def gen_models_header(output, input):
     output.write("\n")
 
     # Emit the table, sentinel-terminated.
-    output.write("static const SpeechRecognitionModelInfo kSpeechRecognitionModels[] = {\n")
+    output.write(
+        "static const SpeechRecognitionModelInfo kSpeechRecognitionModels[] = {\n"
+    )
     for m in models:
         is_default = "true" if m.get("default", False) else "false"
         is_streaming = "true" if m.get("streaming", True) else "false"
         output.write(
             f'  {{"{m["id"]}", kSpeechModelLocales_{m["id"]},\n'
             f'   "{m["repo"]}", "{m["filename"]}", "{m["revision"]}",\n'
-            f"   {m['size_mb']}, \"{m['quant']}\", {m['latency_ms']}, {is_default}, {is_streaming}}},\n"
+            f'   {m["size_mb"]}, "{m["quant"]}", {m["latency_ms"]}, {is_default}, {is_streaming}}},\n'
         )
-    output.write("  {nullptr, nullptr, nullptr, nullptr, nullptr, 0, nullptr, 0, false}\n")
+    output.write(
+        "  {nullptr, nullptr, nullptr, nullptr, nullptr, 0, nullptr, 0, false}\n"
+    )
     output.write("};\n\n")
 
     output.write("}  // namespace mozilla::dom\n")

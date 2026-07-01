@@ -55,7 +55,9 @@ def resolve_model(name):
         # CI: must already be present; never download.
         path = Path(FETCHES_DIR) / name
         if path.is_file():
-            _log(f"resolve {name} -> {path} ({path.stat().st_size} bytes, MOZ_FETCHES_DIR)")
+            _log(
+                f"resolve {name} -> {path} ({path.stat().st_size} bytes, MOZ_FETCHES_DIR)"
+            )
             return str(path)
         _log(f"resolve {name} -> MISSING in MOZ_FETCHES_DIR={FETCHES_DIR}; serving 404")
         return None
