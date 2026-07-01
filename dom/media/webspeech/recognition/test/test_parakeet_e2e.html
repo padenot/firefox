@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>SpeechRecognition: parakeet end-to-end</title>
   <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="head.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
   <style>
     #results { font-family: monospace; font-size: 11px; margin-top: 10px; }
@@ -56,37 +57,6 @@ const T0 = performance.now();
 const ms = () => "+" + Math.round(performance.now() - T0) + "ms";
 function diag(msg) { info("[diag " + ms() + "] " + msg); }
 
-// Inline AudioStreamAnalyser from dom/media/webrtc/tests/mochitests/head.js
-function AudioStreamAnalyser(ac, stream) {
-  this.audioContext = ac;
-  this.analyser = this.audioContext.createAnalyser();
-  this.analyser.smoothingTimeConstant = 0.2;
-  this.analyser.fftSize = 1024;
-  this.sourceNodes = [];
-  this.connectTrack = t => {
-    let source = this.audioContext.createMediaStreamSource(new MediaStream([t]));
-    this.sourceNodes.push(source);
-    source.connect(this.analyser);
-  };
-  stream.getAudioTracks().forEach(t => this.connectTrack(t));
-  this.data = new Uint8Array(this.analyser.frequencyBinCount);
-}
-AudioStreamAnalyser.prototype.getByteFrequencyData = function() {
-  this.analyser.getByteFrequencyData(this.data);
-  return this.data;
-};
-// Peak and mean FFT magnitude over the current frame: the cheap way to tell
-// "is there actually sound on this track" from "the track merely exists".
-AudioStreamAnalyser.prototype.levels = function() {
-  const d = this.getByteFrequencyData();
-  let max = 0, sum = 0;
-  for (let i = 0; i < d.length; i++) { sum += d[i]; if (d[i] > max) max = d[i]; }
-  return { max, avg: +(sum / d.length).toFixed(1) };
-};
-AudioStreamAnalyser.prototype.disconnect = function() {
-  this.sourceNodes.forEach(n => n.disconnect());
-};
-
 SpecialPowers.pushPrefEnv({
   set: [
     ["media.webspeech.recognition.enable", true],
@@ -94,8 +64,7 @@ SpecialPowers.pushPrefEnv({
     ["media.webspeech.recognition.audio_length_ms", 5000],
     ["media.webspeech.recognition.interval_ms", 1000],
     ["media.webspeech.recognition.num_threads", 4],
-    ["media.autoplay.default", 0],
-    ["media.autoplay.blocking_policy", 0],
+    ...SPEECH_TEST_AUTOPLAY_PREFS,
     ["media.webspeech.recognition.model-download.prompt.testing", true],
     ["media.navigator.permission.disabled", true],
   ],
@@ -133,9 +102,7 @@ SpecialPowers.pushPrefEnv({
     }
 
     // 2. AudioContext must actually run. Created suspended; resume explicitly.
-    const ctx = new AudioContext();
-    diag(`AudioContext created: state=${ctx.state} sampleRate=${ctx.sampleRate}`);
-    await ctx.resume();
+    const ctx = await createResumedAudioContext();
     diag(`AudioContext after resume(): state=${ctx.state} baseLatency=${ctx.baseLatency}`);
 
     // Kick the context with a silent looping source.
@@ -159,8 +126,6 @@ SpecialPowers.pushPrefEnv({
     src.connect(dst);
     src.connect(ctx.destination);
 
-    const analyser = new AudioStreamAnalyser(ctx, dst.stream);
-
     await new Promise((resolve, reject) => {
       audio.addEventListener("canplaythrough", resolve, { once: true });
       audio.addEventListener("error", () => reject(new Error("Audio load failed")), { once: true });
@@ -181,17 +146,13 @@ SpecialPowers.pushPrefEnv({
 
     // 3. Verify real audio is flowing into the captured track (the wayland/
     //    headless failure mode is a silent track despite ctx="running").
-    let maxLevel = 0;
-    for (let i = 0; i < 10; i++) {
-      await new Promise(r => setTimeout(r, 200));
-      const lvl = analyser.levels();
-      if (lvl.max > maxLevel) { maxLevel = lvl.max; }
-      diag(`audio flow t=${(i + 1) * 200}ms: ctx=${ctx.state} curTime=${audio.currentTime.toFixed(2)} ` +
-           `paused=${audio.paused} level(max=${lvl.max} avg=${lvl.avg})`);
-    }
-    ok(maxLevel > 0,
-       `audio is flowing into the track (peak FFT level ${maxLevel} > 0 over 2s). ` +
-       `If 0: silent track — no audio device, suspended context, or muted element.`);
+    //    Fails fast instead of hanging on the recognition events below.
+    const maxLevel = await waitForAudioFlowing(ctx, dst.stream);
+    diag(`audio is flowing into the track (peak FFT level ${maxLevel})`);
+    ok(true, "audio is flowing into the track");
+
+    // Kept alive for the periodic heartbeat below.
+    const analyser = new AudioStreamAnalyser(ctx, dst.stream);
 
     const sr = new SpeechRecognition();
     sr.continuous = true;

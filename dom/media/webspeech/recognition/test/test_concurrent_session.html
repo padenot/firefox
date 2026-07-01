@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>SpeechRecognition: no spurious concurrent-session after an aborted start</title>
   <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="head.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
 </head>
 <body>
@@ -31,12 +32,11 @@ SpecialPowers.pushPrefEnv({
   set: [
     ["media.webspeech.recognition.enable", true],
     ["browser.ml.modelHubRootUrl", `http://localhost:${SERVER_PORT}/`],
-    ["media.autoplay.default", 0],
-    ["media.autoplay.blocking_policy", 0],
+    ...SPEECH_TEST_AUTOPLAY_PREFS,
   ],
 }, async () => {
   try {
-    const ctx = new AudioContext();
+    const ctx = await createResumedAudioContext();
 
     // Keep the context running with a silent looping source.
     const kick = ctx.createBufferSource();
@@ -69,6 +69,10 @@ SpecialPowers.pushPrefEnv({
     const track1 = dst1.stream.getAudioTracks()[0];
     const track2 = dst2.stream.getAudioTracks()[0];
     ok(track1 && track2, "Got both audio tracks");
+
+    // Fail fast if audio isn't actually reaching the tracks, instead of
+    // hanging on sr2's onaudiostart below until the harness times out.
+    await waitForAudioFlowing(ctx, dst2.stream);
 
     // First recognition: start, then abort synchronously, i.e. before the
     // asynchronous session init has reached the inference process. Pre-fix this
