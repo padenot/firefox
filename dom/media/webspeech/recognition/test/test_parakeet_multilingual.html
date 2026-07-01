@@ -48,25 +48,6 @@ const T0 = performance.now();
 const ms = () => "+" + Math.round(performance.now() - T0) + "ms";
 function diag(msg) { info("[diag " + ms() + "] " + msg); }
 
-// Minimal FFT level probe to confirm audio is actually flowing on the track.
-function makeAnalyser(ctx, stream) {
-  const analyser = ctx.createAnalyser();
-  analyser.fftSize = 1024;
-  analyser.smoothingTimeConstant = 0.2;
-  const source = ctx.createMediaStreamSource(stream);
-  source.connect(analyser);
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  return {
-    levels() {
-      analyser.getByteFrequencyData(data);
-      let max = 0, sum = 0;
-      for (let i = 0; i < data.length; i++) { sum += data[i]; if (data[i] > max) max = data[i]; }
-      return { max, avg: +(sum / data.length).toFixed(1) };
-    },
-    disconnect() { source.disconnect(); },
-  };
-}
-
 SpecialPowers.pushPrefEnv({
   set: [
     ["media.webspeech.recognition.enable", true],
@@ -123,8 +104,6 @@ SpecialPowers.pushPrefEnv({
     src.connect(dst);
     src.connect(ctx.destination);
 
-    const analyser = makeAnalyser(ctx, dst.stream);
-
     await new Promise((resolve, reject) => {
       audio.addEventListener("canplaythrough", resolve, { once: true });
       audio.addEventListener("error", () => reject(new Error("Audio load failed")), { once: true });
@@ -141,18 +120,14 @@ SpecialPowers.pushPrefEnv({
     await audio.play().then(() => diag("audio.play() resolved"),
                             e => diag("audio.play() rejected: " + e));
 
-    // Verify real audio is flowing into the captured track.
-    let maxLevel = 0;
-    for (let i = 0; i < 10; i++) {
-      await new Promise(r => setTimeout(r, 200));
-      const lvl = analyser.levels();
-      if (lvl.max > maxLevel) { maxLevel = lvl.max; }
-      diag(`audio flow t=${(i + 1) * 200}ms: ctx=${ctx.state} curTime=${audio.currentTime.toFixed(2)} ` +
-           `paused=${audio.paused} level(max=${lvl.max} avg=${lvl.avg})`);
-    }
-    ok(maxLevel > 0,
-       `audio is flowing into the track (peak FFT level ${maxLevel} > 0 over 2s). ` +
-       `If 0: silent track — no audio device, suspended context, or muted element.`);
+    // Verify real audio is flowing into the captured track. Fails fast
+    // instead of hanging on the recognition events below.
+    const maxLevel = await waitForAudioFlowing(ctx, dst.stream);
+    diag(`audio is flowing into the track (peak FFT level ${maxLevel})`);
+    ok(true, "audio is flowing into the track");
+
+    // Kept alive for the periodic heartbeat below.
+    const analyser = new AudioStreamAnalyser(ctx, dst.stream);
 
     const sr = new SpeechRecognition();
     sr.continuous = true;
