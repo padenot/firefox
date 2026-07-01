@@ -15,6 +15,7 @@
 #include "AudioConfig.h"
 #include "AudioConverter.h"
 #include "MainThreadUtils.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "SpeechRecognition.h"
 #include "SpeechTrackListener.h"
 #include "mozilla/AbstractThread.h"
@@ -533,6 +534,30 @@ nsCOMPtr<nsIThread> SpeechRecognitionBackend::GetOrCreateIPCThread() {
       sIPCThread = thread;
       sIPCCapability = new EventTargetCapability<nsIThread>(sIPCThread);
       LOG("Created shared IPC thread for speech recognition");
+      // The thread and the HWInference connection it carries are kept alive
+      // for the lifetime of the content process (see StopIPCThreadIfPossible)
+      // rather than being torn down and recreated opportunistically. Actors
+      // are bound to the specific nsIThread instance they were opened on;
+      // tearing down and recreating this thread while an actor referencing
+      // the old instance could still be in use (e.g. a concurrent EnsureIPC()
+      // caller) led to actors being used from the wrong thread and crashing.
+      RunOnShutdown([] {
+        AssertIsOnMainThread();
+        if (sIPCThread) {
+          nsCOMPtr<nsIThread> thread = sIPCThread.forget();
+          delete sIPCCapability;
+          sIPCCapability = nullptr;
+          thread->Dispatch(NS_NewRunnableFunction(
+              "SpeechRecognitionBackend::CloseHWInferenceChildOnShutdown", [] {
+                AssertOnIPCThread();
+                if (sHWInferenceChild) {
+                  sHWInferenceChild->Close();
+                  sHWInferenceChild = nullptr;
+                }
+              }));
+          thread->Shutdown();
+        }
+      });
     } else {
       LOG("Failed to create shared IPC thread");
       return nullptr;
@@ -544,12 +569,21 @@ nsCOMPtr<nsIThread> SpeechRecognitionBackend::GetOrCreateIPCThread() {
 
 void SpeechRecognitionBackend::StopIPCThreadIfPossible() {
   AssertIsOnMainThread();
-  if (sIPCThreadUsers.IsZero()) {
-    nsCOMPtr<nsIThread> ipcThread = sIPCThread.forget();
-    delete sIPCCapability;
-    sIPCCapability = nullptr;
-    ipcThread->Shutdown();
-    LOG("Stopped shared IPC thread");
+  // The shared IPC thread and its HWInference connection are kept alive for
+  // the process lifetime (see GetOrCreateIPCThread); nothing to do here once
+  // there are no more users. Close the actor when idle so the parent-side
+  // connection doesn't linger, but keep the same thread instance around so a
+  // later EnsureIPC() call never has to reason about a stale actor bound to a
+  // different, dead thread.
+  if (sIPCThreadUsers.IsZero() && sIPCThread) {
+    sIPCThread->Dispatch(NS_NewRunnableFunction(
+        "SpeechRecognitionBackend::CloseHWInferenceChildWhenIdle", [] {
+          AssertOnIPCThread();
+          if (sHWInferenceChild) {
+            sHWInferenceChild->Close();
+            sHWInferenceChild = nullptr;
+          }
+        }));
   }
 }
 

@@ -202,6 +202,15 @@ void SpeechRecognition::Reset() {
   mStarted = false;
   mTrack = nullptr;
   mStopRecordingPromise = nullptr;
+  // The microphone path (Start() with no explicit track) registers mListener
+  // on mStream; it must be unregistered before being cleared (see
+  // DOMMediaStream::TrackListener). Without this, mListener/mStream survive a
+  // stop()/abort() and a later Start() hits MOZ_ASSERT(!mListener).
+  if (mStream && mListener) {
+    mStream->UnregisterTrackListener(mListener);
+  }
+  mListener = nullptr;
+  mStream = nullptr;
 }
 
 void SpeechRecognition::ResetAndEnd() {
