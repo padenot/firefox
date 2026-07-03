@@ -17,6 +17,7 @@ EXPORTS.mozilla.dom += [
 ]
 
 EXPORTS.mozilla += [
+    "AudioCaptureTiming.h",
     "SpeechRecognitionChild.h",
     "SpeechRecognitionParent.h",
 ]

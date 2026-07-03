@@ -9,6 +9,7 @@
 
 #include <atomic>
 
+#include "AudioCaptureTiming.h"
 #include "AudioConverter.h"
 #include "AudioSegment.h"
 #include "MainThreadUtils.h"
@@ -121,15 +122,19 @@ class SpeechRecognitionBackend
   void StartProcessingAudioOnBackgroundThread()
       MOZ_REQUIRES(mResamplingCapability);
   void ProcessAudioChunk() MOZ_REQUIRES(mResamplingCapability);
-  void SendAudioDataViaIPC(nsTArray<float>&& aAudioData)
+  void SendAudioDataViaIPC(nsTArray<float>&& aAudioData,
+                           TimeStamp aCaptureEndTime)
       MOZ_REQUIRES(mResamplingCapability);
+  // Wall-clock estimate for a position in the track's raw sample timeline.
+  TimeStamp CaptureTimeForTrackPosition(TrackTime aPosition);
 
   // == IPC thread
   void StartSpeechRecognitionSession(const nsCString& aLanguage)
       MOZ_REQUIRES(sIPCCapability);
   void StopSpeechRecognitionSession() MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionResult(const nsCString& aTranscript, bool aIsFinal,
-                               float aConfidence) MOZ_REQUIRES(sIPCCapability);
+                               float aConfidence, TimeStamp aEventTime)
+      MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsCString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
@@ -237,6 +242,13 @@ class SpeechRecognitionBackend
   nsTArray<AudioDataValue> mMonoBuffer;
   std::atomic<bool> mResamplingThreadRunning{false};
   uint32_t mGraphRate = 0;
+
+  // Most recent (track-time position, wall-clock time) reference, published
+  // by DataCallback() on the graph thread and consumed on the resampling
+  // thread.
+  TripleBuffer<SampleTimeReference> mLastTrackPositionRef;
+  // Resampling thread only: cumulative raw frames dequeued from mRingBuffer.
+  TrackTime mFramesDequeuedTotal = 0;
   // Main-thread only. Stop()/Abort() run at most one teardown; the destructor
   // also calls Abort()->Stop(), where re-running it would resurrect an object
   // already at refcount zero.

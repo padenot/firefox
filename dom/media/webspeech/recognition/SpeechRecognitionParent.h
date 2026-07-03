@@ -8,14 +8,17 @@
 #define DOM_MEDIA_WEBSPEECH_RECOGNITION_SPEECHRECOGNITIONPARENT_H_
 
 #include <atomic>
+#include <deque>
 #include <functional>
 
+#include "AudioCaptureTiming.h"
 #include "WavDumper.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/PSpeechRecognitionParent.h"
 #include "mozilla/SPSCQueue.h"
 #include "mozilla/ThreadSafety.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/hwinference/PHWInferenceChild.h"
@@ -52,7 +55,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
                                    const nsCString& aLanguage,
                                    const nsTArray<nsString>& aPhrases,
                                    InitResolver&& aResolver);
-  mozilla::ipc::IPCResult RecvProcessAudioData(nsTArray<float>&& aAudioData);
+  mozilla::ipc::IPCResult RecvProcessAudioData(
+      nsTArray<float>&& aAudioData, const TimeStamp& aCaptureEndTime);
   mozilla::ipc::IPCResult RecvStop();
 
   void ActorDestroy(ActorDestroyReason aReason) override;
@@ -93,6 +97,11 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // Cache-aware streaming path (mudler/parakeet.cpp streaming C-API).
   void ProcessAudioStreaming();
   void SignalError(const nsCString& aErrorMessage);
+
+  // Wall-clock estimate for a position in the fed-audio timeline
+  // (mProcessedAudioPos's units), from capture timestamps received in
+  // RecvProcessAudioData.
+  TimeStamp CaptureTimeForPosition(size_t aPosition) MOZ_EXCLUDES(mTimingLock);
 
   // Static tracking of the single active recognition session
   static StaticMutex sSessionMutex;
@@ -160,9 +169,19 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // nobody will ever stop.
   std::atomic<bool> mActorDestroyed{false};
 
-  // Position in the audio stream that has been processed in samples
-  // This provides a rather crude timing estimate, but will be improved.
+  // Position in the audio stream that has been processed, in samples.
   size_t mProcessedAudioPos;
+
+  // Capture-time samples reported alongside audio in RecvProcessAudioData
+  // (IPC thread), consumed by CaptureTimeForPosition() on mRecognitionThread.
+  // Neither is real-time-audio-constrained, so a mutex is fine here.
+  struct CaptureTimeSample {
+    size_t mPosition = 0;
+    TimeStamp mTimeStamp;
+  };
+  Mutex mTimingLock;
+  size_t mEnqueuedAudioPos MOZ_GUARDED_BY(mTimingLock) = 0;
+  std::deque<CaptureTimeSample> mCaptureTimeSamples MOZ_GUARDED_BY(mTimingLock);
 
   // Outstanding requests to the utility process, disconnected in
   // ActorDestroy() so their callbacks never run (and resolve a dead IPDL

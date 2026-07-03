@@ -20,8 +20,8 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
+#include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessChild.h"
 #include "mozilla/llama/LlamaRuntimeLinker.h"
@@ -200,7 +200,8 @@ SpeechRecognitionParent::SpeechRecognitionParent()
       mAudioQueue(PARAKEET_SAMPLE_RATE * 30),
       mParams(),
       mShouldContinueProcessing(false),
-      mProcessedAudioPos(0) {
+      mProcessedAudioPos(0),
+      mTimingLock("SpeechRecognitionParent::mTimingLock") {
   // MOZ_DUMP_AUDIO=1 MOZ_DISABLE_UTILITY_SANDBOX=1 to activate this
   // It will contain the (repeating segments of audio), precisely that has been
   // sent to the recognizer.
@@ -251,8 +252,7 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
   ModelIdentifier modelIdentifier;
   {
     MutexAutoLock lock(mLock);
-    modelIdentifier =
-        LanguagesToModelIdentifier(nsTArray{mLanguage});
+    modelIdentifier = LanguagesToModelIdentifier(nsTArray{mLanguage});
   }
 
   LOGD("{} Requesting model: model={}", __func__,
@@ -265,11 +265,9 @@ void SpeechRecognitionParent::RetrieveModel(InitResolver&& aResolver) {
   *resolver = std::move(aResolver);
 
   hwInferenceChild
-      ->SendGetModelFile(
-        "parakeet-gguf"_ns,
-        "speech-recognition"_ns,
-        modelIdentifier.mModelName, modelIdentifier.mRevision,
-        modelIdentifier.mFileName)
+      ->SendGetModelFile("parakeet-gguf"_ns, "speech-recognition"_ns,
+                         modelIdentifier.mModelName, modelIdentifier.mRevision,
+                         modelIdentifier.mFileName)
       ->Then(
           GetCurrentSerialEventTarget(), __func__,
           [self = RefPtr{this}, resolver](
@@ -329,7 +327,8 @@ void SpeechRecognitionParent::InitializeParakeetContext(
   // This runs on the recognition thread
   MOZ_ASSERT(!NS_IsMainThread());
 
-  mozilla::llama::LlamaLibWrapper* lib = mozilla::llama::LlamaRuntimeLinker::Get();
+  mozilla::llama::LlamaLibWrapper* lib =
+      mozilla::llama::LlamaRuntimeLinker::Get();
   if (!lib) {
     LOGE("{} Failed to get runtime linker", __func__);
     ResolveOrRejectInitOnIPCThread(std::move(aResolver), false);
@@ -515,15 +514,37 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInit(
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvProcessAudioData(
-    nsTArray<float>&& aAudioData) {
+    nsTArray<float>&& aAudioData, const TimeStamp& aCaptureEndTime) {
   LOGV("{} {} samples", __func__, aAudioData.Length());
 
-  if (!mAudioQueue.Enqueue(aAudioData.Elements(),
-                          static_cast<int>(aAudioData.Length()))) {
+  size_t length = aAudioData.Length();
+  if (!mAudioQueue.Enqueue(aAudioData.Elements(), static_cast<int>(length))) {
     LOGD("Audio queue full, dropping sample");
   }
 
+  {
+    MutexAutoLock lock(mTimingLock);
+    mEnqueuedAudioPos += length;
+    mCaptureTimeSamples.push_back({mEnqueuedAudioPos, aCaptureEndTime});
+  }
+
   return IPC_OK();
+}
+
+TimeStamp SpeechRecognitionParent::CaptureTimeForPosition(size_t aPosition) {
+  MutexAutoLock lock(mTimingLock);
+  // Drop samples that are behind aPosition, but always keep at least one to
+  // extrapolate from.
+  while (mCaptureTimeSamples.size() > 1 &&
+         mCaptureTimeSamples.front().mPosition < aPosition) {
+    mCaptureTimeSamples.pop_front();
+  }
+  if (mCaptureTimeSamples.empty()) {
+    return TimeStamp::Now();
+  }
+  const CaptureTimeSample& sample = mCaptureTimeSamples.front();
+  return EstimateSampleTimeStamp(int64_t(sample.mPosition), sample.mTimeStamp,
+                                 int64_t(aPosition), PARAKEET_SAMPLE_RATE);
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvStop() {
@@ -583,17 +604,18 @@ void SpeechRecognitionParent::ProcessAudioStreaming() {
   };
 
   auto emit = [self = RefPtr{this}](const nsCString& aText, bool aFinal,
-                                    float aConfidence) {
+                                    float aConfidence, TimeStamp aEventTime) {
     if (aText.IsEmpty()) {
       return;
     }
     NS_DispatchToMainThread(NS_NewRunnableFunction(
         "SpeechRecognitionParent::StreamResult",
-        [self, payload = nsCString(aText), aFinal, aConfidence]() {
+        [self, payload = nsCString(aText), aFinal, aConfidence, aEventTime]() {
           LOGV("Sending streaming result: '{}' (final={}, conf={})",
                payload.get(), aFinal, aConfidence);
           if (self->CanSend()) {
-            (void)self->SendOnRecognitionResult(payload, aFinal, aConfidence);
+            (void)self->SendOnRecognitionResult(payload, aFinal, aConfidence,
+                                                aEventTime);
           }
         }));
   };
@@ -626,7 +648,8 @@ void SpeechRecognitionParent::ProcessAudioStreaming() {
         LOGV("  word '{}' [{:.2f}-{:.2f}] conf={:.2f}", w.get(), words[i].start,
              words[i].end, words[i].conf);
       }
-      emit(text, /* isFinal */ true, counted ? confSum / counted : 1.0f);
+      emit(text, /* isFinal */ true, counted ? confSum / counted : 1.0f,
+           CaptureTimeForPosition(mProcessedAudioPos));
     }
     lib->parakeet_capi_free_words(words, n > 0 ? n : 0);
   };
