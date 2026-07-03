@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SpeechRecognitionChild.h"
+
+#include "SpeechRecognitionBackend.h"
 #include "mozilla/Logging.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/hwinference/HWInferenceManagerChild.h"
@@ -71,15 +73,20 @@ void SpeechRecognitionChild::SetDestroyedCallback(
   mDestroyedCallback = std::move(aCallback);
 }
 
+void SpeechRecognitionChild::SetIPCActorUserGuard(
+    RefPtr<dom::IPCActorUserGuard>&& aGuard) {
+  mIPCActorUserGuard = std::move(aGuard);
+}
+
 mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionResult(
     const nsCString& aTranscript, const bool& aIsFinal,
-    const float& aConfidence) {
+    const float& aConfidence, const TimeStamp& aEventTime) {
   LOG(LogLevel::Info, "RecvOnRecognitionResult: '{}' (final={}, conf={})",
       aTranscript.get(), aIsFinal ? "true" : "false", aConfidence);
 
   if (mResultCallback) {
     LOG(LogLevel::Debug, "Invoking result callback");
-    mResultCallback(aTranscript, aIsFinal, aConfidence);
+    mResultCallback(aTranscript, aIsFinal, aConfidence, aEventTime);
   } else {
     LOG(LogLevel::Warning, "Received result but no callback set");
   }
@@ -100,13 +107,13 @@ mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnRecognitionError(
 }
 
 mozilla::ipc::IPCResult SpeechRecognitionChild::RecvOnSpeechChange(
-    const bool& aSpeechDetected) {
+    const bool& aSpeechDetected, const TimeStamp& aEventTime) {
   LOG(LogLevel::Info, "RecvOnSpeechChange: speechDetected={}",
       aSpeechDetected ? "true" : "false");
 
   if (mSpeechChangeCallback) {
     LOG(LogLevel::Debug, "Invoking speech change callback");
-    mSpeechChangeCallback(aSpeechDetected);
+    mSpeechChangeCallback(aSpeechDetected, aEventTime);
   } else {
     LOG(LogLevel::Warning, "Received speech change but no callback set");
   }

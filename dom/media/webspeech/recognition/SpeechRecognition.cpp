@@ -23,6 +23,7 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/Event.h"
 #include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/MediaStreamError.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
@@ -847,6 +848,7 @@ void SpeechRecognition::DispatchErrorAndEnd(
 
 void SpeechRecognition::DispatchTrustedEventWithTimestamp(
     const nsAString& aEventName, TimeStamp aTimeStamp) {
+  LOG("Dispatching trusted event: {}", NS_ConvertUTF16toUTF8(aEventName).get());
   RefPtr<Event> event = NS_NewDOMEvent(this, nullptr, nullptr);
   event->InitEvent(aEventName, false, false);
   if (!aTimeStamp.IsNull()) {
@@ -858,7 +860,8 @@ void SpeechRecognition::DispatchTrustedEventWithTimestamp(
 }
 
 void SpeechRecognition::HandleRecognitionResultFromBackend(
-    const nsCString& aTranscript, bool aIsFinal, float aConfidence) {
+    const nsCString& aTranscript, bool aIsFinal, float aConfidence,
+    TimeStamp aEventTime) {
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on main thread");
   LOG("HandleRecognitionResultFromBackend: {} (final={}, conf={})",
       aTranscript.get(), aIsFinal, aConfidence);
@@ -915,6 +918,9 @@ void SpeechRecognition::HandleRecognitionResultFromBackend(
   RefPtr<SpeechRecognitionEvent> domEvent =
       SpeechRecognitionEvent::Constructor(this, u"result"_ns, init);
   domEvent->SetTrusted(true);
+  if (!aEventTime.IsNull()) {
+    domEvent->WidgetEventPtr()->mTimeStamp = aEventTime;
+  }
   DispatchEvent(*domEvent);
 }
 

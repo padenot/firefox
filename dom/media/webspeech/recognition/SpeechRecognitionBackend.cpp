@@ -22,6 +22,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
@@ -411,6 +412,11 @@ void SpeechRecognitionBackend::DataCallback(MediaTrackGraph* aGraph,
     return;
   }
 
+  // Real-time thread: lock- and allocation-free.
+  double nowUs =
+      (TimeStamp::Now() - TimeStamp::ProcessCreation()).ToMicroseconds();
+  mLastTrackPositionRef.Write({aTime, int64_t(nowUs)});
+
   const size_t frameCount = static_cast<size_t>(aChunk.mDuration);
   // A null chunk is silence the graph did not bother to materialize, not an
   // absence of audio, so it is fed as zeros rather than dropped. Dropping it
@@ -445,6 +451,19 @@ void SpeechRecognitionBackend::DataCallback(MediaTrackGraph* aGraph,
   }
 }
 
+TimeStamp SpeechRecognitionBackend::CaptureTimeForTrackPosition(
+    TrackTime aPosition) {
+  SampleTimeReference ref = mLastTrackPositionRef.Read();
+  if (ref.mTimeUs == 0) {
+    return TimeStamp();
+  }
+  TimeStamp refTimeStamp = TimeStamp::ProcessCreation() +
+                           TimeDuration::FromMicroseconds(double(ref.mTimeUs));
+  return EstimateSampleTimeStamp(ref.mPosition, refTimeStamp, aPosition,
+                                 mGraphRate);
+}
+
+
 void SpeechRecognitionBackend::ProcessAudioChunk() {
   mResamplingCapability.AssertOnCurrentThread();
   // Both "teardown happened while the session was being initialized" and
@@ -472,12 +491,19 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     nsTArray<float> audioBuffer;
     audioBuffer.SetLength(available);
     int read = mRingBuffer->Dequeue(audioBuffer.Elements(), available);
+    mFramesDequeuedTotal += read;
+    TimeStamp captureEndTime =
+        CaptureTimeForTrackPosition(mFramesDequeuedTotal);
 
     if (!mAudioStartDispatched) {
       mAudioStartDispatched = true;
+      // Position 0 = capture start, not "now" (which would lag by the ring
+      // buffer/IPC block delay).
+      TimeStamp audioStartTs = CaptureTimeForTrackPosition(0);
       DispatchToParentIfAlive("SpeechRecognitionBackend::DispatchAudioStart",
-                              [](SpeechRecognition* aParent) {
-                                aParent->DispatchTrustedEvent(u"audiostart"_ns);
+                              [audioStartTs](SpeechRecognition* aParent) {
+                                aParent->DispatchTrustedEventWithTimestamp(
+                                    u"audiostart"_ns, audioStartTs);
                               });
     }
 
@@ -517,7 +543,7 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
     } else {
       LOGV("Sending {}s of audio via IPC",
            static_cast<float>(frames) / SPEECH_RECOGNITION_TARGET_RATE);
-      SendAudioDataViaIPC(std::move(resampledBuffer));
+      SendAudioDataViaIPC(std::move(resampledBuffer), captureEndTime);
     }
   } else {
     LOGV("Not enough data in ringbuffer ({}s), retrying in a bit",
@@ -540,13 +566,14 @@ void SpeechRecognitionBackend::ProcessAudioChunk() {
                                                           STREAMING_POLL_MS);
 }
 
-void SpeechRecognitionBackend::SendAudioDataViaIPC(
-    nsTArray<float>&& aAudioData) {
+void SpeechRecognitionBackend::SendAudioDataViaIPC(nsTArray<float>&& aAudioData,
+                                                   TimeStamp aCaptureEndTime) {
   mResamplingCapability.AssertOnCurrentThread();
 
   nsCOMPtr<nsIRunnable> sendAudio = NS_NewRunnableFunction(
       "SpeechRecognitionBackend::SendAudioData",
-      [self = RefPtr{this}, audioData = std::move(aAudioData)]() mutable {
+      [self = RefPtr{this}, audioData = std::move(aAudioData),
+       aCaptureEndTime]() mutable {
         RefPtr<hwinference::SpeechRecognitionChild> child;
         {
           auto session = self->mSession.Lock();
@@ -554,7 +581,7 @@ void SpeechRecognitionBackend::SendAudioDataViaIPC(
         }
         if (child && child->CanSend()) {
           size_t sampleCount = audioData.Length();
-          child->SendProcessAudioData(std::move(audioData));
+          child->SendProcessAudioData(std::move(audioData), aCaptureEndTime);
           LOGV("Sent {} samples to HWInference", sampleCount);
         } else {
           LOGE("SpeechRecognitionChild not available, dropping {} samples",
@@ -597,12 +624,13 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
   // - from the main thread here in ::Shutdown()
   child->SetResultCallback(
       [self = RefPtr{this}](const nsCString& aTranscript, bool aIsFinal,
-                            float aConfidence) {
+                            float aConfidence, TimeStamp aEventTime) {
         AssertOnIPCThread();
         LOG("Received recognition result: {} (final={})", aTranscript.get(),
             aIsFinal);
 
-        self->HandleRecognitionResult(aTranscript, aIsFinal, aConfidence);
+        self->HandleRecognitionResult(aTranscript, aIsFinal, aConfidence,
+                                      aEventTime);
       });
 
   child->SetErrorCallback([self = RefPtr{this}](const nsCString& aError) {
@@ -612,17 +640,19 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
     self->HandleRecognitionError(aError);
   });
 
-  child->SetSpeechChangeCallback([self = RefPtr{this}](bool aSpeechDetected) {
-    AssertOnIPCThread();
-    LOG("Speech change: {}", aSpeechDetected ? "started" : "ended");
+  child->SetSpeechChangeCallback(
+      [self = RefPtr{this}](bool aSpeechDetected, TimeStamp aEventTime) {
+        AssertOnIPCThread();
+        LOG("Speech change: {}", aSpeechDetected ? "started" : "ended");
 
-    self->DispatchToParentIfAlive(
-        "SpeechRecognitionBackend::HandleSpeechChange",
-        [speechDetected = aSpeechDetected](SpeechRecognition* aParent) {
-          aParent->DispatchTrustedEvent(speechDetected ? u"speechstart"_ns
-                                                       : u"speechend"_ns);
-        });
-  });
+        self->DispatchToParentIfAlive(
+            "SpeechRecognitionBackend::HandleSpeechChange",
+            [aSpeechDetected, aEventTime](SpeechRecognition* aParent) {
+              aParent->DispatchTrustedEventWithTimestamp(
+                  aSpeechDetected ? u"speechstart"_ns : u"speechend"_ns,
+                  aEventTime);
+            });
+      });
 
   child->SetDestroyedCallback(
       [self = RefPtr{this}](hwinference::SpeechRecognitionChild* aDestroyed) {
@@ -670,17 +700,19 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
 }
 
 void SpeechRecognitionBackend::HandleRecognitionResult(
-    const nsACString& aTranscript, bool aIsFinal, float aConfidence) {
+    const nsACString& aTranscript, bool aIsFinal, float aConfidence,
+    TimeStamp aEventTime) {
   AssertOnIPCThread();
   LOG("HandleRecognitionResult: {} (final={}, conf={})",
       nsCString(aTranscript).get(), aIsFinal, aConfidence);
 
-  DispatchToParentIfAlive("SpeechRecognitionBackend::HandleRecognitionResult",
-                          [transcript = nsCString(aTranscript), aIsFinal,
-                           aConfidence](SpeechRecognition* aParent) {
-                            aParent->HandleRecognitionResultFromBackend(
-                                transcript, aIsFinal, aConfidence);
-                          });
+  DispatchToParentIfAlive(
+      "SpeechRecognitionBackend::HandleRecognitionResult",
+      [transcript = nsCString(aTranscript), aIsFinal, aConfidence,
+       aEventTime](SpeechRecognition* aParent) {
+        aParent->HandleRecognitionResultFromBackend(transcript, aIsFinal,
+                                                    aConfidence, aEventTime);
+      });
 }
 
 void SpeechRecognitionBackend::HandleRecognitionError(

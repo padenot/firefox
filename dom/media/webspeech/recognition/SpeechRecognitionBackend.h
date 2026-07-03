@@ -9,6 +9,7 @@
 
 #include "AudioSegment.h"
 #include "MainThreadUtils.h"
+#include "mozilla/AudioCaptureTiming.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/EventTargetCapability.h"
 #include "mozilla/LazyIdleThread.h"
@@ -145,14 +146,18 @@ class SpeechRecognitionBackend {
 
   // == Resampling thread
   void ProcessAudioChunk() MOZ_REQUIRES(mResamplingCapability);
-  void SendAudioDataViaIPC(nsTArray<float>&& aAudioData)
+  void SendAudioDataViaIPC(nsTArray<float>&& aAudioData,
+                           TimeStamp aCaptureEndTime)
       MOZ_REQUIRES(mResamplingCapability);
+  // Wall-clock estimate for a position in the track's raw sample timeline.
+  TimeStamp CaptureTimeForTrackPosition(TrackTime aPosition);
 
   // == IPC thread
   void StartSpeechRecognitionSession(const nsACString& aLanguage)
       MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionResult(const nsACString& aTranscript, bool aIsFinal,
-                               float aConfidence) MOZ_REQUIRES(sIPCCapability);
+                               float aConfidence, TimeStamp aEventTime)
+      MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsACString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
@@ -239,6 +244,13 @@ class SpeechRecognitionBackend {
   // DetachFromTrack() has stopped the callbacks.
   nsTArray<AudioDataValue> mMonoBuffer;
   const uint32_t mGraphRate;
+
+  // Most recent (track-time position, wall-clock time) reference, published
+  // by DataCallback() on the graph thread and consumed on the resampling
+  // thread.
+  TripleBuffer<SampleTimeReference> mLastTrackPositionRef;
+  // Resampling thread only: cumulative raw frames dequeued from mRingBuffer.
+  TrackTime mFramesDequeuedTotal MOZ_GUARDED_BY(mResamplingCapability) = 0;
   // Whether Shutdown() has already run, so it runs exactly once.
   bool mStopped MOZ_GUARDED_BY(sMainThreadCapability) = false;
   // Whether a soundstart was fired without its soundend. The main thread owns
