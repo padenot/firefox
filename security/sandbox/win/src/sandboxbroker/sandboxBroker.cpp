@@ -1603,6 +1603,25 @@ struct UtilitySandboxProps {
 
 struct GenericUtilitySandboxProps : public UtilitySandboxProps {};
 
+// HWInference loads a vendored inference engine (mozinference.dll) at
+// runtime, which is not Microsoft-signed. The default Code Integrity Guard
+// would block that LoadLibrary call via MITIGATION_FORCE_MS_SIGNED_BINS, so
+// disable it here, same as content processes (which never enable CIG at
+// all). MITIGATION_DYNAMIC_CODE_DISABLE is also dropped from the delayed
+// mitigations to match content (SetSecurityLevelForContentProcess never
+// sets it either). The job/token/integrity levels are left at the strict
+// UtilitySandboxProps defaults: the Windows content process sandbox (see
+// SetSecurityLevelForContentProcess, default level 9) runs under equally
+// strict kLockdown/near-USER_LOCKDOWN/LOW-UNTRUSTED settings and still
+// loads this same library successfully, so those levels aren't the issue.
+struct HWInferenceSandboxProps : public UtilitySandboxProps {
+  HWInferenceSandboxProps() {
+    mUseCig = false;
+    mDelayedMitigations = sandbox::MITIGATION_STRICT_HANDLE_CHECKS |
+                          sandbox::MITIGATION_DLL_SEARCH_ORDER;
+  }
+};
+
 struct UtilityAudioDecodingWmfSandboxProps : public UtilitySandboxProps {
   UtilityAudioDecodingWmfSandboxProps() {
     mDelayedTokenLevel = sandbox::USER_LIMITED;
@@ -1867,6 +1886,17 @@ bool SandboxBroker::SetSecurityLevelForUtilityProcess(
 #endif
     case mozilla::ipc::SandboxingKind::WINDOWS_UTILS:
       return BuildUtilitySandbox(config, WindowsUtilitySandboxProps());
+    case mozilla::ipc::SandboxingKind::HW_INFERENCE: {
+      if (!BuildUtilitySandbox(config, HWInferenceSandboxProps())) {
+        return false;
+      }
+      // Allow reading mozinference.dll (and other bin-dir libraries) from
+      // the installation directory, same rule as content processes use
+      // (see SetSecurityLevelForContentProcess).
+      AddCachedDirRule(config, sandbox::FileSemantics::kAllowReadonly, sBinDir,
+                       u"\\*"_ns);
+      return true;
+    }
     default:
       MOZ_ASSERT_UNREACHABLE("Unknown sandboxing value");
       return false;
