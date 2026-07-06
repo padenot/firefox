@@ -29,10 +29,16 @@ tags = "mtg parakeet-asr"
 ["test_parakeet_e2e.html"]
 subsuite = "speech-recognition"
 tags = "mtg parakeet-asr"
+# Audio capture doesn't produce real signal under Wayland in CI, so
+# recognition always returns an empty transcript there.
+skip-if = ["os == 'linux' && os_version == '22.04' && display == 'wayland' && automation"] # Bug 2053116
 
 ["test_parakeet_multilingual.html"]
 subsuite = "speech-recognition"
 tags = "mtg parakeet-asr"
+# Audio capture doesn't produce real signal under Wayland in CI, so
+# recognition always returns an empty transcript there.
+skip-if = ["os == 'linux' && os_version == '22.04' && display == 'wayland' && automation"] # Bug 2053116
 
 # Fuzz-style stress tests that interleave Web Speech API calls in randomized
 # order, using the in-process mock backend (no real model hub/microphone
