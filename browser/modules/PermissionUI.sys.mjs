@@ -2225,14 +2225,16 @@ class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptFor
   }
 
   get message() {
+    let host = this.getPrincipalName();
     if (this.#sizeMB) {
       return lazy.gBrowserBundle.formatStringFromName(
         "speechRecognitionModelDownload.message",
-        [this.#sizeMB]
+        [host, this.#sizeMB]
       );
     }
-    return lazy.gBrowserBundle.GetStringFromName(
-      "speechRecognitionModelDownload.messageFallback"
+    return lazy.gBrowserBundle.formatStringFromName(
+      "speechRecognitionModelDownload.messageFallback",
+      [host]
     );
   }
 
