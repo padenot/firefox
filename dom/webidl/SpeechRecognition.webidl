@@ -9,9 +9,17 @@
  * liability, trademark and document use rules apply.
  */
 
+enum SpeechRecognitionQuality {
+  "command",
+  "dictation",
+  "conversation"
+};
+
 dictionary SpeechRecognitionOptions {
   required sequence<DOMString> langs;
   boolean processLocally = false;
+  // Not yet plumbed to the backend; accepted for spec conformance.
+  SpeechRecognitionQuality quality = "command";
 };
 
 enum AvailabilityStatus {
