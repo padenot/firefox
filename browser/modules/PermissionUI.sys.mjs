@@ -589,6 +589,9 @@ class PermissionPrompt {
       if (promptAction.dismiss) {
         action.dismiss = promptAction.dismiss;
       }
+      if (promptAction.keepOpen) {
+        action.keepOpen = promptAction.keepOpen;
+      }
 
       // Deny actions are not a clickjacking target (an attacker has nothing
       // to gain by tricking a user into denying a permission), so they fire

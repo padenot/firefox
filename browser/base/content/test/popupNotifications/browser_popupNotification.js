@@ -75,6 +75,41 @@ var tests = [
     },
   },
   {
+    id: "Test#2-keepOpen",
+    run() {
+      this.notifyObj = new BasicNotification(this.id);
+      this.notifyObj.mainAction.keepOpen = true;
+      this.notifyObj.mainAction.disableSecurityDelay = true;
+      showNotification(this.notifyObj);
+    },
+    async onShown(popup) {
+      checkPopup(popup, this.notifyObj);
+      triggerMainCommand(popup);
+      await TestUtils.waitForCondition(
+        () => this.notifyObj.mainActionClicked,
+        "Waiting for main action callback"
+      );
+      ok(PopupNotifications.isPanelOpen, "notification stayed open");
+      ok(
+        PopupNotifications.getNotification(
+          this.notifyObj.id,
+          gBrowser.selectedBrowser
+        ),
+        "notification was not removed"
+      );
+      PopupNotifications.remove(
+        PopupNotifications.getNotification(
+          this.notifyObj.id,
+          gBrowser.selectedBrowser
+        )
+      );
+    },
+    onHidden() {
+      ok(this.notifyObj.mainActionClicked, "mainAction was clicked");
+      ok(this.notifyObj.removedCallbackTriggered, "removed callback triggered");
+    },
+  },
+  {
     id: "Test#2b",
     run() {
       this.notifyObj = new BasicNotification(this.id);

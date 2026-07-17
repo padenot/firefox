@@ -62,6 +62,8 @@ function getAnchorFromBrowser(aBrowser, aAnchorID) {
 
 /**
  * Given a DOM node inside a <popupnotification>, return the parent <popupnotification>.
+ *
+ * @param aElement
  */
 function getNotificationFromElement(aElement) {
   return aElement.closest("popupnotification");
@@ -69,6 +71,8 @@ function getNotificationFromElement(aElement) {
 
 /**
  * Returns true if the given browser element belongs to a sidebar.
+ *
+ * @param aBrowser
  */
 function isSidebarBrowser(aBrowser) {
   let sidebarBrowser =
@@ -86,6 +90,14 @@ function isSidebarBrowser(aBrowser) {
 /**
  * Notification object describes a single popup notification.
  *
+ * @param id
+ * @param message
+ * @param anchorID
+ * @param mainAction
+ * @param secondaryActions
+ * @param browser
+ * @param owner
+ * @param options
  * @see PopupNotifications.show()
  */
 function Notification(
@@ -196,6 +208,9 @@ Notification.prototype = {
 
   /**
    * Adds a value to the specified metric, that must be labeled by ID.
+   *
+   * @param metricName
+   * @param value
    */
   _recordTelemetry(metricName, value) {
     if (this.isPrivate && !this.options.recordTelemetryInPrivateBrowsing) {
@@ -490,6 +505,8 @@ PopupNotifications.prototype = {
    *                - "menucommand" if a menu was activated.
    *          - [optional] dismiss (boolean): If this is true, the notification
    *            will be dismissed instead of removed after running the callback.
+   *          - [optional] keepOpen (boolean): If this is true, the notification
+   *            will stay open after running the callback.
    *          - [optional] disabled (boolean): If this is true, the button
    *            will be disabled.
    *          - [optional] disableSecurityDelay (boolean): If this is true,
@@ -743,6 +760,8 @@ PopupNotifications.prototype = {
   /**
    * Called by the consumer to indicate that the open panel should
    * temporarily be hidden while the given panel is showing.
+   *
+   * @param panel
    */
   suppressWhileOpen(panel) {
     this._hidePanel().catch(console.error);
@@ -754,6 +773,8 @@ PopupNotifications.prototype = {
   /**
    * Called by the consumer to indicate that a browser's location has changed,
    * so that we can update the active notifications accordingly.
+   *
+   * @param aBrowser
    */
   locationChange: function PopupNotifications_locationChange(aBrowser) {
     if (!aBrowser) {
@@ -977,6 +998,8 @@ PopupNotifications.prototype = {
    * @param {boolean} whether to disable persistent status. Normally,
    *                  persistent prompts can not be dismissed. You can
    *                  use this argument to force dismissal.
+   * @param event
+   * @param disablePersistent
    */
   _dismiss: function PopupNotifications_dismiss(
     event,
@@ -1046,6 +1069,7 @@ PopupNotifications.prototype = {
    * param notification
    *       The Notification object which contains the message to format.
    *
+   * @param n
    * @returns a Javascript object that has the following properties:
    * start: A start label string containing the first part of the message.
    *        It may contain the whole string if the description message
@@ -1630,6 +1654,8 @@ PopupNotifications.prototype = {
 
   /**
    * Gets and sets notifications for the browser.
+   *
+   * @param browser
    */
   getNotificationsForBrowser: function PopupNotifications_getNotifications(
     browser
@@ -2086,6 +2112,11 @@ PopupNotifications.prototype = {
         this._dismiss();
         return;
       }
+
+      if (action.keepOpen) {
+        this._setNotificationUIState(notificationEl);
+        return;
+      }
     }
 
     this._remove(notification);
@@ -2116,6 +2147,11 @@ PopupNotifications.prototype = {
 
     if (target.action.dismiss) {
       this._dismiss();
+      return;
+    }
+
+    if (target.action.keepOpen) {
+      this._setNotificationUIState(notificationEl);
       return;
     }
 
