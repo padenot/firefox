@@ -149,6 +149,27 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelAvailable(
       std::move(aResolver), mIsModelAvailableRequest);
 }
 
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvIsModelInstalled(
+    const nsTArray<nsCString>& aLanguages,
+    IsModelInstalledResolver&& aResolver) {
+  if (aLanguages.IsEmpty()) {
+    return IPC_FAIL(this,
+                    "RecvIsModelInstalled requires at least one language");
+  }
+
+  nsCString modelId = dom::LanguagesToSpeechModelId(aLanguages);
+  LOGD("{} languages: {} mapped to id={}", __func__,
+       fmt::join(aLanguages, ", "), modelId.get());
+
+  return RunHWInferenceBoolQuery(
+      __func__,
+      [modelId](hwinference::HWInferenceChild* aChild) {
+        return aChild->SendIsModelInstalled(
+            nsCString(dom::kSpeechRecognitionTask), modelId);
+      },
+      std::move(aResolver), mIsModelInstalledRequest);
+}
+
 mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
     const nsTArray<nsCString>& aLanguages, uint64_t aInnerWindowId,
     InstallModelsResolver&& aResolver) {
@@ -168,6 +189,39 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
             modelIdentifier.mRevision, modelIdentifier.mFileName);
       },
       std::move(aResolver), mInstallModelRequest);
+}
+
+mozilla::ipc::IPCResult SpeechRecognitionParent::RecvGetModelDownloadSize(
+    const nsTArray<nsCString>& aLanguages,
+    GetModelDownloadSizeResolver&& aResolver) {
+  if (aLanguages.IsEmpty()) {
+    return IPC_FAIL(this,
+                    "RecvGetModelDownloadSize requires at least one language");
+  }
+
+  // Create the progress token here; content never supplies it. Attach the
+  // trusted id of the content process that owns this connection so the parent
+  // can verify the requesting window really belongs to the requester.
+  nsString progressToken;
+  AppendUTF8toUTF16(
+      nsDependentCString(nsIDToCString(nsID::GenerateUUID()).get()),
+      progressToken);
+  dom::ContentParentId contentId =
+      static_cast<HWInferenceManagerParent*>(Manager())->ContentId();
+
+  hwInferenceChild
+      ->SendInstallModel(nsCString(dom::kSpeechRecognitionTask), modelId,
+                         aInnerWindowId, contentId, progressToken)
+      ->Then(GetCurrentSerialEventTarget(), __func__,
+             [self = RefPtr{this}, aResolver = std::move(aResolver)](
+                 PHWInferenceChild::InstallModelPromise::ResolveOrRejectValue&&
+                     aValue) mutable {
+               self->mInstallModelRequest.Complete();
+               aResolver(aValue.IsResolve() && aValue.ResolveValue());
+             })
+      ->Track(mInstallModelRequest);
+
+  return IPC_OK();
 }
 
 SpeechRecognitionParent::SpeechRecognitionParent()
@@ -457,6 +511,7 @@ void SpeechRecognitionParent::ActorDestroy(ActorDestroyReason aReason) {
   // resolve/reject callbacks never run and try to resolve a dead IPDL
   // resolver after this actor is torn down.
   mIsModelAvailableRequest.DisconnectIfExists();
+  mIsModelInstalledRequest.DisconnectIfExists();
   mRetrieveModelIsInstalledRequest.DisconnectIfExists();
   mInstallModelRequest.DisconnectIfExists();
   mGetModelFileRequest.DisconnectIfExists();
