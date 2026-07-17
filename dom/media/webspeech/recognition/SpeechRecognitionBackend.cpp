@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "SpeechRecognitionBackend.h"
+
 #include <speex/speex_resampler.h>
 
 #include <algorithm>
@@ -987,6 +989,7 @@ void SpeechRecognitionBackend::EnsureConnectedOnIPCThread() {
       }));
 }
 
+/* static */
 already_AddRefed<IPCActorUserGuard> SpeechRecognitionBackend::EnsureIPC() {
   AssertIsOnMainThread();
 

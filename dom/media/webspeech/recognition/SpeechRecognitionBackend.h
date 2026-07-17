@@ -70,6 +70,16 @@ class IPCActorUserGuard final {
   ~IPCActorUserGuard();
 };
 
+// This class sits just below the SpeechRecognition object, and implements using
+// packaging and processing audio from a MediaTrackGraph, and sending it over
+// IPC, while receiving the recognized text from the HWInference process.
+//
+// It uses 3 threads:
+// - the main thread, where the SpeechRecognition object calls
+// - The real-time thread from the MTG, to receive and process the audio
+// - an IPC thread, to interact with the HWInference process
+//
+// Member accesses are to be checked statically
 class SpeechRecognitionBackend {
   friend class IPCActorUserGuard;
 
@@ -114,11 +124,17 @@ class SpeechRecognitionBackend {
 
   static already_AddRefed<Promise> Available(
       nsIGlobalObject* aGlobal, const nsTArray<nsCString>& aLanguages);
+  // Requests installation of the on-device model(s) for aLanguages. The
+  // request is relayed by the utility to the trusted parent, which obtains the
+  // user's consent and performs the download (see nsIMLModelResolver);
+  // aInnerWindowId is the requesting document's inner window id, forwarded
+  // so the parent can verify ownership and anchor the prompt on that tab.
   static already_AddRefed<Promise> Install(
-      nsIGlobalObject* aGlobal, const nsTArray<nsCString>& aLanguages);
-  // Resolves(true) iff the model is already downloaded to the local cache,
-  // so install() can skip its permission prompt when there is nothing to
-  // download. Resolves(false) (never rejects) otherwise.
+      nsIGlobalObject* aGlobal, const nsTArray<nsCString>& aLanguages,
+      uint64_t aInnerWindowId);
+  // Resolves(true) iff the model is already downloaded to the local cache.
+  // Used by Available() to report on-device availability. Resolves(false)
+  // (never rejects) otherwise.
   static RefPtr<GenericPromise> IsModelInstalledNative(
       nsTArray<nsCString>&& aLanguages);
 

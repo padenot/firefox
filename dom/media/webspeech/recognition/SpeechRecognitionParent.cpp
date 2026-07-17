@@ -19,11 +19,13 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
+#include "mozilla/hwinference/HWInferenceManagerParent.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessChild.h"
 #include "mozilla/llama/LlamaRuntimeLinker.h"
 #include "nsDebug.h"
+#include "nsIDUtils.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
@@ -177,26 +179,18 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
     return IPC_FAIL(this, "RecvInstallModels requires at least one language");
   }
 
-  ModelIdentifier modelIdentifier = LanguagesToModelIdentifier(aLanguages);
-  LOGD("{} languages: {} mapped to model={}", __func__,
-       fmt::join(aLanguages, ", "), modelIdentifier.ToString().get());
+  nsCString modelId = dom::LanguagesToSpeechModelId(aLanguages);
+  LOGD("{} languages: {} mapped to id={}", __func__,
+       fmt::join(aLanguages, ", "), modelId.get());
 
-  return RunHWInferenceBoolQuery(
-      __func__,
-      [modelIdentifier](hwinference::HWInferenceChild* aChild) {
-        return aChild->SendInstallModel(
-            "speech-recognition"_ns, modelIdentifier.mModelName,
-            modelIdentifier.mRevision, modelIdentifier.mFileName);
-      },
-      std::move(aResolver), mInstallModelRequest);
-}
-
-mozilla::ipc::IPCResult SpeechRecognitionParent::RecvGetModelDownloadSize(
-    const nsTArray<nsCString>& aLanguages,
-    GetModelDownloadSizeResolver&& aResolver) {
-  if (aLanguages.IsEmpty()) {
-    return IPC_FAIL(this,
-                    "RecvGetModelDownloadSize requires at least one language");
+  RefPtr<mozilla::ipc::UtilityProcessChild> utilityChild =
+      mozilla::ipc::UtilityProcessChild::GetSingleton();
+  HWInferenceChild* hwInferenceChild =
+      utilityChild ? utilityChild->GetHWInferenceChild() : nullptr;
+  if (!hwInferenceChild) {
+    LOGE("{} No HWInferenceChild available", __func__);
+    aResolver(false);
+    return IPC_OK();
   }
 
   // Create the progress token here; content never supplies it. Attach the
