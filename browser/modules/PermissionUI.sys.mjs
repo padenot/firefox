@@ -70,6 +70,7 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
+  DownloadUtils: "resource://gre/modules/DownloadUtils.sys.mjs",
   NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
@@ -2437,24 +2438,45 @@ class StorageAccessPermissionPrompt extends PermissionPromptForRequest {
   }
 }
 
+// How long the success message stays up before the prompt goes away by itself.
+// WCAG 2.2 "Timing Adjustable" asks for at least five seconds for a message
+// that disappears on its own. A failed download is only ever surfaced here, so
+// that prompt stays up until the user dismisses it.
+const MODEL_DOWNLOAD_COMPLETE_TIMEOUT_MS = 5000;
+
 class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptForRequest {
   #sizeMB;
+  #progressToken;
+  #cancelMessage;
+  #okMessage;
+  #downloadStartedAt;
+  #notification;
+  #renderedPercent;
   #requestSettled = false;
+  #observingProgress = false;
+  // Feeds DownloadUtils' hysteresis on the time estimate, so it does not jump
+  // around between updates. Infinity means "no estimate yet".
+  #lastSec = Infinity;
 
   constructor(request) {
     super();
     this.request = request;
     let types = request.types.QueryInterface(Ci.nsIArray);
     let perm = types.queryElementAt(0, Ci.nsIContentPermissionType);
-    this.#sizeMB = perm.options.length
-      ? perm.options.queryElementAt(0, Ci.nsISupportsString).data
-      : null;
+    this.#sizeMB = perm.options.queryElementAt(0, Ci.nsISupportsString).data;
+    this.#progressToken = perm.options.queryElementAt(
+      1,
+      Ci.nsISupportsString
+    ).data;
   }
 
   get type() {
     return "speech-recognition-model-download";
   }
 
+  // No permissionKey on purpose: consenting to a download is a one-shot
+  // decision, never written to the permission manager, so a grant cannot be
+  // persisted and there is no "Remember this decision" checkbox.
   get popupOptions() {
     return {
       displayURI: false,
@@ -2478,35 +2500,63 @@ class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptFor
   }
 
   get promptActions() {
-    let [allowMessage, notNowMessage] = lazy.gFluentStrings
-      .formatMessagesSync([
-        { id: "speech-recognition-model-download-allow" },
-        { id: "speech-recognition-model-download-not-now" },
-      ])
-      .map(msg =>
-        msg.attributes.reduce(
-          (acc, { name, value }) => ({ ...acc, [name]: value }),
-          {}
-        )
-      );
+    let [allowMessage, notNowMessage, cancelMessage, okMessage] =
+      lazy.gFluentStrings
+        .formatMessagesSync([
+          { id: "speech-recognition-model-download-allow" },
+          { id: "speech-recognition-model-download-not-now" },
+          { id: "speech-recognition-model-download-cancel" },
+          { id: "speech-recognition-model-download-ok" },
+        ])
+        .map(msg =>
+          msg.attributes.reduce(
+            (acc, { name, value }) => ({ ...acc, [name]: value }),
+            {}
+          )
+        );
+    this.#cancelMessage = cancelMessage;
+    this.#okMessage = okMessage;
 
     return [
       {
         label: allowMessage.label,
         accessKey: allowMessage.accesskey,
         action: lazy.SitePermissions.ALLOW,
+        // The download starts right here, in this panel: keep the panel open
+        // after the click instead of removing the notification, so that
+        // #showProgress() can turn it into the progress UI.
+        keepOpen: true,
         callback: () => {
+          this.#showProgress();
           this.allow();
         },
       },
       {
+        // Turns into the Cancel button once the download starts, see
+        // #applyProgressUI().
         label: notNowMessage.label,
         accessKey: notNowMessage.accesskey,
         action: lazy.SitePermissions.BLOCK,
-        dismiss: true,
-        callback: () => this.cancel(),
+        callback: () => {
+          if (this.#observingProgress) {
+            Cc["@mozilla.org/ml-modelhub;1"]
+              .getService(Ci.nsIMLModelHub)
+              .cancelDownload(this.#progressToken);
+          }
+          this.cancel();
+        },
       },
     ];
+  }
+
+  onAfterShow() {
+    this.#stopObservingProgress();
+    this.#notification = null;
+  }
+
+  onBeforeShow() {
+    this.#resetProgressUI();
+    return true;
   }
 
   allow(choices) {
@@ -2523,6 +2573,247 @@ class SpeechRecognitionModelDownloadPermissionPrompt extends PermissionPromptFor
     }
     this.#requestSettled = true;
     super.cancel();
+  }
+
+  observe(subject, topic) {
+    if (topic != "ml-model-download-progress") {
+      return;
+    }
+
+    let props = subject.QueryInterface(Ci.nsIPropertyBag2);
+
+    // The topic carries the progress of every model download in the browser,
+    // not just ours: the token tells them apart.
+    if (props.getPropertyAsAString("token") != this.#progressToken) {
+      return;
+    }
+
+    this.#updateProgress({
+      progress: props.getPropertyAsInt32("progress"),
+      totalLoaded: props.getPropertyAsInt64("totalLoaded"),
+      total: props.getPropertyAsInt64("total"),
+      done: props.getPropertyAsBool("done"),
+      ok: props.getPropertyAsBool("ok"),
+    });
+  }
+
+  /**
+   * The <popupnotification> element showing this prompt, or null if it isn't
+   * in the document (yet).
+   */
+  #notificationElement() {
+    // this.browser reads request.element, which throws once the request has
+    // been settled, so prefer the browser the notification holds on to.
+    let browser = this.#notification?.browser ?? this.browser;
+    return (
+      browser.documentGlobal?.document.getElementById(
+        `${this.notificationID}-notification`
+      ) ?? null
+    );
+  }
+
+  #showProgress() {
+    let browser = this.browser;
+    this.#notification =
+      browser.documentGlobal.PopupNotifications.getNotification(
+        this.notificationID,
+        browser
+      );
+
+    let notificationEl = this.#notificationElement();
+    if (!notificationEl) {
+      return;
+    }
+
+    this.#downloadStartedAt = ChromeUtils.now();
+    this.#applyProgressUI(notificationEl);
+
+    Services.obs.addObserver(this, "ml-model-download-progress");
+    this.#observingProgress = true;
+    this.#updateProgress({ progress: 0, totalLoaded: 0, total: 0 });
+  }
+
+  /**
+   * Turns the prompt into a progress indicator: the message becomes the
+   * progress bar, the accept button is disabled and the deny button becomes
+   * Cancel. Applied again if the element is re-rendered while the download is
+   * running, for example because the tab moved to another window, which uses
+   * that window's element.
+   */
+  #applyProgressUI(notificationEl) {
+    // PopupNotifications only ever renders `message` as the label, so this has
+    // to be a plain string, and both it and the label it already rendered need
+    // updating.
+    let message = lazy.gFluentStrings.formatValueSync(
+      "speech-recognition-model-download-progress-message"
+    );
+    this.#notification.message = message;
+    notificationEl.setAttribute("label", message);
+    notificationEl.removeAttribute("name");
+    notificationEl.removeAttribute("endlabel");
+    this.#notification.mainAction.disabled = true;
+    notificationEl.toggleAttribute("model-download-in-progress", true);
+
+    this.#setDenyLabel(notificationEl, this.#cancelMessage);
+
+    // The label above now reads as the heading, so the setup question would
+    // only repeat a decision the user has already made.
+    notificationEl.querySelector(
+      "#speech-recognition-model-download-header"
+    ).hidden = true;
+    notificationEl.querySelector(
+      "#speech-recognition-model-download-progress-content"
+    ).hidden = false;
+  }
+
+  /**
+   * Relabels the deny button. _refreshPanel() rebuilds the button from the
+   * action, so the action has to change; the attributes update the button that
+   * is already rendered.
+   */
+  #setDenyLabel(notificationEl, message) {
+    let denyAction = this.#notification.secondaryActions[0];
+    denyAction.label = message.label;
+    denyAction.accessKey = message.accesskey;
+    notificationEl.setAttribute("secondarybuttonlabel", denyAction.label);
+    notificationEl.setAttribute(
+      "secondarybuttonaccesskey",
+      denyAction.accessKey
+    );
+  }
+
+  /**
+   * The <popupnotification> element is reused for every prompt of a given
+   * type, so undo everything #showProgress() left on it before showing again.
+   */
+  #resetProgressUI() {
+    let notificationEl = this.#notificationElement();
+    // The buttons are only created the first time the notification is shown:
+    // until then there is nothing to undo.
+    if (!notificationEl?.button) {
+      return;
+    }
+
+    notificationEl.toggleAttribute("model-download-in-progress", false);
+    notificationEl.toggleAttribute("model-download-succeeded", false);
+    notificationEl.toggleAttribute("model-download-failed", false);
+    notificationEl.querySelector(
+      "#speech-recognition-model-download-header"
+    ).hidden = false;
+    notificationEl.querySelector(
+      "#speech-recognition-model-download-progress-content"
+    ).hidden = true;
+    notificationEl.querySelector(
+      "#speech-recognition-model-download-progress"
+    ).value = 0;
+    notificationEl.querySelector(
+      "#speech-recognition-model-download-progress-status"
+    ).textContent = "";
+  }
+
+  #updateProgress(progress) {
+    // The window showing the prompt can be gone by the time the next progress
+    // notification arrives.
+    let notificationEl = this.#notificationElement();
+    if (!notificationEl) {
+      return;
+    }
+
+    // A fresh element, because the tab moved to another window, see
+    // #applyProgressUI().
+    if (!notificationEl.hasAttribute("model-download-in-progress")) {
+      this.#applyProgressUI(notificationEl);
+    }
+
+    // The download reports progress for every chunk it receives, which is far
+    // more often than the whole percent the bar is drawn at changes: only touch
+    // the DOM when it does.
+    let percent = Math.floor(
+      Math.max(0, Math.min(100, progress.progress ?? 0))
+    );
+    if (percent == this.#renderedPercent && !progress.done) {
+      return;
+    }
+    this.#renderedPercent = percent;
+
+    let progressEl = notificationEl.querySelector(
+      "#speech-recognition-model-download-progress"
+    );
+    let statusEl = notificationEl.querySelector(
+      "#speech-recognition-model-download-progress-status"
+    );
+
+    progressEl.value = percent;
+    this.#setProgressStatus(statusEl, progress);
+
+    if (!progress.done) {
+      return;
+    }
+
+    this.#stopObservingProgress();
+
+    let message = lazy.gFluentStrings.formatValueSync(
+      progress.ok
+        ? "speech-recognition-model-download-complete-message"
+        : "speech-recognition-model-download-failed-message"
+    );
+    this.#notification.message = message;
+    notificationEl.setAttribute("label", message);
+    progressEl.value = progress.ok ? 100 : percent;
+    statusEl.textContent = "";
+
+    notificationEl.toggleAttribute(
+      progress.ok ? "model-download-succeeded" : "model-download-failed",
+      true
+    );
+
+    // There is nothing left to accept or cancel: the deny button becomes the
+    // acknowledgement, and its callback is a no-op now that the request has
+    // been settled and the download is over. Escape does the same thing,
+    // through that same action.
+    this.#setDenyLabel(notificationEl, this.#okMessage);
+
+    // A failed download stays up until it is dismissed, a successful one also
+    // goes away by itself.
+    if (progress.ok) {
+      lazy.setTimeout(
+        () => this.#notification?.remove(),
+        MODEL_DOWNLOAD_COMPLETE_TIMEOUT_MS
+      );
+    }
+  }
+
+  /**
+   * Writes the line below the progress bar, in the same shape the downloads
+   * panel uses: "7s left — 59 of 141 MB (12.4 MB/sec)".
+   */
+  #setProgressStatus(statusEl, progress) {
+    if (progress.total <= 0) {
+      statusEl.textContent = "";
+      return;
+    }
+
+    // Averaged over the download rather than taken between two notifications:
+    // chunks arrive far too often for an instantaneous rate to sit still.
+    let elapsedSeconds = (ChromeUtils.now() - this.#downloadStartedAt) / 1000;
+    let speed = elapsedSeconds > 0 ? progress.totalLoaded / elapsedSeconds : -1;
+
+    let [status, lastSec] = lazy.DownloadUtils.getDownloadStatus(
+      progress.totalLoaded,
+      progress.total,
+      speed,
+      this.#lastSec
+    );
+    this.#lastSec = lastSec;
+    statusEl.textContent = status;
+  }
+
+  #stopObservingProgress() {
+    if (!this.#observingProgress) {
+      return;
+    }
+    this.#observingProgress = false;
+    Services.obs.removeObserver(this, "ml-model-download-progress");
   }
 }
 

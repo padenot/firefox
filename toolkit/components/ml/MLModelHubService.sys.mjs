@@ -148,6 +148,7 @@ export class MLModelHubService {
       revision: aRevision,
       files: Array.from(aFiles),
       progressToken: aProgressToken,
+      abortController: new AbortController(),
       progressCallback: aProgressCallback,
       completionCallback: aCompletionCallback,
       downloadedFiles: new Map(),
@@ -169,6 +170,18 @@ export class MLModelHubService {
     return sessionId;
   }
 
+  cancelDownload(aProgressToken) {
+    for (const downloadInfo of this._activeDownloads.values()) {
+      if (downloadInfo.progressToken === aProgressToken) {
+        lazy.console.debug(
+          `Cancelling download session ${downloadInfo.sessionId}`
+        );
+        downloadInfo.abortController.abort();
+        return;
+      }
+    }
+  }
+
   async _startDownload(downloadInfo) {
     const modelHub = await this._getModelHub();
     const {
@@ -179,6 +192,7 @@ export class MLModelHubService {
       revision,
       files,
       progressCallback,
+      abortController,
     } = downloadInfo;
 
     lazy.console.debug(
@@ -252,6 +266,7 @@ export class MLModelHubService {
           revision,
           file,
           progressCallback: progressWrapper,
+          abortSignal: abortController.signal,
           featureId: "ml-model-hub-service",
           sessionId,
           telemetryData: { component: "MLModelHubService" },
