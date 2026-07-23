@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "SpeechRecognition.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -9,7 +11,6 @@
 #include "CubebUtils.h"
 #include "MainThreadUtils.h"
 #include "MediaEnginePrefs.h"
-#include "SpeechRecognition.h"
 #include "SpeechRecognitionAlternative.h"
 #include "SpeechRecognitionBackend.h"
 #include "SpeechRecognitionResult.h"
@@ -20,6 +21,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/MediaManager.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/dom/AudioStreamTrack.h"
 #include "mozilla/dom/BindingUtils.h"
@@ -45,6 +47,7 @@
 #include "nsGkAtoms.h"
 #include "nsGlobalWindowInner.h"
 #include "nsIContent.h"
+#include "nsIObserverService.h"
 #include "nsIPermissionManager.h"
 #include "nsIPrincipal.h"
 #include "nsPIDOMWindow.h"
@@ -431,6 +434,20 @@ static bool IsBlockedByAIControls() {
   return state.EqualsLiteral("blocked");
 }
 
+// Notifies chrome that a page tried to use on-device speech recognition while
+// it is disabled in AI Controls, so it can surface a notification bar pointing
+// the user at the setting. Observed by the SpeechRecognitionUI JSWindowActor
+// (see browser/actors), which routes it to the browser window; on toolkits
+// without that actor it is simply unobserved.
+static void NotifyBlockedByAIControls(nsPIDOMWindowInner* aWindow) {
+  if (!aWindow) {
+    return;
+  }
+  if (nsCOMPtr<nsIObserverService> obs = services::GetObserverService()) {
+    obs->NotifyObservers(aWindow, "speech-recognition-ai-blocked", nullptr);
+  }
+}
+
 already_AddRefed<Promise> SpeechRecognition::Available(
     const GlobalObject& aGlobal, const SpeechRecognitionOptions& aOptions,
     ErrorResult& aRv) {
@@ -546,6 +563,7 @@ already_AddRefed<Promise> SpeechRecognition::Install(
   }
 
   if (aOptions.mProcessLocally && IsBlockedByAIControls()) {
+    NotifyBlockedByAIControls(window);
     aRv.ThrowNotAllowedError(
         "on-device speech recognition is blocked by the user's AI settings");
     return nullptr;
@@ -648,6 +666,7 @@ void SpeechRecognition::StartImpl(MediaStreamTrack* aAudioTrack,
 
   // The user can turn on-device speech recognition off via AI Controls.
   if (IsBlockedByAIControls()) {
+    NotifyBlockedByAIControls(win);
     aRv.ThrowNotAllowedError(
         "on-device speech recognition is blocked by the user's AI settings");
     return;

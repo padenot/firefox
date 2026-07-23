@@ -66,6 +66,11 @@ XPCOM_MANIFESTS += [
     "components.conf",
 ]
 
+EXTRA_JS_MODULES += [
+    "!SpeechRecognitionModelDisplayInfo.sys.mjs",
+    "SpeechRecognitionModelCleanup.sys.mjs",
+]
+
 # Bug 1244242 is about enabling on Android
 if CONFIG["MOZ_WIDGET_TOOLKIT"] != "android":
     DIRS += ["/third_party/parakeet.cpp"]

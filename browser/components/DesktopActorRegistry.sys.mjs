@@ -947,6 +947,21 @@ let JSWINDOWACTORS = {
     safeForUntrustedWebProcess: true,
   },
 
+  SpeechRecognitionUI: {
+    parent: {
+      esModuleURI: "resource:///actors/SpeechRecognitionUIParent.sys.mjs",
+    },
+
+    child: {
+      esModuleURI: "resource:///actors/SpeechRecognitionUIChild.sys.mjs",
+      observers: ["speech-recognition-ai-blocked"],
+    },
+
+    messageManagerGroups: ["browsers"],
+    allFrames: true,
+    safeForUntrustedWebProcess: true,
+  },
+
   ASRouter: {
     parent: {
       esModuleURI: "resource:///actors/ASRouterParent.sys.mjs",

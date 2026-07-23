@@ -1204,6 +1204,19 @@ eme-notifications-drm-content-playing-manage-accesskey = M
 eme-notifications-drm-content-playing-dismiss = Dismiss
 eme-notifications-drm-content-playing-dismiss-accesskey = D
 
+## Speech recognition notification bar, shown when a site tries to use on-device
+## speech recognition while it is turned off in the AI Controls settings.
+
+# The leading question is emphasized so it reads as a heading for the rest of
+# the message.
+speech-recognition-ai-blocked-infobar-message = <strong>Enable speech recognition in { -brand-short-name }?</strong> It runs locally on your device to preserve your privacy. Other AI enhancements stay blocked.
+speech-recognition-ai-blocked-infobar-enable =
+    .label = Enable
+    .accesskey = E
+speech-recognition-ai-blocked-infobar-settings =
+    .label = View AI Controls
+    .accesskey = V
+
 ## Password save/update panel
 
 panel-save-update-username-2 =
