@@ -4,7 +4,7 @@
 
 #include "nsISupports.idl"
 
-[scriptable, uuid(a2568d74-be41-46a5-abfc-6dbab0b80f95)]
+[scriptable, uuid(7284b9bf-72fc-4215-837f-43daf24189c3)]
 interface nsIMLUtils : nsISupports {
 
   readonly attribute unsigned long long totalPhysicalMemory;
@@ -26,5 +26,15 @@ interface nsIMLUtils : nsISupports {
    * CPUs that don't support AVX2 return false.
    */
   boolean canUseLlamaCpp();
+
+  /**
+   * Prototype-only browser-process HWInference smoke test.
+   *
+   * Starts the browser HWInference utility-process instance, creates a
+   * browser-owned HWInference actor, runs a small ggml scalar graph in the
+   * utility process, and resolves with the result.
+   */
+  [implicit_jscontext]
+  Promise runHWInferenceSmokeTest();
 
 };

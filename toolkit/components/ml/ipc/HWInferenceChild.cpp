@@ -4,6 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "HWInferenceChild.h"
+
+#include "BrowserHWInferenceManagerParent.h"
 #include "HWInferenceManagerParent.h"
 #include "mozilla/Logging.h"
 
@@ -16,6 +18,14 @@ LazyLogModule gHWInferenceLog("HWInference");
   MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Error, fmt, ##__VA_ARGS__)
 
 void HWInferenceChild::Shutdown() { PHWInferenceChild::Close(); }
+
+ipc::IPCResult HWInferenceChild::RecvNewBrowserHWInferenceManager(
+    Endpoint<hwinference::PBrowserHWInferenceManagerParent>&& aEndpoint,
+    NewBrowserHWInferenceManagerResolver&& aResolver) {
+  aResolver(
+      BrowserHWInferenceManagerParent::CreateForBrowser(std::move(aEndpoint)));
+  return IPC_OK();
+}
 
 ipc::IPCResult HWInferenceChild::RecvNewContentHWInferenceManager(
     Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,

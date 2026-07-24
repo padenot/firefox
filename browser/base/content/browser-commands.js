@@ -353,6 +353,19 @@ var BrowserCommands = {
     } catch (ex) {}
   },
 
+  async runHWInferenceSmokeTest() {
+    try {
+      const result = await Cc["@mozilla.org/ml-utils;1"]
+        .getService(Ci.nsIMLUtils)
+        .runHWInferenceSmokeTest();
+      Services.console.logStringMessage(
+        `Browser HWInference smoke test result: ${result}`
+      );
+    } catch (error) {
+      console.error("Browser HWInference smoke test failed:", error);
+    }
+  },
+
   closeTabOrWindow(event) {
     // If we're not a browser window, just close the window.
     if (window.location.href != AppConstants.BROWSER_CHROME_URL) {

@@ -22,6 +22,10 @@ class HWInferenceChild final : public PHWInferenceChild {
 
   void Shutdown();
 
+  mozilla::ipc::IPCResult RecvNewBrowserHWInferenceManager(
+      Endpoint<hwinference::PBrowserHWInferenceManagerParent>&& aEndpoint,
+      NewBrowserHWInferenceManagerResolver&& aResolver);
+
   mozilla::ipc::IPCResult RecvNewContentHWInferenceManager(
       Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,
       const dom::ContentParentId& aContentId);

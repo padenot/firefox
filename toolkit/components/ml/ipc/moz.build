@@ -8,6 +8,8 @@ with Files("**"):
     BUG_COMPONENT = ("Core", "Machine Learning")
 
 EXPORTS.mozilla.hwinference += [
+    "BrowserHWInferenceManagerChild.h",
+    "BrowserHWInferenceManagerParent.h",
     "HWInferenceChild.h",
     "HWInferenceManagerChild.h",
     "HWInferenceManagerParent.h",
@@ -15,6 +17,8 @@ EXPORTS.mozilla.hwinference += [
 ]
 
 UNIFIED_SOURCES += [
+    "BrowserHWInferenceManagerChild.cpp",
+    "BrowserHWInferenceManagerParent.cpp",
     "HWInferenceChild.cpp",
     "HWInferenceManagerChild.cpp",
     "HWInferenceManagerParent.cpp",
@@ -22,6 +26,7 @@ UNIFIED_SOURCES += [
 ]
 
 IPDL_SOURCES = [
+    "PBrowserHWInferenceManager.ipdl",
     "PHWInference.ipdl",
     "PHWInferenceManager.ipdl",
 ]

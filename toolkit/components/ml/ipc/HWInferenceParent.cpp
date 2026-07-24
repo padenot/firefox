@@ -3,11 +3,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "HWInferenceParent.h"
+
+#include "BrowserHWInferenceManagerChild.h"
+#include "HWInferenceManagerParent.h"
+#include "mozilla/hwinference/PBrowserHWInferenceManager.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPtr.h"
 #include "nsTHashSet.h"
-#include "HWInferenceParent.h"
-#include "HWInferenceManagerParent.h"
 #include "mozilla/dom/Blob.h"
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/ipc/FileDescriptor.h"
@@ -203,6 +206,36 @@ RefPtr<HWInferenceParent> HWInferenceParent::GetSingleton(
   }
 
   return sInstances->GetOrInsertNew(aInstanceKey, aInstanceKey);
+}
+
+RefPtr<HWInferenceParent::BrowserSmokeTestPromise>
+HWInferenceParent::RunBrowserSmokeTest(float aInput) {
+  if (!CanSend()) {
+    return BrowserSmokeTestPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                    __func__);
+  }
+
+  ipc::Endpoint<PBrowserHWInferenceManagerParent> parentEp;
+  ipc::Endpoint<PBrowserHWInferenceManagerChild> childEp;
+  MOZ_ALWAYS_SUCCEEDS(
+      PBrowserHWInferenceManager::CreateEndpoints(&parentEp, &childEp));
+
+  return SendNewBrowserHWInferenceManager(std::move(parentEp))
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [childEp = std::move(childEp),
+           aInput](bool aAccepted) mutable -> RefPtr<BrowserSmokeTestPromise> {
+            if (!aAccepted) {
+              return BrowserSmokeTestPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                              __func__);
+            }
+            return BrowserHWInferenceManagerChild::RunSmokeTest(
+                std::move(childEp), aInput);
+          },
+          [](ResponseRejectReason aReason) {
+            return BrowserSmokeTestPromise::CreateAndReject(NS_ERROR_FAILURE,
+                                                            __func__);
+          });
 }
 
 void HWInferenceParent::ActorDestroy(ActorDestroyReason aReason) {

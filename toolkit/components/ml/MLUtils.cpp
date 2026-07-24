@@ -4,9 +4,12 @@
 
 #include "MLUtils.h"
 
+#include "mozilla/dom/Promise.h"
+#include "mozilla/ErrorResult.h"
 #include "prsystem.h"
 #include <sys/types.h>
 #include "nsSystemInfo.h"
+#include "xpcpublic.h"
 
 #if defined(XP_WIN)
 #  include <sysinfoapi.h>
@@ -19,6 +22,12 @@
 #  include <sys/sysinfo.h>
 #endif
 #include "mozilla/SSE.h"
+
+#ifndef ANDROID
+#  include "mozilla/hwinference/HWInferenceParent.h"
+#  include "mozilla/ipc/UtilityProcessManager.h"
+#  include "nsThreadUtils.h"
+#endif
 
 namespace mozilla::ml {
 
@@ -103,6 +112,54 @@ NS_IMETHODIMP MLUtils::CanUseLlamaCpp(bool* _retval) {
   *_retval = false;
 #endif
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP MLUtils::RunHWInferenceSmokeTest(JSContext* aCx,
+                                               dom::Promise** aPromise) {
+  NS_ENSURE_ARG_POINTER(aPromise);
+  *aPromise = nullptr;
+
+  nsIGlobalObject* global = xpc::CurrentNativeGlobal(aCx);
+  if (NS_WARN_IF(!global)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  ErrorResult error;
+  RefPtr<dom::Promise> promise = dom::Promise::Create(global, error);
+  if (NS_WARN_IF(error.Failed())) {
+    return error.StealNSResult();
+  }
+
+#ifdef ANDROID
+  promise->MaybeReject(NS_ERROR_NOT_IMPLEMENTED);
+#else
+  RefPtr<ipc::UtilityProcessManager> manager =
+      ipc::UtilityProcessManager::GetSingleton();
+  if (!manager) {
+    promise->MaybeReject(NS_ERROR_FAILURE);
+  } else {
+    manager->StartHWInference(HWINFERENCE_BROWSER_INSTANCE_KEY)
+        ->Then(
+            GetMainThreadSerialEventTarget(), __func__,
+            [promise](RefPtr<hwinference::HWInferenceParent> aParent) {
+              if (!aParent || !aParent->CanSend()) {
+                promise->MaybeReject(NS_ERROR_FAILURE);
+                return;
+              }
+
+              aParent->RunBrowserSmokeTest(3.0f)->Then(
+                  GetMainThreadSerialEventTarget(), __func__,
+                  [promise](float aResult) { promise->MaybeResolve(aResult); },
+                  [promise](nsresult aRv) { promise->MaybeReject(aRv); });
+            },
+            [promise](ipc::LaunchError&& aError) {
+              promise->MaybeReject(NS_ERROR_FAILURE);
+            });
+  }
+#endif
+
+  promise.forget(aPromise);
   return NS_OK;
 }
 

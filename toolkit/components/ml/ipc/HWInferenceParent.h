@@ -6,12 +6,13 @@
 #ifndef TOOLKIT_COMPONENTS_ML_IPC_HWINFERENCEPARENT_H_
 #define TOOLKIT_COMPONENTS_ML_IPC_HWINFERENCEPARENT_H_
 
+#include "mozilla/MozPromise.h"
 #include "mozilla/ProcInfo.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/ipc/Endpoint.h"
-#include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/hwinference/PHWInferenceParent.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/UtilityMediaService.h"
+#include "mozilla/ipc/UtilityProcessParent.h"
 #include "nsTHashMap.h"
 
 namespace mozilla::hwinference {
@@ -27,6 +28,8 @@ namespace mozilla::hwinference {
 class HWInferenceParent final : public PHWInferenceParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceParent, override);
+
+  using BrowserSmokeTestPromise = MozPromise<float, nsresult, true>;
 
   explicit HWInferenceParent(const nsACString& aInstanceKey)
       : mInstanceKey(aInstanceKey) {}
@@ -55,6 +58,8 @@ class HWInferenceParent final : public PHWInferenceParent {
       const RefPtr<ipc::UtilityProcessParent>& aUtilityParent);
 
   static RefPtr<HWInferenceParent> GetSingleton(const nsACString& aInstanceKey);
+
+  RefPtr<BrowserSmokeTestPromise> RunBrowserSmokeTest(float aInput);
 
  private:
   friend PHWInferenceParent;

@@ -1,0 +1,36 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+with Files("**"):
+    BUG_COMPONENT = ("Core", "Machine Learning: On Device")
+
+EXPORTS.mozilla.hwinference += [
+    "BrowserInferenceExampleChild.h",
+    "BrowserInferenceExampleParent.h",
+]
+
+UNIFIED_SOURCES += [
+    "BrowserInferenceExampleChild.cpp",
+    "BrowserInferenceExampleModelDownloadGate.cpp",
+    "BrowserInferenceExampleModelResolver.cpp",
+    "BrowserInferenceExampleParent.cpp",
+]
+
+XPCOM_MANIFESTS += [
+    "components.conf",
+]
+
+IPDL_SOURCES = [
+    "PBrowserInferenceExample.ipdl",
+]
+
+LOCAL_INCLUDES += [
+    "/ipc/glue",
+    "/third_party/llama.cpp/ggml/include",
+    "/third_party/llama.cpp/include",
+]
+
+include("/ipc/chromium/chromium-config.mozbuild")
+
+FINAL_LIBRARY = "xul"

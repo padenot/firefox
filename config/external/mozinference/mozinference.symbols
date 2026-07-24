@@ -1,3 +1,12 @@
+ggml_add
+ggml_build_forward_expand
+ggml_free
+ggml_get_f32_1d
+ggml_graph_compute_with_ctx
+ggml_init
+ggml_mul
+ggml_new_f32
+ggml_new_graph
 ggml_threadpool_free
 ggml_threadpool_new
 ggml_threadpool_params_init

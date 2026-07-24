@@ -109,6 +109,9 @@ document.addEventListener(
           case "View:AboutProcesses":
             switchToTabHavingURI("about:processes", true);
             break;
+          case "Browser:HWInferenceSmokeTest":
+            BrowserCommands.runHWInferenceSmokeTest();
+            break;
           case "View:PageSource":
             BrowserCommands.viewSource(window.gBrowser.selectedBrowser);
             break;
