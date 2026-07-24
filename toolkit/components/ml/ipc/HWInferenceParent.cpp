@@ -8,6 +8,9 @@
 #include "nsTHashSet.h"
 #include "HWInferenceParent.h"
 #include "HWInferenceManagerParent.h"
+#include "mozilla/dom/Blob.h"
+#include "mozilla/dom/BlobBinding.h"
+#include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/dom/Promise.h"
@@ -17,6 +20,8 @@
 #include "mozilla/dom/Blob.h"
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/ErrorNames.h"
+#include "nsIFileStreams.h"
+#include "nsIInputStream.h"
 #include "mozilla/ErrorResult.h"
 #include "nsString.h"
 #include "nsFmtString.h"
@@ -29,6 +34,12 @@
 #include "nsIObserverService.h"
 #include "nsIWritablePropertyBag2.h"
 #include "nsServiceManagerUtils.h"
+#include "prio.h"
+#include "private/pprio.h"
+
+#ifdef XP_WIN
+#  include <windows.h>
+#endif
 
 namespace mozilla::hwinference {
 
@@ -226,7 +237,9 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelAvailable(
   LOGD("{}: task={} id={}", __func__, aTask, aId);
 
   nsCString engine, model, revision, filename;
-  if (!ResolveModelId(aTask, aId, engine, model, revision, filename)) {
+  nsCOMPtr<nsIMLModelResolver> resolver =
+      ResolveModelId(aTask, aId, engine, model, revision, filename);
+  if (!resolver) {
     aResolver(false);
     return IPC_OK();
   }
@@ -273,7 +286,9 @@ mozilla::ipc::IPCResult HWInferenceParent::RecvIsModelInstalled(
   LOGD("{}: task={} id={}", __func__, aTask, aId);
 
   nsCString engine, model, revision, filename;
-  if (!ResolveModelId(aTask, aId, engine, model, revision, filename)) {
+  nsCOMPtr<nsIMLModelResolver> resolver =
+      ResolveModelId(aTask, aId, engine, model, revision, filename);
+  if (!resolver) {
     aResolver(false);
     return IPC_OK();
   }
@@ -418,6 +433,7 @@ class ModelDownloadAuthorizationCallback final
     }
   }
 
+  nsCString mEngine;
   nsCString mTask;
   nsCString mModel;
   nsCString mRevision;
@@ -474,6 +490,117 @@ ipc::IPCResult HWInferenceParent::RecvInstallModel(
       std::move(aResolver));
   resolver->AuthorizeDownload(model, revision, filename, window, aProgressToken,
                               callback);
+  return IPC_OK();
+}
+
+static nsresult BlobJSObjectToFileDescriptor(JSContext* aCx,
+                                             JS::Handle<JS::Value> aValue,
+                                             ipc::FileDescriptor* aDesc) {
+  if (!aValue.isObject()) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  RefPtr<dom::Blob> blob;
+  nsresult rv = UNWRAP_OBJECT(Blob, &aValue.toObject(), blob);
+  if (NS_FAILED(rv)) {
+    LOGE("BlobJSObjectToFileDescriptor - ERROR: Failed to unwrap Blob: {}", rv);
+    return rv;
+  }
+
+  ErrorResult errorResult;
+  nsCOMPtr<nsIInputStream> stream;
+  blob->CreateInputStream(getter_AddRefs(stream), errorResult);
+  if (errorResult.Failed()) {
+    LOGE(
+        "BlobJSObjectToFileDescriptor - ERROR: Failed to create input stream "
+        "from blob");
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  nsCOMPtr<nsIFileMetadata> fileMetadata = do_QueryInterface(stream);
+  if (!fileMetadata) {
+    LOGE(
+        "BlobJSObjectToFileDescriptor - ERROR: Stream doesn't support "
+        "nsIFileMetadata");
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  PRFileDesc* fileDesc;
+  nsresult getRv = fileMetadata->GetFileDescriptor(&fileDesc);
+  if (NS_FAILED(getRv)) {
+    LOGE("BlobJSObjectToFileDescriptor - ERROR: GetFileDescriptor failed: {}",
+         getRv);
+    return getRv;
+  }
+
+  ipc::FileDescriptor fd(ipc::FileDescriptor::PlatformHandleType(
+      PR_FileDesc2NativeHandle(fileDesc)));
+  if (!fd.IsValid()) {
+    LOGE("BlobJSObjectToFileDescriptor - ERROR: Failed to get native handle");
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  *aDesc = std::move(fd);
+  return NS_OK;
+}
+
+ipc::IPCResult HWInferenceParent::RecvGetModelFile(
+    nsCString&& aTask, nsCString&& aId, GetModelFileResolver&& aResolver) {
+  LOGD("{} task={} id={}", __func__, aTask.get(), aId.get());
+
+  nsCString engine, model, revision, filename;
+  nsCOMPtr<nsIMLModelResolver> resolver =
+      ResolveModelId(aTask, aId, engine, model, revision, filename);
+  if (!resolver) {
+    GetModelError error;
+    error.errorCode() = NS_ERROR_NOT_AVAILABLE;
+    aResolver(GetModelFileResult(error));
+    return IPC_OK();
+  }
+
+  nsCOMPtr<nsIMLModelHub> modelHubService =
+      do_GetService("@mozilla.org/ml-modelhub;1");
+
+  if (!modelHubService) {
+    LOGE("{} - ERROR: Failed to get ModelHub XPCOM service", __func__);
+    GetModelError error;
+    error.errorCode() = NS_ERROR_FAILURE;
+    aResolver(GetModelFileResult(error));
+    return IPC_OK();
+  }
+
+  RefPtr<dom::Promise> promise;
+  nsresult rv = modelHubService->GetModelBlob(
+      engine, aTask, model, revision, filename, getter_AddRefs(promise));
+
+  if (NS_FAILED(rv)) {
+    LOGE("{} - ERROR: GetModelBlob call failed with rv={}", __func__, rv);
+    GetModelError error;
+    error.errorCode() = rv;
+    aResolver(GetModelFileResult(error));
+    return IPC_OK();
+  }
+
+  promise->AddCallbacksWithCycleCollectedArgs(
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aValue,
+                  ErrorResult& aRv) {
+        GetModelFileSuccess success;
+        nsresult rv = BlobJSObjectToFileDescriptor(aCx, aValue, &success.fd());
+        if (NS_FAILED(rv)) {
+          aResolver(GetModelFileResult(GetModelError(rv)));
+          return;
+        }
+        MOZ_ASSERT(success.fd().IsValid());
+        aResolver(GetModelFileResult(std::move(success)));
+      },
+      [aResolver](JSContext* aCx, JS::Handle<JS::Value> aValue,
+                  ErrorResult& aRv) {
+        LOGE("RecvGetModelFile - ERROR: promise rejected in RecvGetModelFile");
+        GetModelError error;
+        error.errorCode() = NS_ERROR_FAILURE;
+        aResolver(GetModelFileResult(error));
+      });
+
   return IPC_OK();
 }
 
