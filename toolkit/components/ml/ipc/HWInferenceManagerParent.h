@@ -21,6 +21,10 @@ class HWInferenceManagerParent final : public PHWInferenceManagerParent {
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
+  // GeckoChildID of the content process accessing this manager, for permission
+  // checks. 0 when the parent process created it.
+  dom::ContentParentId ContentId() const { return mContentId; }
+
  private:
   explicit HWInferenceManagerParent(dom::ContentParentId aContentId);
   ~HWInferenceManagerParent() = default;

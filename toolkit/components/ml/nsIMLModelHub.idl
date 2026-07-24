@@ -81,16 +81,20 @@ interface nsIMLModelHub : nsISupports
   /**
    * Download a model with progress and completion callbacks
    *
+   * @param aEngineId - The engine ID to use
    * @param aTaskName - Name of the task (e.g., "speech-recognition")
    * @param aModel - The model name (organization/name)
    * @param aRevision - The model revision
    * @param aFiles - Array of file names to download
+   * @param aProgressToken - Non-empty id, taken by cancelDownload()
    * @param aProgressCallback - Optional callback for progress updates
    * @param aCompletionCallback - Callback for completion notification
    * @returns sessionId for tracking this download
    */
-  AString downloadModel(in AUTF8String aTaskName, in AUTF8String aModel,
-                       in AUTF8String aRevision, in Array<AUTF8String> aFiles,
+  AString downloadModel(in AUTF8String aEngineId, in AUTF8String aTaskName,
+                       in AUTF8String aModel, in AUTF8String aRevision,
+                       in Array<AUTF8String> aFiles,
+                       in AString aProgressToken,
                        in nsIMLModelDownloadProgressCallback aProgressCallback,
                        in nsIMLModelDownloadCompletionCallback aCompletionCallback);
 
