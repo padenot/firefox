@@ -1072,6 +1072,7 @@ enum WebIDLUtilityActorName {
   "windowsUtils",
   "windowsFileDialog",
   "pkcs11Module",
+  "hwInference",
 };
 
 dictionary UtilityActorsDictionary {

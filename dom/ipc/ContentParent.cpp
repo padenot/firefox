@@ -50,6 +50,7 @@
 #include "mozilla/HangDetails.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/PageloadEvent.h"
 #include "mozilla/Preferences.h"
@@ -150,6 +151,9 @@
 #include "mozilla/glean/IpcMetrics.h"
 #include "mozilla/glean/PFOGTransport.h"
 #include "mozilla/hal_sandbox/PHalParent.h"
+#ifndef ANDROID
+#  include "mozilla/hwinference/PHWInferenceManagerChild.h"
+#endif  // !ANDROID
 #include "mozilla/intl/L10nRegistry.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/intl/OSPreferences.h"
@@ -164,6 +168,7 @@
 #include "mozilla/ipc/SharedMemoryHandle.h"
 #include "mozilla/ipc/TestShellParent.h"
 #include "mozilla/ipc/URIUtils.h"
+#include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/ImageBridgeParent.h"
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
@@ -5235,6 +5240,15 @@ mozilla::ipc::IPCResult ContentParent::RecvCreateAudioIPCConnection(
   aResolver(result);
   return IPC_OK();
 }
+
+#ifndef ANDROID
+mozilla::ipc::IPCResult ContentParent::RecvRequestHWInferenceConnection(
+    Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint) {
+  UtilityProcessManager::GetSingleton()->StartContentHWInferenceManager(
+      std::move(aEndpoint), mChildID);
+  return IPC_OK();
+}
+#endif  // !ANDROID
 
 already_AddRefed<extensions::PExtensionsParent>
 ContentParent::AllocPExtensionsParent() {

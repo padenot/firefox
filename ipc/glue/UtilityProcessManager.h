@@ -6,6 +6,10 @@
 #include "mozilla/MozPromise.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/ipc/UtilityProcessHost.h"
+#ifndef ANDROID
+#  include "mozilla/hwinference/HWInferenceParent.h"
+#  include "mozilla/hwinference/PHWInferenceManagerChild.h"
+#endif  // !ANDROID
 #include "mozilla/EnumeratedArray.h"
 #include "mozilla/ProcInfo.h"
 #include "nsIObserver.h"
@@ -59,6 +63,11 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   using PKCS11ModulePromise = LaunchPromise<RefPtr<psm::PKCS11ModuleParent>>;
 #endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
+#ifndef ANDROID
+  using HWInferencePromise =
+      LaunchPromise<RefPtr<hwinference::HWInferenceParent>>;
+#endif  // !ANDROID
+
   static RefPtr<UtilityProcessManager> GetSingleton();
 
   static RefPtr<UtilityProcessManager> GetIfExists();
@@ -92,6 +101,16 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
 #if defined(NIGHTLY_BUILD) && !defined(MOZ_NO_SMART_CARDS)
   RefPtr<PKCS11ModulePromise> StartPKCS11Module();
 #endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
+
+  // Starts (or reuses) the HWInference process.
+  RefPtr<HWInferencePromise> StartHWInference();
+
+  // Starts the content HWInference instance and hands aEndpoint to it. The
+  // endpoint closes itself if that fails, so there is nothing to report back.
+  void StartContentHWInferenceManager(
+      Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,
+      dom::ContentParentId aChildId);
+#endif  // !ANDROID
 
   void OnProcessUnexpectedShutdown(UtilityProcessHost* aHost);
 

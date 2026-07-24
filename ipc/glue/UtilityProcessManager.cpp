@@ -10,6 +10,9 @@
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/SyncRunnable.h"  // for LaunchUtilityProcess
+#ifndef ANDROID
+#  include "mozilla/hwinference/PHWInferenceChild.h"
+#endif  // !ANDROID
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/ipc/UtilityMediaServiceChild.h"
 #include "mozilla/ipc/UtilityMediaServiceParent.h"
@@ -297,6 +300,8 @@ UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
 
           nsresult rv = aActor->BindToUtilityProcess(utilityParent);
           if (NS_FAILED(rv)) {
+            LOGD("BindToUtilityProcess failed with rv=%x",
+                 static_cast<uint32_t>(rv));
             MOZ_ASSERT(false, "Protocol endpoints failure");
             return RetPromise::CreateAndReject(
                 LaunchError("BindToUtilityProcess", rv), __func__);
@@ -547,6 +552,41 @@ UtilityProcessManager::StartPKCS11Module() {
 }
 #endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
+#ifndef ANDROID
+RefPtr<UtilityProcessManager::HWInferencePromise>
+UtilityProcessManager::StartHWInference() {
+  LOGD("[%p] StartHWInference called", this);
+  RefPtr<UtilityProcessManager> self = this;
+  using RetPromise = HWInferencePromise;
+  RefPtr<hwinference::HWInferenceParent> hwip =
+      hwinference::HWInferenceParent::GetSingleton();
+  MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
+  LOGD("[%p] Starting HWInference utility process with HW_INFERENCE sandboxing",
+       this);
+  return StartUtility(hwip, SandboxingKind::HW_INFERENCE)
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [self, hwip]() {
+            LOGD("StartHWInference: Utility process started successfully");
+            if (!hwip->CanSend()) {
+              MOZ_ASSERT(false, "HWInferenceParent lost in the middle");
+              LOGD("StartHWInference: HWInferenceParent cannot send!");
+              return RetPromise::CreateAndReject(
+                  LaunchError("StartHWInference: !hwip->CanSend()"),
+                  __PRETTY_FUNCTION__);
+            }
+            LOGD("StartHWInference: HWInferenceParent ready, CanSend=true");
+            return RetPromise::CreateAndResolve(std::move(hwip), __func__);
+          },
+          [](LaunchError&& aError) {
+            LOGD("StartHWInference: Failed to start utility process: %s",
+                 aError.FunctionName().get());
+            MOZ_ASSERT_UNREACHABLE("PHWInference: failure when starting actor");
+            return RetPromise::CreateAndReject(std::move(aError), __func__);
+          });
+}
+#endif  // !ANDROID
+
 bool UtilityProcessManager::IsProcessLaunching(SandboxingKind aSandbox) {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -563,8 +603,9 @@ bool UtilityProcessManager::IsProcessDestroyed(SandboxingKind aSandbox) {
   MOZ_ASSERT(NS_IsMainThread());
   RefPtr<ProcessFields> p = GetProcess(aSandbox);
   if (!p) {
-    MOZ_CRASH("Cannot check process destroyed with no process");
-    return false;
+    // DestroyProcess() removes the entry, so having none is the end state of a
+    // destroyed process rather than a caller error.
+    return true;
   }
   return !p->mProcess && !p->mProcessParent;
 }
@@ -637,13 +678,13 @@ void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox) {
   p->mQueuedPrefs.Clear();
   p->mProcessParent = nullptr;
 
-  if (!p->mProcess) {
-    return;
+  if (p->mProcess) {
+    p->mProcess->Shutdown();
+    p->mProcess = nullptr;
   }
 
-  p->mProcess->Shutdown();
-  p->mProcess = nullptr;
-
+  // Unconditionally, so a process that is already gone does not stay in
+  // mProcesses as a dead entry that GetProcess() would keep handing out.
   mProcesses[aSandbox] = nullptr;
 
   CrashReporter::RecordAnnotationCString(
@@ -709,6 +750,29 @@ class UtilityMemoryReporter : public MemoryReportingProcess {
 RefPtr<MemoryReportingProcess> UtilityProcessManager::GetProcessMemoryReporter(
     UtilityProcessParent* parent) {
   return new UtilityMemoryReporter(parent);
+}
+
+void UtilityProcessManager::StartContentHWInferenceManager(
+    Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,
+    dom::ContentParentId aChildId) {
+  LOGD(
+      "[%p] UtilityProcessManager::StartContentHWInferenceManager for content "
+      "%d",
+      this, static_cast<int>(aChildId));
+
+  StartHWInference()->Then(
+      GetMainThreadSerialEventTarget(), __func__,
+      [endpoint = std::move(aEndpoint),
+       aChildId](RefPtr<hwinference::HWInferenceParent> hwip) mutable {
+        // Send parent endpoint to utility process
+        if (!hwip->SendNewContentHWInferenceManager(std::move(endpoint),
+                                                    aChildId)) {
+          LOGD("Failed to send endpoint to utility process");
+        }
+      },
+      [](LaunchError&& aError) {
+        LOGD("Failed to start HWInference: %s", aError.FunctionName().get());
+      });
 }
 
 }  // namespace mozilla::ipc
