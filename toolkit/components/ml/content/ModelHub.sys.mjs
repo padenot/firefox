@@ -2380,23 +2380,96 @@ export class ModelHub {
     revision,
     { file = "config.json", modelHubRootUrl, modelHubUrlTemplate } = {}
   ) {
-    // First validate the input format
+    const url = this.#validatedFileUrl(model, revision, {
+      file,
+      modelHubRootUrl,
+      modelHubUrlTemplate,
+    });
+    if (!url) {
+      return false;
+    }
+
+    const cached = await this.#isCachedAndAllowed(model, revision, file, url);
+    if (cached !== null) {
+      return cached;
+    }
+
+    const response = await this.#fetch(url, { method: "HEAD" });
+    return response.ok;
+  }
+
+  /**
+   * Check if a model is already downloaded to the local cache. Unlike
+   * isModelAvailable, this only looks at the local cache: it does no network
+   * request at all, so it only reports true for a model that needs no
+   * download.
+   *
+   * @param {string} model - The model name (organization/name)
+   * @param {string} revision - The model revision
+   * @param {object} options - Additional options
+   * @param {string} [options.file="config.json"] - The file to check
+   * @param {string} [options.modelHubRootUrl] - Root URL of the model hub
+   * @param {string} [options.modelHubUrlTemplate] - URL template of the model hub
+   * @returns {Promise<boolean>} True if the model is already installed
+   */
+  async isModelInstalled(
+    model,
+    revision,
+    { file = "config.json", modelHubRootUrl, modelHubUrlTemplate } = {}
+  ) {
+    const url = this.#validatedFileUrl(model, revision, {
+      file,
+      modelHubRootUrl,
+      modelHubUrlTemplate,
+    });
+    if (!url) {
+      return false;
+    }
+
+    return (
+      (await this.#isCachedAndAllowed(model, revision, file, url)) === true
+    );
+  }
+
+  /**
+   * Shared by isModelAvailable/isModelInstalled: validates the inputs and
+   * builds the hub URL of a model file, returning null if the inputs are
+   * invalid.
+   *
+   * @returns {?string}
+   */
+  #validatedFileUrl(
+    model,
+    revision,
+    { file, modelHubRootUrl, modelHubUrlTemplate }
+  ) {
     const checkError = ModelHub.checkInput(model, revision, file);
     if (checkError) {
       lazy.console.error(
         `ModelHub: Invalid input for ${model}@${revision}: ${checkError.message}`
       );
-      return false;
+      return null;
     }
 
-    const url = this.#fileUrl({
+    return this.#fileUrl({
       model,
       revision,
       file,
       modelHubRootUrl: modelHubRootUrl || this.rootUrl,
       modelHubUrlTemplate: modelHubUrlTemplate || this.urlTemplate,
     });
+  }
 
+  /**
+   * Shared by isModelAvailable/isModelInstalled. Returns null if the file
+   * isn't cached at all (caller decides what to do next, e.g. a network
+   * check). Returns true/false if it is cached: true if its hub is still
+   * allowed, false (after purging the cached model) if it has since been
+   * denylisted.
+   *
+   * @returns {Promise<?boolean>}
+   */
+  async #isCachedAndAllowed(model, revision, file, url) {
     await this.#initCache();
     const hostname = new URL(url).hostname;
     const modelWithHostname = `${hostname}/${model}`;
@@ -2405,20 +2478,18 @@ export class ModelHub {
       revision,
       file,
     });
-    if (isCached) {
-      const fileAllowed = this.allowedURL(url);
-      if (!fileAllowed.allowed) {
-        await this.cache.deleteModels({
-          model: modelWithHostname,
-          revision,
-          deletedBy: "denylist",
-        });
-        return false;
-      }
-      return true;
+    if (!isCached) {
+      return null;
     }
-
-    const response = await this.#fetch(url, { method: "HEAD" });
-    return response.ok;
+    const fileAllowed = this.allowedURL(url);
+    if (!fileAllowed.allowed) {
+      await this.cache.deleteModels({
+        model: modelWithHostname,
+        revision,
+        deletedBy: "denylist",
+      });
+      return false;
+    }
+    return true;
   }
 }
