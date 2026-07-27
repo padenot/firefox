@@ -21,6 +21,7 @@
 #include "mozilla/hwinference/PHWInferenceManagerChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "nsIThread.h"
+#include "nsITimer.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
@@ -45,7 +46,32 @@ class Promise;
 
 class SpeechRecognitionBackend;
 
+// Holds the shared IPC actor open for as long as it's held, releasing on
+// destruction - tied to the guard's own lifetime rather than to a promise
+// settling. Gecko silently drops a promise's reaction jobs, including a
+// PromiseNativeHandler added via AppendNativeHandler, once the promise's
+// global has died (e.g. the calling iframe was detached before the async
+// IPC round trip completed); tying the hold to this refcounted guard
+// instead avoids leaking it - and everything it transitively keeps alive,
+// such as the shared HWInferenceManagerChild connection - forever whenever
+// a caller's frame goes away mid-flight.
+//
+// Obtained from EnsureIPC() (which also establishes the connection) or from
+// AcquireProcessKeepAlive() (which only counts), so the shared actor cannot
+// be used without something holding it open for as long as it is needed.
+class IPCActorUserGuard final {
+ public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(IPCActorUserGuard)
+
+ private:
+  friend class SpeechRecognitionBackend;
+  IPCActorUserGuard();
+  ~IPCActorUserGuard();
+};
+
 class SpeechRecognitionBackend {
+  friend class IPCActorUserGuard;
+
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(
       SpeechRecognitionBackend)
@@ -95,6 +121,11 @@ class SpeechRecognitionBackend {
   static RefPtr<GenericPromise> IsModelInstalledNative(
       nsTArray<nsCString>&& aLanguages);
 
+  // Keeps the HWInference process alive without establishing a connection,
+  // for a live SpeechRecognition object that has not called start() yet.
+  static already_AddRefed<IPCActorUserGuard> AcquireProcessKeepAlive()
+      MOZ_REQUIRES(sMainThreadCapability);
+
  private:
   SpeechRecognitionBackend(SpeechRecognition* aParent,
                            nsIThread* aResamplingThread, uint32_t aGraphRate,
@@ -124,29 +155,6 @@ class SpeechRecognitionBackend {
       MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionError(const nsACString& aError)
       MOZ_REQUIRES(sIPCCapability);
-
-  // Holds the shared IPC actor open for as long as it's held, releasing on
-  // destruction - tied to the guard's own lifetime rather than to a promise
-  // settling. Gecko silently drops a promise's reaction jobs, including a
-  // PromiseNativeHandler added via AppendNativeHandler, once the promise's
-  // global has died (e.g. the calling iframe was detached before the async
-  // IPC round trip completed); tying the hold to this refcounted guard
-  // instead avoids leaking it - and everything it transitively keeps alive,
-  // such as the shared HWInferenceManagerChild connection - forever whenever
-  // a caller's frame goes away mid-flight.
-  //
-  // The only way to obtain one is via EnsureIPC()'s return value, so it's not
-  // possible to use the shared actor without also holding a reference that
-  // keeps it open for as long as it's needed.
-  class IPCActorUserGuard final {
-   public:
-    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(IPCActorUserGuard)
-
-   private:
-    friend class SpeechRecognitionBackend;
-    IPCActorUserGuard() { SpeechRecognitionBackend::AcquireIPCActorUser(); }
-    ~IPCActorUserGuard();
-  };
 
   // Returns a guard holding the shared connection open, and kicks off the
   // connection setup on the IPC thread. Anything dispatched to the IPC thread

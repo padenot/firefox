@@ -28,6 +28,7 @@ namespace dom {
 
 class Promise;
 class SpeechRecognitionBackend;
+class IPCActorUserGuard;
 class SpeechRecognitionPhrase;
 
 #define SPEECH_RECOGNITION_TEST_EVENT_REQUEST_TOPIC \
@@ -252,6 +253,9 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   RefPtr<TrackListener> mListener;
   // Backend instance for handling audio processing
   RefPtr<SpeechRecognitionBackend> mBackend;
+  // Held for this object's lifetime, so an idle-but-live SpeechRecognition
+  // keeps the HWInference process up.
+  RefPtr<IPCActorUserGuard> mProcessKeepAlive;
 
   static nsTHashSet<nsCString> sDownloadingLanguages
       MOZ_GUARDED_BY(sMainThreadCapability);

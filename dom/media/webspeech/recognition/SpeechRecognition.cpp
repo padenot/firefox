@@ -127,6 +127,11 @@ SpeechRecognition::SpeechRecognition(nsPIDOMWindowInner* aOwnerWindow)
       mMaxAlternatives(1) {
   LOG("SpeechRecognition::SpeechRecognition");
 
+  // A live SpeechRecognition object keeps the HWInference process up, so that
+  // start() does not have to wait for a relaunch. Dropped in
+  // DisconnectFromOwner()/the destructor.
+  mProcessKeepAlive = SpeechRecognitionBackend::AcquireProcessKeepAlive();
+
   Reset();
 }
 
@@ -139,6 +144,8 @@ SpeechRecognition::~SpeechRecognition() {
     mBackend->Abort();
     mBackend = nullptr;
   }
+
+  mProcessKeepAlive = nullptr;
 }
 
 JSObject* SpeechRecognition::WrapObject(JSContext* aCx,
@@ -152,6 +159,8 @@ void SpeechRecognition::DisconnectFromOwner() {
     mBackend->Abort();
     mBackend = nullptr;
   }
+  // Don't wait for GC to stop holding the process up.
+  mProcessKeepAlive = nullptr;
   Reset();
   DOMEventTargetHelper::DisconnectFromOwner();
 }
