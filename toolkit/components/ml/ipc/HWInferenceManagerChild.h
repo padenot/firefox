@@ -21,6 +21,9 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
 
   HWInferenceManagerChild() = default;
 
+  // Adopts aEndpoint as the singleton connection. Each endpoint carries a
+  // reference on the HWInference process, released here if it can't be
+  // adopted (a concurrent request already connected), else in ActorDestroy.
   static void OpenForProcess(Endpoint<PHWInferenceManagerChild>&& aEndpoint);
 
   static RefPtr<HWInferenceManagerChild> GetSingleton();
@@ -29,6 +32,12 @@ class HWInferenceManagerChild final : public PHWInferenceManagerChild {
 
  private:
   ~HWInferenceManagerChild() = default;
+
+  // Binds aEndpoint as the singleton connection unless there already is a live
+  // one. Returns whether it was adopted.
+  static bool AdoptEndpoint(Endpoint<PHWInferenceManagerChild>&& aEndpoint);
+
+  static void ReleaseConnectionReference();
 
   static StaticRefPtr<HWInferenceManagerChild> sSingleton
       MOZ_GUARDED_BY(sSingletonMutex);

@@ -240,6 +240,28 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
   return p->mLaunchPromise;
 }
 
+already_AddRefed<UtilityProcessKeepAlive>
+UtilityProcessManager::LaunchProcessWithKeepAlive(SandboxingKind aSandbox) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  // Nothing here needs the launch promise: it is reachable from the keep-alive.
+  LaunchProcess(aSandbox);
+
+  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  if (!p) {
+    LOGD("[%p] LaunchProcessWithKeepAlive SandboxingKind=%" PRIu64
+         " - launch failed",
+         this, aSandbox);
+    return nullptr;
+  }
+
+  RefPtr<UtilityProcessKeepAlive> keepAlive = p->mKeepAlive;
+  if (!keepAlive) {
+    keepAlive = new UtilityProcessKeepAlive(p);
+  }
+  return keepAlive.forget();
+}
+
 template <typename Actor>
 RefPtr<UtilityProcessManager::LaunchPromise<Ok>>
 UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
@@ -250,8 +272,6 @@ UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
       "[%p] UtilityProcessManager::StartUtility actor=%p "
       "SandboxingKind=%" PRIu64,
       this, aActor.get(), aSandbox);
-
-  TimeStamp utilityStart = TimeStamp::Now();
 
   if (!aActor) {
     MOZ_ASSERT(false, "Actor singleton failure");
@@ -271,12 +291,37 @@ UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
     return RetPromise::CreateAndResolve(Ok{}, __func__);
   }
 
+  RefPtr<SharedLaunchPromise<Ok>> launchPromise = LaunchProcess(aSandbox);
+  RefPtr<ProcessFields> process = GetProcess(aSandbox);
+  if (!process) {
+    // LaunchProcess() failed outright and dropped the process.
+    NS_WARNING("Reject StartUtility() for LaunchProcess() failure");
+    return RetPromise::CreateAndReject(
+        LaunchError("UPM::StartUtility: LaunchProcess()"), __func__);
+  }
+
+  return StartUtilityOnProcess(std::move(aActor), process,
+                               std::move(launchPromise));
+}
+
+template <typename Actor>
+RefPtr<UtilityProcessManager::LaunchPromise<Ok>>
+UtilityProcessManager::StartUtilityOnProcess(
+    RefPtr<Actor> aActor, ProcessFields* aProcess,
+    RefPtr<SharedLaunchPromise<Ok>> aLaunchPromise) {
+  using RetPromise = LaunchPromise<Ok>;
+
+  MOZ_ASSERT(NS_IsMainThread());
+
+  TimeStamp utilityStart = TimeStamp::Now();
+  SandboxingKind sandbox = aProcess->mSandbox;
+
   RefPtr<UtilityProcessManager> self = this;
-  return LaunchProcess(aSandbox)->Then(
+  RefPtr<ProcessFields> process = aProcess;
+  return aLaunchPromise->Then(
       GetMainThreadSerialEventTarget(), __func__,
-      [self, aActor, aSandbox, utilityStart]() -> RefPtr<RetPromise> {
-        RefPtr<UtilityProcessParent> utilityParent =
-            self->GetProcessParent(aSandbox);
+      [self, aActor, sandbox, process, utilityStart]() -> RefPtr<RetPromise> {
+        RefPtr<UtilityProcessParent> utilityParent = process->mProcessParent;
         if (!utilityParent) {
           NS_WARNING("Missing parent in StartUtility");
           return RetPromise::CreateAndReject(
@@ -314,10 +359,10 @@ UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
         PROFILER_MARKER_TEXT(
             "UtilityProcessManager::StartUtility", IPC,
             MarkerOptions(MarkerTiming::IntervalUntilNowFrom(utilityStart)),
-            nsPrintfCString("SandboxingKind=%" PRIu64 " Resolve", aSandbox));
+            nsPrintfCString("SandboxingKind=%" PRIu64 " Resolve", sandbox));
         return RetPromise::CreateAndResolve(Ok{}, __func__);
       },
-      [self, aSandbox, utilityStart](LaunchError const& error) {
+      [self, sandbox, utilityStart](LaunchError const& error) {
         NS_WARNING("Reject StartUtility() for LaunchProcess() rejection");
         if (!self->IsShutdown()) {
           NS_WARNING("Reject StartUtility() when !IsShutdown()");
@@ -325,7 +370,7 @@ UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
         PROFILER_MARKER_TEXT(
             "UtilityProcessManager::StartUtility", IPC,
             MarkerOptions(MarkerTiming::IntervalUntilNowFrom(utilityStart)),
-            nsPrintfCString("SandboxingKind=%" PRIu64 " Reject", aSandbox));
+            nsPrintfCString("SandboxingKind=%" PRIu64 " Reject", sandbox));
         return RetPromise::CreateAndReject(error, __func__);
       });
 }
@@ -752,7 +797,9 @@ RefPtr<MemoryReportingProcess> UtilityProcessManager::GetProcessMemoryReporter(
   return new UtilityMemoryReporter(parent);
 }
 
-void UtilityProcessManager::StartContentHWInferenceManager(
+#ifndef ANDROID
+already_AddRefed<UtilityProcessKeepAlive>
+UtilityProcessManager::StartContentHWInferenceManager(
     Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,
     dom::ContentParentId aChildId) {
   LOGD(
@@ -760,10 +807,21 @@ void UtilityProcessManager::StartContentHWInferenceManager(
       "%d",
       this, static_cast<int>(aChildId));
 
-  StartHWInference()->Then(
+  // Before launching, so that an actor cached from a process that is already
+  // gone gets evicted rather than rebound: see GetSingleton().
+  RefPtr<hwinference::HWInferenceParent> hwip =
+      hwinference::HWInferenceParent::GetSingleton();
+  MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
+
+  RefPtr<UtilityProcessKeepAlive> keepAlive =
+      LaunchProcessWithKeepAlive(SandboxingKind::HW_INFERENCE);
+  if (!keepAlive) {
+    return nullptr;
+  }
+
+  keepAlive->StartUtility(hwip)->Then(
       GetMainThreadSerialEventTarget(), __func__,
-      [endpoint = std::move(aEndpoint),
-       aChildId](RefPtr<hwinference::HWInferenceParent> hwip) mutable {
+      [hwip, endpoint = std::move(aEndpoint), aChildId]() mutable {
         // Send parent endpoint to utility process
         if (!hwip->SendNewContentHWInferenceManager(std::move(endpoint),
                                                     aChildId)) {
@@ -773,6 +831,57 @@ void UtilityProcessManager::StartContentHWInferenceManager(
       [](LaunchError&& aError) {
         LOGD("Failed to start HWInference: %s", aError.FunctionName().get());
       });
+
+  return keepAlive.forget();
+}
+#endif  // !ANDROID
+
+UtilityProcessKeepAlive::UtilityProcessKeepAlive(
+    UtilityProcessManager::ProcessFields* aProcess)
+    : mProcess(aProcess) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mProcess->mKeepAlive);
+  mProcess->mKeepAlive = this;
+}
+
+UtilityProcessKeepAlive::~UtilityProcessKeepAlive() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mProcess->mKeepAlive == this);
+  mProcess->mKeepAlive = nullptr;
+
+  // Only shut down if this process is still the live one: it may have crashed
+  // and been relaunched, and that replacement is not ours to kill.
+  RefPtr<UtilityProcessManager> upm = UtilityProcessManager::GetIfExists();
+  if (!upm || upm->GetProcess(mProcess->mSandbox) != mProcess) {
+    LOGD("[%p] ~UtilityProcessKeepAlive - process already gone", this);
+    return;
+  }
+
+  LOGD("[%p] ~UtilityProcessKeepAlive - last consumer gone, shutting down",
+       this);
+  upm->CleanShutdown(mProcess->mSandbox);
+}
+
+RefPtr<UtilityProcessManager::SharedLaunchPromise<Ok>>
+UtilityProcessKeepAlive::GetLaunchPromise() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  return mProcess->mLaunchPromise;
+}
+
+template <typename Actor>
+RefPtr<UtilityProcessManager::LaunchPromise<Ok>>
+UtilityProcessKeepAlive::StartUtility(RefPtr<Actor> aActor) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  RefPtr<UtilityProcessManager> upm = UtilityProcessManager::GetIfExists();
+  if (!upm) {
+    return UtilityProcessManager::LaunchPromise<Ok>::CreateAndReject(
+        LaunchError("UPKA::StartUtility(): no UtilityProcessManager"),
+        __func__);
+  }
+
+  return upm->StartUtilityOnProcess(std::move(aActor), mProcess,
+                                    mProcess->mLaunchPromise);
 }
 
 }  // namespace mozilla::ipc

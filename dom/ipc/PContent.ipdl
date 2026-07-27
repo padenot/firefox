@@ -1199,6 +1199,11 @@ parent:
 #ifndef ANDROID
     async RequestHWInferenceConnection(Endpoint<PHWInferenceManagerParent> endpoint);
 
+    // One call per RequestHWInferenceConnection. The process is shut down once
+    // nothing holds it anymore.
+    async ReleaseHWInferenceConnection();
+#endif  // !ANDROID
+
     sync PURLClassifier(nullable nsIPrincipal principal)
         returns (bool success);
 

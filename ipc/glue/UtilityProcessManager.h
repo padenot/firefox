@@ -37,12 +37,14 @@ class ProcessProxy;
 namespace ipc {
 
 class UtilityProcessParent;
+class UtilityProcessKeepAlive;
 
 // The UtilityProcessManager is a singleton responsible for creating
 // Utility-bound objects that may live in another process. Currently, it
 // provides access to the Utility process via ContentParent.
 class UtilityProcessManager final : public UtilityProcessHost::Listener {
   friend class UtilityProcessParent;
+  friend class UtilityProcessKeepAlive;
 
  public:
   template <typename T>
@@ -75,6 +77,15 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   // Launch a new Utility process asynchronously
   RefPtr<SharedLaunchPromise<Ok>> LaunchProcess(SandboxingKind aSandbox);
 
+  // Like LaunchProcess(), but hands back a keep-alive on the process: it is
+  // shut down as soon as the last keep-alive on it goes away, rather than
+  // living until browser shutdown. There is a single keep-alive per process,
+  // shared by every caller, so a kind opts into this policy by having all of
+  // its consumers come through here. Returns nullptr if the launch failed
+  // outright. Main thread only.
+  already_AddRefed<UtilityProcessKeepAlive> LaunchProcessWithKeepAlive(
+      SandboxingKind aSandbox);
+
   template <typename Actor>
   RefPtr<LaunchPromise<Ok>> StartUtility(RefPtr<Actor> aActor,
                                          SandboxingKind aSandbox);
@@ -102,12 +113,14 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   RefPtr<PKCS11ModulePromise> StartPKCS11Module();
 #endif  // NIGHTLY_BUILD && !MOZ_NO_SMART_CARDS
 
+#ifndef ANDROID
   // Starts (or reuses) the HWInference process.
   RefPtr<HWInferencePromise> StartHWInference();
 
-  // Starts the content HWInference instance and hands aEndpoint to it. The
-  // endpoint closes itself if that fails, so there is nothing to report back.
-  void StartContentHWInferenceManager(
+  // Starts the HWInference process and hands aEndpoint to it. The endpoint
+  // closes itself if that fails, so there is nothing to report back. The
+  // returned keep-alive is the caller's share of that process' lifetime.
+  already_AddRefed<UtilityProcessKeepAlive> StartContentHWInferenceManager(
       Endpoint<hwinference::PHWInferenceManagerParent>&& aEndpoint,
       dom::ContentParentId aChildId);
 #endif  // !ANDROID
@@ -255,6 +268,10 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
 
     SandboxingKind mSandbox = SandboxingKind::COUNT;
 
+    // The keep-alive handed out for this process, if any: it clears this on
+    // destruction, see LaunchProcessWithKeepAlive.
+    UtilityProcessKeepAlive* mKeepAlive = nullptr;
+
    protected:
     ~ProcessFields() = default;
   };
@@ -266,9 +283,45 @@ class UtilityProcessManager final : public UtilityProcessHost::Listener {
   RefPtr<ProcessFields> GetProcess(SandboxingKind);
   bool NoMoreProcesses();
 
+  // Core of both StartUtility() entry points: binds aActor to aProcess once
+  // aLaunchPromise resolves. The launch promise is passed in rather than read
+  // off aProcess because LaunchProcess() can reject without storing one there.
+  template <typename Actor>
+  RefPtr<LaunchPromise<Ok>> StartUtilityOnProcess(
+      RefPtr<Actor> aActor, ProcessFields* aProcess,
+      RefPtr<SharedLaunchPromise<Ok>> aLaunchPromise);
+
 #ifdef XP_WIN
   RefPtr<dom::WindowsUtilsParent> mWindowsUtils;
 #endif  // XP_WIN
+};
+
+// Holds the utility process it was acquired on, and shuts that process down
+// once the last reference on it goes away. Handed out by
+// UtilityProcessManager::LaunchProcessWithKeepAlive(). Main thread only.
+class UtilityProcessKeepAlive final {
+ public:
+  NS_INLINE_DECL_REFCOUNTING(UtilityProcessKeepAlive);
+
+  // Resolves once the process this was acquired on has finished launching.
+  RefPtr<UtilityProcessManager::SharedLaunchPromise<Ok>> GetLaunchPromise()
+      const;
+
+  // Like UtilityProcessManager::StartUtility(), but binds aActor to the process
+  // this keep-alive was acquired on, rather than to whichever one is current
+  // for its SandboxingKind.
+  template <typename Actor>
+  RefPtr<UtilityProcessManager::LaunchPromise<Ok>> StartUtility(
+      RefPtr<Actor> aActor);
+
+ private:
+  friend class UtilityProcessManager;
+
+  explicit UtilityProcessKeepAlive(
+      UtilityProcessManager::ProcessFields* aProcess);
+  ~UtilityProcessKeepAlive();
+
+  const RefPtr<UtilityProcessManager::ProcessFields> mProcess;
 };
 
 }  // namespace ipc

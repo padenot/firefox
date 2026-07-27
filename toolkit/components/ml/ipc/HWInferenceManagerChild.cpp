@@ -5,8 +5,10 @@
 
 #include "HWInferenceManagerChild.h"
 #include "mozilla/Logging.h"
+#include "mozilla/dom/ContentChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/StaticPtr.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla::hwinference {
 
@@ -20,30 +22,60 @@ StaticRefPtr<HWInferenceManagerChild> HWInferenceManagerChild::sSingleton;
 StaticMutex HWInferenceManagerChild::sSingletonMutex;
 
 /* static */
-void HWInferenceManagerChild::OpenForProcess(
-    Endpoint<PHWInferenceManagerChild>&& aEndpoint) {
-  LOGD("{} - Opening connection to utility process", __func__);
+void HWInferenceManagerChild::ReleaseConnectionReference() {
+  auto release = []() {
+    // Null in the parent process, which holds its reference directly.
+    if (dom::ContentChild* contentChild = dom::ContentChild::GetSingleton()) {
+      (void)contentChild->SendReleaseHWInferenceConnection();
+    }
+  };
 
+  if (NS_IsMainThread()) {
+    release();
+  } else {
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "HWInferenceManagerChild::ReleaseConnectionReference", release));
+  }
+}
+
+/* static */
+bool HWInferenceManagerChild::AdoptEndpoint(
+    Endpoint<PHWInferenceManagerChild>&& aEndpoint) {
   StaticMutexAutoLock lock(sSingletonMutex);
 
   if (sSingleton && sSingleton->CanSend()) {
-    LOGD("{} - Already have active singleton, reusing", __func__);
-    return;
+    LOGD("OpenForProcess - Already have active singleton, reusing");
+    return false;
   }
 
   sSingleton = nullptr;
 
-  if (aEndpoint.IsValid()) {
-    LOGD("Creating new manager and binding endpoint");
-    RefPtr<HWInferenceManagerChild> manager = new HWInferenceManagerChild();
-    if (aEndpoint.Bind(manager)) {
-      sSingleton = manager;
-      LOGD("Successfully bound endpoint, connection ready", __func__);
-    } else {
-      LOGE("{} - ERROR: Failed to bind endpoint", __func__);
-    }
-  } else {
-    LOGE("{} - ERROR: Invalid endpoint received", __func__);
+  if (!aEndpoint.IsValid()) {
+    LOGE("OpenForProcess - ERROR: Invalid endpoint received");
+    return false;
+  }
+
+  LOGD("Creating new manager and binding endpoint");
+  RefPtr<HWInferenceManagerChild> manager = new HWInferenceManagerChild();
+  if (!aEndpoint.Bind(manager)) {
+    LOGE("OpenForProcess - ERROR: Failed to bind endpoint");
+    return false;
+  }
+
+  sSingleton = manager;
+  LOGD("Successfully bound endpoint, connection ready");
+  return true;
+}
+
+/* static */
+void HWInferenceManagerChild::OpenForProcess(
+    Endpoint<PHWInferenceManagerChild>&& aEndpoint) {
+  LOGD("{} - Opening connection to utility process", __func__);
+
+  // Every endpoint carries a reference on the HWInference process. The one we
+  // adopt holds it until ActorDestroy; any other has to hand it back now.
+  if (!AdoptEndpoint(std::move(aEndpoint))) {
+    ReleaseConnectionReference();
   }
 }
 
@@ -56,8 +88,17 @@ RefPtr<HWInferenceManagerChild> HWInferenceManagerChild::GetSingleton() {
 void HWInferenceManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("{} reason={}, clearing singleton", __func__, static_cast<int>(aReason));
 
-  StaticMutexAutoLock lock(sSingletonMutex);
-  sSingleton = nullptr;
+  {
+    StaticMutexAutoLock lock(sSingletonMutex);
+    // AdoptEndpoint() replaces a singleton that can no longer send, so an
+    // ActorDestroy arriving after that must not clear its replacement.
+    if (sSingleton == this) {
+      sSingleton = nullptr;
+    }
+  }
+
+  // Outside the lock: this dispatches to the main thread.
+  ReleaseConnectionReference();
 }
 
 }  // namespace mozilla::hwinference

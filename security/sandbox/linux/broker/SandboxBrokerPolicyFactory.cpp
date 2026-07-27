@@ -1302,9 +1302,9 @@ SandboxBrokerPolicyFactory::GetHWInferencePolicy(int aPid) {
   AddLdconfigPaths(policy.get());
   AddLdLibraryEnvPaths(policy.get());
 
-#if defined(MOZ_PROFILE_GENERATE)
+#  if defined(MOZ_PROFILE_GENERATE)
   AddLLVMProfilePathDirectory(policy.get());
-#endif
+#  endif
 
   return policy;
 }
