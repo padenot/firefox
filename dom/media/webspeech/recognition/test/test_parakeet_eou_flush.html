@@ -1,0 +1,208 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SpeechRecognition: an utterance's last word is delivered at &lt;EOU&gt;, not a whole utterance later</title>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="head.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
+</head>
+<body>
+<div id="content"></div>
+<div id="results">
+  <label>During the silence after the first sentence:</label>
+  <div class="recognized" id="rec-text-gap">waiting...</div>
+  <label>Whole clip:</label>
+  <div class="recognized" id="rec-text">waiting...</div>
+</div>
+<pre id="test">
+<script>
+"use strict";
+
+// A cache-aware transducer commits text token-by-token and a word can be
+// extended by the next token, so mid-stream the streaming session holds its
+// trailing word back. An <EOU> token ends the utterance and resets the decoder,
+// so that word can no longer grow and is final right then.
+// This test check that during continuous recognition, two sentences separated
+// by silence, the first sentence's last word must reach the page DURING the
+// silence, not once the second sentence starts being decoded (e.g. after a
+// subsequent flush).
+//
+// pangrams.opus is roughly like this:
+//
+//   0.00 - 0.71s  silence
+//   0.71 - 3.57s  "the quick brown fox jumps over the lazy dog"
+//   3.57 - 7.74s  silence            <- <EOU> fires in here
+//   7.74 - 10.36s "pack my box with five dozen liquor jugs"
+//   10.36 - 12.5s silence
+//
+// Uses en-US on purpose: realtime_eou_120m is the EOU-aware model (see
+// models.yaml). The multilingual nemotron model has no <EOU> piece, so there
+// is nothing to test there. If we change model type for english, this might
+// been a revisit.
+
+const SERVER_PORT = 8766;
+const LANG = "en-US";
+
+// Inside the silence, after the first sentence and before any of the second
+// sentence's audio has been fed.
+const GAP_SNAPSHOT_AT_S = 7.5;
+const U1_LAST_WORD = "dog";
+// Time after the clip ends for the trailing sentence to be recognized. The
+// audio graph keeps feeding silence once the element ends, so the tail <EOU>
+// fires in here.
+const SETTLE_MS = 4000;
+
+SimpleTest.requestCompleteLog();
+SimpleTest.requestFlakyTimeout("waiting for parakeet inference to complete");
+
+const T0 = performance.now();
+const ms = () => "+" + Math.round(performance.now() - T0) + "ms";
+function diag(msg) { info("[diag " + ms() + "] " + msg); }
+const wait = m => new Promise(r => setTimeout(r, m));
+
+// Recognized text compared as a lowercased word list, so the assertions don't
+// depend on the model's punctuation or spacing.
+function words(text) {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").split(/\s+/).filter(Boolean);
+}
+
+add_setup(async function setup() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["media.webspeech.recognition.enable", true],
+      ["browser.ml.modelHubRootUrl", `http://localhost:${SERVER_PORT}/`],
+      ["media.webspeech.recognition.model-download.prompt.testing", true],
+      ["media.navigator.permission.disabled", true],
+    ],
+  });
+});
+
+add_task(async function last_word_delivered_at_eou() {
+  const installed = await ensureModelInstalled([LANG]);
+  diag(`model installed: ${installed}`);
+  ok(installed, "Model installed successfully");
+  if (!installed) {
+    return;
+  }
+
+  const ctx = await createResumedAudioContext();
+  diag(`AudioContext after resume(): state=${ctx.state}`);
+
+  // Silent looping source: keeps the graph producing once the clip ends, so the
+  // recognizer sees trailing silence rather than a stalled track.
+  const kickBuf = ctx.createBuffer(1, 2048, ctx.sampleRate);
+  const kick = ctx.createBufferSource();
+  kick.buffer = kickBuf;
+  kick.loop = true;
+  kick.connect(ctx.destination);
+  kick.start(0);
+
+  const audio = await loadTestAudio("pangrams.opus", a => {
+    a.id = "audioElement";
+    a.controls = true;
+  });
+  diag(`audio loaded: duration=${audio.duration.toFixed(2)}s`);
+
+  const src = ctx.createMediaElementSource(audio);
+  const dst = ctx.createMediaStreamDestination();
+  src.connect(dst);
+  src.connect(ctx.destination);
+
+  const track = dst.stream.getAudioTracks()[0];
+  ok(track, "Got audio track");
+
+  audio.currentTime = 0;
+  await audio.play().then(() => diag("audio.play() resolved"),
+                          e => diag("audio.play() rejected: " + e));
+
+  const maxLevel = await waitForAudioFlowing(ctx, dst.stream);
+  diag(`audio is flowing into the track (peak FFT level ${maxLevel})`);
+
+  const sr = new SpeechRecognition();
+  sr.continuous = true;
+  sr.lang = LANG;
+
+  const finals = [];
+  const transcript = () => finals.join(" ").replace(/\s+/g, " ").trim();
+
+  sr.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        const text = e.results[i][0].transcript;
+        finals.push(text);
+        diag(`final result #${finals.length} at currentTime=` +
+             `${audio.currentTime.toFixed(2)}s: "${text}"`);
+      }
+    }
+    document.getElementById("rec-text").textContent = transcript();
+  };
+  sr.onspeechend = () => diag("event: speechend");
+  sr.onaudioend = () => diag("event: audioend");
+
+  const ended = new Promise((resolve, reject) => {
+    sr.onend = () => { diag("event: end"); resolve(); };
+    sr.onerror = e => {
+      diag(`event: ERROR error="${e.error}" message="${e.message}"`);
+      reject(new Error(e.error));
+    };
+  });
+
+  diag("calling sr.start(track)");
+  sr.start(track);
+
+  // Snapshot inside the silence between the two sentences.
+  while (audio.currentTime < GAP_SNAPSHOT_AT_S && !audio.ended) {
+    await wait(100);
+  }
+  const gapWords = words(transcript());
+  diag(`in the silence at currentTime=${audio.currentTime.toFixed(2)}s ` +
+       `(${finals.length} finals): "${transcript()}"`);
+  document.getElementById("rec-text-gap").textContent = transcript();
+
+  // Let the clip finish, then give the trailing sentence time to come back.
+  while (!audio.ended) {
+    await wait(100);
+  }
+  diag("clip ended, settling");
+  await wait(SETTLE_MS);
+
+  // Everything delivered while the session is still listening: stop() has not
+  // been called, so none of this came from the end-of-stream flush.
+  const beforeStop = transcript();
+  diag(`before stop() (${finals.length} finals): "${beforeStop}"`);
+
+  // stop() must deliver whatever its end-of-stream flush produces before
+  // "end", so awaiting "end" is enough to have collected everything.
+  diag("calling sr.stop()");
+  sr.stop();
+  await ended;
+
+  const afterStop = transcript();
+  diag(`after stop() (${finals.length} finals): "${afterStop}"`);
+
+  audio.pause();
+  await ctx.close();
+
+  const allWords = words(afterStop);
+
+  isnot(gapWords.length, 0,
+        "The first sentence was recognized during the silence that follows it");
+  is(gapWords[gapWords.length - 1], U1_LAST_WORD,
+     `The first sentence is complete during the silence, ending in ` +
+     `"${U1_LAST_WORD}" rather than withholding it. Got: "${gapWords.join(" ")}"`);
+  ok(allWords.length > gapWords.length &&
+     allWords.slice(0, gapWords.length).join(" ") === gapWords.join(" "),
+     `The second sentence was still to come when the snapshot above was taken ` +
+     `(${gapWords.length} words then, ${allWords.length} in the end), so ` +
+     `"${U1_LAST_WORD}" was delivered at <EOU> and not flushed out by the ` +
+     `next utterance. Got: "${afterStop}"`);
+  is(afterStop, beforeStop,
+     "The end-of-stream flush added no words: the trailing sentence was also " +
+     "delivered at its <EOU>. Words only the flush produced: " +
+     `"${afterStop.slice(beforeStop.length).trim()}"`);
+});
+</script>
+</pre>
+</body>
+</html>
