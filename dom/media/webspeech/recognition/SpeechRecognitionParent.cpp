@@ -4,12 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "SpeechRecognitionParent.h"
+
 #include <algorithm>
 #include <chrono>
 #include <thread>
 
 #include "SpeechRecognitionModelMapping.h"
-#include "SpeechRecognitionParent.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Preferences.h"
@@ -19,7 +20,6 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/hwinference/HWInferenceChild.h"
-#include "mozilla/hwinference/HWInferenceManagerParent.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/UtilityProcessChild.h"
@@ -200,12 +200,9 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
   AppendUTF8toUTF16(
       nsDependentCString(nsIDToCString(nsID::GenerateUUID()).get()),
       progressToken);
-  dom::ContentParentId contentId =
-      static_cast<HWInferenceManagerParent*>(Manager())->ContentId();
-
   hwInferenceChild
       ->SendInstallModel(nsCString(dom::kSpeechRecognitionTask), modelId,
-                         aInnerWindowId, contentId, progressToken)
+                         aInnerWindowId, mContentId, progressToken)
       ->Then(GetCurrentSerialEventTarget(), __func__,
              [self = RefPtr{this}, aResolver = std::move(aResolver)](
                  PHWInferenceChild::InstallModelPromise::ResolveOrRejectValue&&
@@ -218,8 +215,10 @@ mozilla::ipc::IPCResult SpeechRecognitionParent::RecvInstallModels(
   return IPC_OK();
 }
 
-SpeechRecognitionParent::SpeechRecognitionParent()
-    : mLock("SpeechRecognitionLock"),
+SpeechRecognitionParent::SpeechRecognitionParent(
+    dom::ContentParentId aContentId)
+    : mContentId(aContentId),
+      mLock("SpeechRecognitionLock"),
       // We expect that in some less powerful computer that aren't doing hw
       // accelerated recognition, having a very long queue can smooth things
       // out.

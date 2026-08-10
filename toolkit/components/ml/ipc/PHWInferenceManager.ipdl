@@ -21,14 +21,20 @@ namespace hwinference {
 // behalf of, or read data belonging to, another content process's
 // connection.
 // See the "Security" section of toolkit/components/ml/docs/HWInference.md.
+//
+// This actor is a process-wide singleton bound on the main thread on both
+// sides. Task protocols are created as toplevel connections rather than
+// managed by it, so each consumer picks the thread it binds its side on
+// instead of inheriting this one.
 [ParentProc=Utility, ChildProc=Content]
 protocol PHWInferenceManager
 {
-  manages PSpeechRecognition;
-
 parent:
-  // Create a new speech recognition session
-  async PSpeechRecognition();
+  // Creates a new toplevel PSpeechRecognition connection: the utility process
+  // binds the parent side and gives it this connection's trusted content id,
+  // and resolves with the child side, which the caller binds on
+  // whichever thread it wants. Resolves with an invalid endpoint on failure.
+  async CreateSpeechRecognition() returns (Endpoint<PSpeechRecognitionChild> endpoint);
 };
 
 } // namespace hwinference

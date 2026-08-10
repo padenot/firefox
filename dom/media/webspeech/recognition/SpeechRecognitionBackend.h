@@ -19,7 +19,7 @@
 #include "mozilla/ThreadSafety.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/WeakPtr.h"
-#include "mozilla/hwinference/PHWInferenceManagerChild.h"
+#include "mozilla/hwinference/HWInferenceManagerChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "nsIThread.h"
 #include "nsITimer.h"
@@ -57,9 +57,11 @@ class SpeechRecognitionBackend;
 // such as the shared HWInferenceManagerChild connection - forever whenever
 // a caller's frame goes away mid-flight.
 //
-// Obtained from EnsureIPC() (which also establishes the connection) or from
-// AcquireProcessKeepAlive() (which only counts), so the shared actor cannot
-// be used without something holding it open for as long as it is needed.
+// Obtained from EnsureIPC() or from AcquireProcessKeepAlive(), so the shared
+// actor cannot be used without something holding it open for as long as it is
+// needed. This counts speech's own users; the shared connection itself is held
+// by a single HWInferenceConnectionGuard, taken while there is at least one
+// user and dropped once the grace period below has elapsed.
 class IPCActorUserGuard final {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(IPCActorUserGuard)
@@ -77,7 +79,10 @@ class IPCActorUserGuard final {
 // It uses 3 threads:
 // - the main thread, where the SpeechRecognition object calls
 // - The real-time thread from the MTG, to receive and process the audio
-// - an IPC thread, to interact with the HWInference process
+// - an IPC thread, on which the per-session PSpeechRecognition actor is bound,
+// so the audio path doesn't share the main thread. The process-wide
+// PHWInferenceManager connection this session is created from lives on the
+// main thread instead, being shared with every other HWInference consumer.
 //
 // Member accesses are to be checked statically
 class SpeechRecognitionBackend {
@@ -138,7 +143,7 @@ class SpeechRecognitionBackend {
   static RefPtr<GenericPromise> IsModelInstalledNative(
       nsTArray<nsCString>&& aLanguages);
 
-  // Keeps the HWInference process alive without establishing a connection,
+  // Keeps the shared connection, and with it the HWInference process, alive
   // for a live SpeechRecognition object that has not called start() yet.
   static already_AddRefed<IPCActorUserGuard> AcquireProcessKeepAlive()
       MOZ_REQUIRES(sMainThreadCapability);
@@ -169,7 +174,11 @@ class SpeechRecognitionBackend {
   TimeStamp CaptureTimeForTrackPosition(TrackTime aPosition);
 
   // == IPC thread
-  void StartSpeechRecognitionSession(const nsACString& aLanguage)
+  // Takes over a session actor freshly bound on the IPC thread, wires its
+  // callbacks up and initializes the engine.
+  void StartSpeechRecognitionSession(
+      const nsACString& aLanguage,
+      RefPtr<hwinference::SpeechRecognitionChild>&& aChild)
       MOZ_REQUIRES(sIPCCapability);
   void HandleRecognitionResult(const nsACString& aTranscript, bool aIsFinal,
                                float aConfidence, TimeStamp aEventTime)
@@ -177,27 +186,23 @@ class SpeechRecognitionBackend {
   void HandleRecognitionError(const nsACString& aError)
       MOZ_REQUIRES(sIPCCapability);
 
-  // Returns a guard holding the shared connection open, and kicks off the
-  // connection setup on the IPC thread. Anything dispatched to the IPC thread
-  // afterwards can use HWInferenceManagerChild::GetSingleton() right away.
+  // Returns a guard holding the shared connection open, the connection having
+  // been established by the time it returns:
+  // HWInferenceManagerChild::GetSingleton() is usable as soon as this returns.
   static already_AddRefed<IPCActorUserGuard> EnsureIPC()
       MOZ_REQUIRES(sMainThreadCapability);
-  // Binds this process' side of a new HWInference connection, and asks the
-  // parent process for the other side. No waiting: the actor is simply
-  // destroyed asynchronously if the connection cannot be completed.
-  static void EnsureConnectedOnIPCThread();
+  // Asks the shared connection for a new session actor, bound on the IPC
+  // thread. Rejects if there is no connection to ask. EnsureIPC() must have
+  // been called first.
+  static RefPtr<hwinference::SpeechRecognitionSessionPromise> RequestSession()
+      MOZ_REQUIRES(sMainThreadCapability);
 
-  // Returns the shared IPC thread's serial event target, creating the thread
-  // on first use. The target is stable for the process lifetime; its backing
-  // OS thread is released when idle (see GetOrCreateIPCThread's body).
-  static nsCOMPtr<nsISerialEventTarget> GetOrCreateIPCThread();
+  // Creates the shared IPC thread on first use, and publishes its serial event
+  // target as sIPCCapability. The target is stable for the process lifetime;
+  // its backing OS thread is released when idle (see the body).
+  static void EnsureIPCThread() MOZ_REQUIRES(sMainThreadCapability);
 
   static void AssertOnIPCThread() MOZ_ASSERT_CAPABILITY(sIPCCapability);
-  static void CloseIPCActorIfUnused();
-
-  // Closes HWInferenceManagerChild::GetSingleton() if open. Called on the IPC
-  // thread from the idle-close in CloseIPCActorIfUnused.
-  static void CloseHWInferenceChildIfAny();
 
   static void AcquireIPCActorUser();
   static void ReleaseIPCActorUser();
@@ -234,6 +239,12 @@ class SpeechRecognitionBackend {
   // the connection survives a brief gap between users. See
   // media.webspeech.recognition.idle_shutdown_grace_ms.
   static StaticRefPtr<nsITimer> sIdleCloseTimer
+      MOZ_GUARDED_BY(sMainThreadCapability);
+  // Speech's hold on the shared HWInference connection: a single guard, taken
+  // for the first user and dropped once the last one is gone and the grace
+  // period above has elapsed. Dropping it is what closes the connection, if no
+  // other consumer holds one of their own.
+  static StaticRefPtr<hwinference::HWInferenceConnectionGuard> sConnectionGuard
       MOZ_GUARDED_BY(sMainThreadCapability);
 
   // Upgraded to a RefPtr on the main thread only; see DispatchToParentIfAlive.

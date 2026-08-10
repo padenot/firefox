@@ -5,10 +5,10 @@
 
 #include "HWInferenceManagerParent.h"
 #include "mozilla/Logging.h"
-#ifndef ANDROID
-#  include "mozilla/hwinference/SpeechRecognitionParent.h"
-#endif
+#include "mozilla/hwinference/PSpeechRecognition.h"
+#include "mozilla/hwinference/SpeechRecognitionParent.h"
 #include "mozilla/ipc/Endpoint.h"
+#include "nsDebug.h"
 
 namespace mozilla::hwinference {
 
@@ -43,16 +43,36 @@ bool HWInferenceManagerParent::CreateForContent(
   return true;
 }
 
-already_AddRefed<PSpeechRecognitionParent>
-HWInferenceManagerParent::AllocPSpeechRecognitionParent() {
-  LOGD("[{}] HWInferenceManagerParent::AllocPSpeechRecognitionParent",
+ipc::IPCResult HWInferenceManagerParent::RecvCreateSpeechRecognition(
+    CreateSpeechRecognitionResolver&& aResolver) {
+  LOGD("[{}] HWInferenceManagerParent::RecvCreateSpeechRecognition",
        (void*)this);
 
-  RefPtr<SpeechRecognitionParent> actor = new SpeechRecognitionParent();
+  Endpoint<PSpeechRecognitionParent> parentEndpoint;
+  Endpoint<PSpeechRecognitionChild> childEndpoint;
+  if (NS_WARN_IF(NS_FAILED(PSpeechRecognition::CreateEndpoints(
+          &parentEndpoint, &childEndpoint)))) {
+    LOGE("[{}] Failed to create PSpeechRecognition endpoints", (void*)this);
+    aResolver(Endpoint<PSpeechRecognitionChild>());
+    return IPC_OK();
+  }
+
+  // mContentId is the id the parent process assigned to this connection, never
+  // anything content sent. The new session inherits it, so it stays subject to
+  // the same permission checks a managed actor used to get implicitly through
+  // its manager.
+  RefPtr<SpeechRecognitionParent> actor =
+      new SpeechRecognitionParent(mContentId);
+  if (!parentEndpoint.Bind(actor)) {
+    LOGE("[{}] Failed to bind SpeechRecognitionParent", (void*)this);
+    aResolver(Endpoint<PSpeechRecognitionChild>());
+    return IPC_OK();
+  }
+
   LOGD("[{}] Created SpeechRecognitionParent actor={:p}", (void*)this,
        (void*)actor.get());
-
-  return actor.forget();
+  aResolver(std::move(childEndpoint));
+  return IPC_OK();
 }
 
 void HWInferenceManagerParent::ActorDestroy(ActorDestroyReason aReason) {

@@ -20,6 +20,7 @@
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/hwinference/PHWInferenceChild.h"
 #include "mozilla/hwinference/PSpeechRecognitionParent.h"
 #include "nsCOMPtr.h"
@@ -45,7 +46,11 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(SpeechRecognitionParent, override)
 
-  SpeechRecognitionParent();
+  // aContentId is the GeckoChildID the parent process assigned to the
+  // PHWInferenceManager connection this session was created from. It is never
+  // supplied by content, and is forwarded to the parent process with install
+  // requests so it can check the requesting window really belongs to it.
+  explicit SpeechRecognitionParent(dom::ContentParentId aContentId);
 
   ipc::IPCResult RecvIsModelAvailable(const nsTArray<nsCString>& aLanguages,
                                       IsModelAvailableResolver&& aResolver);
@@ -99,6 +104,8 @@ class SpeechRecognitionParent final : public PSpeechRecognitionParent {
   // (mProcessedAudioPos's units), from capture timestamps received in
   // RecvProcessAudioData.
   TimeStamp CaptureTimeForPosition(size_t aPosition) MOZ_EXCLUDES(mTimingLock);
+
+  const dom::ContentParentId mContentId;
 
   // Static tracking of the single active recognition session
   static StaticMutex sSessionMutex;

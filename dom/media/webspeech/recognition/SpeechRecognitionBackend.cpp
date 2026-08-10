@@ -26,7 +26,6 @@
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/AudioStreamTrack.h"
-#include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/SpeechRecognitionBinding.h"
 #include "mozilla/hwinference/HWInferenceManagerChild.h"
@@ -45,16 +44,8 @@ StaticAutoPtr<mozilla::EventTargetCapability<nsISerialEventTarget>>
     SpeechRecognitionBackend::sIPCCapability;
 int32_t SpeechRecognitionBackend::sIPCActorUsers = 0;
 StaticRefPtr<nsITimer> SpeechRecognitionBackend::sIdleCloseTimer;
-
-/* static */
-void SpeechRecognitionBackend::CloseHWInferenceChildIfAny() {
-  AssertOnIPCThread();
-  RefPtr<mozilla::hwinference::HWInferenceManagerChild> child =
-      mozilla::hwinference::HWInferenceManagerChild::GetSingleton();
-  if (child) {
-    child->Close();
-  }
-}
+StaticRefPtr<hwinference::HWInferenceConnectionGuard>
+    SpeechRecognitionBackend::sConnectionGuard;
 
 static LazyLogModule gSpeechRecognitionBackendLog("SpeechRecognitionBackend");
 
@@ -83,10 +74,26 @@ void SpeechRecognitionBackend::CancelIdleCloseTimer() {
 /* static */
 void SpeechRecognitionBackend::AcquireIPCActorUser() {
   AssertIsOnMainThread();
-  // A new user within the grace period means the connection is wanted again;
-  // keep the established one rather than letting the idle close fire.
+  // A new user within the grace period means the connection is wanted again,
+  // so the idle close must not fire.
   CancelIdleCloseTimer();
-  sIPCActorUsers++;
+  if (sIPCActorUsers++) {
+    return;
+  }
+
+  // A guard still held at shutdown - a page holding a SpeechRecognition object
+  // to the end, say - would otherwise never be dropped, leaking the connection
+  // and the process reference it carries.
+  static bool sRegisteredClearOnShutdown = false;
+  if (!sRegisteredClearOnShutdown) {
+    sRegisteredClearOnShutdown = true;
+    ClearOnShutdown(&sConnectionGuard);
+  }
+  // Taken anew rather than kept when one survived the grace period, so that a
+  // connection that died in the meantime (the utility process crashed, say) is
+  // re-established. The new guard is taken before the old one is dropped, so
+  // the connection is never closed in between.
+  sConnectionGuard = hwinference::HWInferenceManagerChild::AcquireConnection();
 }
 
 /* static */
@@ -103,7 +110,7 @@ void SpeechRecognitionBackend::ReleaseIPCActorUser() {
   // no shutdown hook left to cancel a timer armed now: close immediately.
   if (!graceMs ||
       AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
-    CloseIPCActorIfUnused();
+    sConnectionGuard = nullptr;
     return;
   }
 
@@ -130,13 +137,13 @@ void SpeechRecognitionBackend::ReleaseIPCActorUser() {
         // Only still armed if nothing acquired in the meantime, since
         // AcquireIPCActorUser() cancels the timer.
         sIdleCloseTimer = nullptr;
-        CloseIPCActorIfUnused();
+        sConnectionGuard = nullptr;
       },
       graceMs, nsITimer::TYPE_ONE_SHOT,
       "SpeechRecognitionBackend::IdleClose"_ns);
 
   if (NS_FAILED(rv)) {
-    CloseIPCActorIfUnused();
+    sConnectionGuard = nullptr;
     return;
   }
   sIdleCloseTimer = timer.forget();
@@ -239,15 +246,22 @@ void SpeechRecognitionBackend::Start() {
   // backing OS thread is released once idle.
   mIPCActorUserGuard = EnsureIPC();
 
-  // Runs after the connection has been opened by EnsureIPC(), the IPC thread
-  // being serial.
-  nsCOMPtr<nsIRunnable> startSession = NS_NewRunnableFunction(
-      "SpeechRecognitionBackend::StartSpeechRecognitionSession",
-      [self = RefPtr{this}]() {
+  // Asks the utility process for a session actor, bound on the IPC thread,
+  // where the rest of the session setup then happens.
+  RequestSession()->Then(
+      sIPCCapability->GetEventTarget(), __func__,
+      [self = RefPtr{this}](
+          hwinference::SpeechRecognitionSessionPromise::ResolveOrRejectValue&&
+              aValue) {
         AssertOnIPCThread();
-        self->StartSpeechRecognitionSession(self->mLanguage);
+        if (aValue.IsReject()) {
+          LOGE("Failed to create speech recognition session");
+          self->HandleRecognitionError(nsCString("network"));
+          return;
+        }
+        self->StartSpeechRecognitionSession(self->mLanguage,
+                                            std::move(aValue.ResolveValue()));
       });
-  sIPCCapability->Dispatch(startSession.forget());
 }
 
 void SpeechRecognitionBackend::Stop() { Shutdown(/* aWaitForFlush */ true); }
@@ -327,7 +341,7 @@ void SpeechRecognitionBackend::Shutdown(bool aWaitForFlush) {
               GetCurrentSerialEventTarget(), __func__,
               [self, child](hwinference::PSpeechRecognitionChild::StopPromise::
                                 ResolveOrRejectValue&& aValue) {
-                hwinference::SpeechRecognitionChild::Send__delete__(child);
+                child->Close();
                 // A dead channel means the engine never reported back, so
                 // don't claim a nomatch it never determined.
                 self->NotifySessionFinished(aValue.IsReject() ||
@@ -342,8 +356,10 @@ void SpeechRecognitionBackend::Shutdown(bool aWaitForFlush) {
           AssertOnIPCThread();
           LOG("Aborting HWInference speech recognition session");
           if (child->CanSend()) {
+            // Ordered on the channel, so the engine sees Stop before the
+            // goodbye Close() sends.
             child->SendStop();
-            hwinference::SpeechRecognitionChild::Send__delete__(child);
+            child->Close();
           }
         });
     sIPCCapability->Dispatch(abortSession.forget());
@@ -464,7 +480,6 @@ TimeStamp SpeechRecognitionBackend::CaptureTimeForTrackPosition(
   return EstimateSampleTimeStamp(ref.mPosition, refTimeStamp, aPosition,
                                  mGraphRate);
 }
-
 
 void SpeechRecognitionBackend::ProcessAudioChunk() {
   mResamplingCapability.AssertOnCurrentThread();
@@ -594,10 +609,12 @@ void SpeechRecognitionBackend::SendAudioDataViaIPC(nsTArray<float>&& aAudioData,
 }
 
 void SpeechRecognitionBackend::StartSpeechRecognitionSession(
-    const nsACString& aLanguage) {
+    const nsACString& aLanguage,
+    RefPtr<hwinference::SpeechRecognitionChild>&& aChild) {
   AssertOnIPCThread();
+  MOZ_ASSERT(aChild);
 
-  RefPtr<hwinference::SpeechRecognitionChild> child;
+  RefPtr<hwinference::SpeechRecognitionChild> child = std::move(aChild);
   {
     auto session = mSession.Lock();
     if (session->mStopRequested) {
@@ -606,18 +623,10 @@ void SpeechRecognitionBackend::StartSpeechRecognitionSession(
       // ends the session in the utility process, and not doing so would leave
       // the process-wide session slot taken for good.
       LOG("Session init skipped, teardown already requested");
+      child->Close();
       return;
     }
-    RefPtr<mozilla::hwinference::HWInferenceManagerChild> hwInference =
-        mozilla::hwinference::HWInferenceManagerChild::GetSingleton();
-    session->mChild =
-        hwInference ? hwInference->CreateSpeechRecognitionSession() : nullptr;
-    child = session->mChild;
-  }
-  if (!child) {
-    LOGE("Failed to create speech recognition session");
-    HandleRecognitionError(nsCString("network"));
-    return;
+    session->mChild = child;
   }
 
   // The callbacks hold this instance with a strong ref, this instance holds the
@@ -735,8 +744,7 @@ void SpeechRecognitionBackend::NotifyTrackEnded() {
 }
 
 /* static */
-nsCOMPtr<nsISerialEventTarget>
-SpeechRecognitionBackend::GetOrCreateIPCThread() {
+void SpeechRecognitionBackend::EnsureIPCThread() {
   AssertIsOnMainThread();
 
   if (!sIPCCapability) {
@@ -748,22 +756,6 @@ SpeechRecognitionBackend::GetOrCreateIPCThread() {
     sIPCCapability = new EventTargetCapability<nsISerialEventTarget>(thread);
     LOG("Created shared IPC thread for speech recognition");
     ClearOnShutdown(&sIPCCapability);
-  }
-
-  return nsCOMPtr<nsISerialEventTarget>(sIPCCapability->GetEventTarget());
-}
-
-void SpeechRecognitionBackend::CloseIPCActorIfUnused() {
-  AssertIsOnMainThread();
-  // Close the HWInference connection once no session needs it, so the utility
-  // process isn't kept alive by an idle connection. The serial event target is
-  // kept (its backing OS thread is released on idle by the LazyIdleThread);
-  // the next EnsureIPC() reopens the connection on that same target.
-  if (!sIPCActorUsers && sIPCCapability) {
-    nsCOMPtr<nsIRunnable> close = NS_NewRunnableFunction(
-        "SpeechRecognitionBackend::CloseHWInferenceChildIfAny",
-        [] { CloseHWInferenceChildIfAny(); });
-    sIPCCapability->Dispatch(close.forget());
   }
 }
 
@@ -814,42 +806,38 @@ void SpeechRecognitionBackend::RunWithTransientSession(
       new OperationPromisePrivate(__func__);
 
   RefPtr<IPCActorUserGuard> guard = EnsureIPC();
-  nsCOMPtr<nsIRunnable> runSession = NS_NewRunnableFunction(
-      "SpeechRecognitionBackend::RunWithTransientSession",
+  RequestSession()->Then(
+      sIPCCapability->GetEventTarget(), __func__,
       [operation, guard = std::move(guard), languages = std::move(aLanguages),
-       aSendFunc]() mutable {
+       aSendFunc](
+          hwinference::SpeechRecognitionSessionPromise::ResolveOrRejectValue&&
+              aSession) mutable {
         AssertOnIPCThread();
 
-        RefPtr<hwinference::HWInferenceManagerChild> manager =
-            hwinference::HWInferenceManagerChild::GetSingleton();
-        RefPtr<hwinference::SpeechRecognitionChild> child =
-            manager ? manager->CreateSpeechRecognitionSession() : nullptr;
-        if (!child) {
+        if (aSession.IsReject()) {
           operation->Reject(NS_ERROR_FAILURE, __func__);
           return;
         }
+        RefPtr<hwinference::SpeechRecognitionChild> child =
+            std::move(aSession.ResolveValue());
         // The connection is held open for exactly as long as this transient
         // session exists.
         child->SetIPCActorUserGuard(std::move(guard));
 
         aSendFunc(child, languages)
-            ->Then(
-                GetCurrentSerialEventTarget(), __func__,
-                [operation,
-                 child](typename SendPromise::ResolveOrRejectValue&& aValue) {
-                  AssertOnIPCThread();
-                  if (child->CanSend()) {
-                    hwinference::SpeechRecognitionChild::Send__delete__(child);
-                  }
-                  if (aValue.IsReject()) {
-                    operation->Reject(NS_ERROR_FAILURE, __func__);
-                    return;
-                  }
-                  operation->Resolve(std::move(aValue.ResolveValue()),
-                                     __func__);
-                });
+            ->Then(GetCurrentSerialEventTarget(), __func__,
+                   [operation, child](
+                       typename SendPromise::ResolveOrRejectValue&& aValue) {
+                     AssertOnIPCThread();
+                     child->Close();
+                     if (aValue.IsReject()) {
+                       operation->Reject(NS_ERROR_FAILURE, __func__);
+                       return;
+                     }
+                     operation->Resolve(std::move(aValue.ResolveValue()),
+                                        __func__);
+                   });
       });
-  sIPCCapability->Dispatch(runSession.forget());
 
   operation->Then(
       GetMainThreadSerialEventTarget(), __func__,
@@ -959,48 +947,34 @@ RefPtr<GenericPromise> SpeechRecognitionBackend::IsModelInstalledNative(
 }
 
 /* static */
-void SpeechRecognitionBackend::EnsureConnectedOnIPCThread() {
-  AssertOnIPCThread();
+RefPtr<hwinference::SpeechRecognitionSessionPromise>
+SpeechRecognitionBackend::RequestSession() {
+  AssertIsOnMainThread();
+  MOZ_ASSERT(sIPCCapability);
 
-  RefPtr<mozilla::hwinference::HWInferenceManagerChild> child =
-      mozilla::hwinference::HWInferenceManagerChild::GetSingleton();
-  if (child && child->CanSend()) {
-    return;
+  RefPtr<hwinference::HWInferenceManagerChild> manager =
+      hwinference::HWInferenceManagerChild::GetSingleton();
+  if (!manager) {
+    return hwinference::SpeechRecognitionSessionPromise::CreateAndReject(
+        NS_ERROR_NOT_AVAILABLE, __func__);
   }
-
-  // Binding the child endpoint here makes the connection immediately usable;
-  // if the utility process cannot be launched, the parent endpoint is dropped
-  // and the actor is simply destroyed asynchronously. Messages sent in the
-  // meantime are queued by the channel.
-  mozilla::ipc::Endpoint<hwinference::PHWInferenceManagerParent> parentEp;
-  mozilla::ipc::Endpoint<hwinference::PHWInferenceManagerChild> childEp;
-  MOZ_ALWAYS_SUCCEEDS(
-      hwinference::PHWInferenceManager::CreateEndpoints(&parentEp, &childEp));
-  mozilla::hwinference::HWInferenceManagerChild::OpenForProcess(
-      std::move(childEp));
-
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "SpeechRecognitionBackend::RequestHWInferenceConnection",
-      [parentEp = std::move(parentEp)]() mutable {
-        // Null in the parent process, which never connects this way.
-        if (ContentChild* contentChild = ContentChild::GetSingleton()) {
-          contentChild->SendRequestHWInferenceConnection(std::move(parentEp));
-        }
-      }));
+  return manager->CreateSpeechRecognitionSession(
+      sIPCCapability->GetEventTarget());
 }
 
 /* static */
 already_AddRefed<IPCActorUserGuard> SpeechRecognitionBackend::EnsureIPC() {
   AssertIsOnMainThread();
 
-  // Acquired before dispatching so that nothing can close the connection
-  // between the setup below and the caller's use of it.
+  // Holds the connection open so that nothing can close it between here and
+  // the caller's use of it. EnsureConnected() also covers the case where the
+  // connection died under an existing user, e.g. a utility process crash.
   RefPtr<IPCActorUserGuard> ipcActorUserGuard = new IPCActorUserGuard();
+  hwinference::HWInferenceManagerChild::EnsureConnected();
 
-  nsCOMPtr<nsISerialEventTarget> ipcThread = GetOrCreateIPCThread();
-  ipcThread->Dispatch(NS_NewRunnableFunction(
-      "SpeechRecognitionBackend::EnsureConnectedOnIPCThread",
-      [] { EnsureConnectedOnIPCThread(); }));
+  // Created eagerly: the caller is about to open a session, whose actor is
+  // bound there.
+  EnsureIPCThread();
 
   return ipcActorUserGuard.forget();
 }

@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-include protocol PHWInferenceManager;
-
 using class mozilla::TimeStamp from "mozilla/TimeStamp.h";
 
 namespace mozilla {
@@ -20,10 +18,18 @@ namespace hwinference {
 // "approved" signal. The utility relays install requests to the trusted parent
 // over PHWInference, attaching the requesting content-process id, and the parent
 // decides consent and performs the download (see nsIMLModelResolver).
+//
+// Toplevel rather than managed by PHWInferenceManager: a managed actor is
+// bound to its manager's thread, and that manager is a process-wide singleton
+// shared with every other HWInference consumer, while the audio path here
+// wants its own thread. Connections are created by
+// PHWInferenceManager::CreateSpeechRecognition; the parent side is bound on
+// the utility process' main thread, the child side on the content process'
+// dedicated "SpeechIPC" thread. Being toplevel, a session ends by the content
+// process closing the channel rather than by a destructor message.
+[ParentProc=Utility, ChildProc=Content]
 async protocol PSpeechRecognition
 {
-  manager PHWInferenceManager;
-
 parent: // HWInference
   // Check if speech recognition models are available (cached or downloadable)
   // for the given languages, used for the "downloadable" Available() result.
@@ -55,7 +61,6 @@ parent: // HWInference
   // anyFinalResult is false when the session finalized nothing at all, which
   // is what makes the content process fire "nomatch" before "end".
   async Stop() returns (bool anyFinalResult);
-  async __delete__();
 
 child: // Content process
   // Speech recognition results

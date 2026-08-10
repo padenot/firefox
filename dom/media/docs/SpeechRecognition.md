@@ -301,27 +301,37 @@ HWInference process itself, which is what ultimately shuts the process down;
 see "Process lifetime" in the [HWInference
 docs](/toolkit/components/ml/docs/HWInference.md).
 
-What holds that connection open is `sIPCActorUsers` (main thread only),
-counting `IPCActorUserGuard`s. One is held:
+What decides whether speech recognition needs that connection is
+`sIPCActorUsers` (main thread only), counting `IPCActorUserGuard`s. One is
+held:
 
 - for the lifetime of every `SpeechRecognition` object, taken in its
-  constructor via `AcquireProcessKeepAlive()` (which only counts, and does not
-  establish the connection) and dropped in `DisconnectFromOwner()` as well as
-  the destructor, so a torn-down window releases it without waiting for GC;
+  constructor via `AcquireProcessKeepAlive()` and dropped in
+  `DisconnectFromOwner()` as well as the destructor, so a torn-down window
+  releases it without waiting for GC;
 - for the duration of each in-flight "transaction" -- the static
   `available()`/`install()`/`IsModelInstalledNative()` calls, via
   `RunWithTransientSession()`, where it is owned by the transient
   `SpeechRecognitionChild`;
 - for an active recognition session (`Start()` to `Stop()`/`Abort()`), from
-  `EnsureIPC()`, which additionally establishes the connection.
+  `EnsureIPC()`.
 
-`EnsureIPC()` does not wait for anything: the content side of the connection
-is bound synchronously on the `SpeechIPC` thread, so anything dispatched there
-afterwards can use it right away. If the utility process cannot be launched,
-the parent endpoint is dropped and the actor is destroyed asynchronously,
-which rejects the in-flight IPC calls.
+While that count is above zero, speech recognition holds exactly one
+`HWInferenceConnectionGuard`, obtained from
+`HWInferenceManagerChild::AcquireConnection()`. The connection belongs to
+`HWInferenceManagerChild`, and is shared with every other HWInference consumer
+in the process: it is established when the first guard is taken, whoever takes
+it, and closed once the last one is dropped. Speech recognition never closes
+it directly, so a session belonging to another consumer cannot have it torn
+out from under it.
 
-Reaching zero does not close the connection immediately. It arms a
+Acquiring it does not wait for anything: the content side of the connection is
+bound synchronously, on the main thread, so it is usable by the time
+`EnsureIPC()` returns. If the utility process cannot be launched, the parent
+endpoint is dropped and the actor is destroyed asynchronously, which rejects
+the in-flight IPC calls.
+
+Reaching zero does not drop that guard immediately. It arms a
 `media.webspeech.recognition.idle_shutdown_grace_ms` (default 5s) timer,
 cancelled by the next acquisition, so a `stop()`/`start()` cycle or a burst
 of static calls reuses the warm process rather than paying for a relaunch. 0
