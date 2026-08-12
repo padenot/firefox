@@ -12,15 +12,24 @@
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/hwinference/PHWInferenceParent.h"
 #include "mozilla/ipc/UtilityMediaService.h"
+#include "nsTHashMap.h"
 
 namespace mozilla::hwinference {
+
+// The HWInference process instances. "browser" serves inference driven by
+// chrome, "content" serves inference driven by web content; they are separate
+// processes so a compromised content-driven one cannot reach what the
+// chrome-driven one holds.
+#define HWINFERENCE_BROWSER_INSTANCE_KEY "browser"_ns
+#define HWINFERENCE_CONTENT_INSTANCE_KEY "content"_ns
 
 // HWInference parent process side
 class HWInferenceParent final : public PHWInferenceParent {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(HWInferenceParent, override);
 
-  HWInferenceParent() = default;
+  explicit HWInferenceParent(const nsACString& aInstanceKey)
+      : mInstanceKey(aInstanceKey) {}
 
   void ActorDestroy(ActorDestroyReason aReason) override;
 
@@ -45,11 +54,13 @@ class HWInferenceParent final : public PHWInferenceParent {
   nsresult BindToUtilityProcess(
       const RefPtr<ipc::UtilityProcessParent>& aUtilityParent);
 
-  static RefPtr<HWInferenceParent> GetSingleton();
+  static RefPtr<HWInferenceParent> GetSingleton(const nsACString& aInstanceKey);
 
  private:
   friend PHWInferenceParent;
-  static StaticRefPtr<HWInferenceParent> sInstance;
+  static StaticAutoPtr<nsTHashMap<nsCStringHashKey, RefPtr<HWInferenceParent>>>
+      sInstances;
+  nsCString mInstanceKey;
   ~HWInferenceParent() = default;
 };
 

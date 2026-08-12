@@ -48,7 +48,8 @@ extern LazyLogModule gHWInferenceLog;
 #define LOGD(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Debug, __VA_ARGS__)
 #define LOGV(...) MOZ_LOG_FMT(gHWInferenceLog, LogLevel::Verbose, __VA_ARGS__)
 
-StaticRefPtr<HWInferenceParent> HWInferenceParent::sInstance;
+StaticAutoPtr<nsTHashMap<nsCStringHashKey, RefPtr<HWInferenceParent>>>
+    HWInferenceParent::sInstances;
 
 static StaticAutoPtr<nsTHashSet<nsCString>> sMockInstalledModels;
 
@@ -173,8 +174,13 @@ NS_IMPL_ISUPPORTS(ModelDownloadCompletionCallback,
                   nsIMLModelDownloadCompletionCallback)
 
 /* static */
-RefPtr<HWInferenceParent> HWInferenceParent::GetSingleton() {
+RefPtr<HWInferenceParent> HWInferenceParent::GetSingleton(
+    const nsACString& aInstanceKey) {
   AssertIsOnMainThread();
+  if (!sInstances) {
+    sInstances = new nsTHashMap<nsCStringHashKey, RefPtr<HWInferenceParent>>();
+    ClearOnShutdown(&sInstances);
+  }
 
   // Evict an instance whose process is already gone. Its PHWInference channel
   // is separate from PUtilityProcess, so it keeps reporting CanSend() until
@@ -183,31 +189,31 @@ RefPtr<HWInferenceParent> HWInferenceParent::GetSingleton() {
   // CanSend() fast path and resolve success on a doomed actor rather than
   // relaunching. Checked here rather than at teardown so it covers an
   // unexpected process death too, not just CleanShutdown.
-  if (sInstance && sInstance->CanSend()) {
+  RefPtr<HWInferenceParent> existing = sInstances->Get(aInstanceKey);
+  if (existing && existing->CanSend()) {
     RefPtr<ipc::UtilityProcessManager> upm =
         ipc::UtilityProcessManager::GetIfExists();
-    if (!upm || !upm->Process(ipc::SandboxingKind::HW_INFERENCE)) {
-      LOGD("{} - evicting stale instance", __func__);
-      RefPtr<HWInferenceParent> stale = sInstance;
-      sInstance = nullptr;
+    if (!upm ||
+        !upm->Process(ipc::SandboxingKind::HW_INFERENCE, aInstanceKey)) {
+      LOGD("{} - evicting stale instance for {}", __func__, aInstanceKey);
+      sInstances->Remove(aInstanceKey);
       // Synchronously runs ActorDestroy, so CanSend() is false on return.
-      stale->Close();
+      existing->Close();
     }
   }
 
-  if (!sInstance) {
-    sInstance = new HWInferenceParent();
-    ClearOnShutdown(&sInstance);
-  }
-  return sInstance;
+  return sInstances->GetOrInsertNew(aInstanceKey, aInstanceKey);
 }
 
 void HWInferenceParent::ActorDestroy(ActorDestroyReason aReason) {
   LOGD("{}", __func__);
-  // Only clear ourselves: a late ActorDestroy from a superseded instance must
-  // not evict the replacement created after it.
-  if (sInstance == this) {
-    sInstance = nullptr;
+  // Only remove ourselves: a late ActorDestroy from a superseded instance
+  // must not evict the replacement created for the same key.
+  if (sInstances) {
+    if (auto entry = sInstances->Lookup(mInstanceKey);
+        entry && entry.Data() == this) {
+      entry.Remove();
+    }
   }
 }
 

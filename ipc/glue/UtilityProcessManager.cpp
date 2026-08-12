@@ -124,31 +124,30 @@ void UtilityProcessManager::OnPreferenceChange(const char16_t* aData) {
                              /* remoteType */ ""_ns);
 
   for (auto& p : mProcesses) {
-    if (!p) {
-      continue;
-    }
-
     if (p->mProcessParent) {
       (void)p->mProcessParent->SendPreferenceUpdate(pref);
-    } else if (IsProcessLaunching(p->mSandbox)) {
+    } else if (IsProcessLaunching(p->mSandbox, p->mInstanceKey)) {
       p->mQueuedPrefs.AppendElement(pref);
     }
   }
 }
 
 RefPtr<UtilityProcessManager::ProcessFields> UtilityProcessManager::GetProcess(
-    SandboxingKind aSandbox) {
-  if (!mProcesses[aSandbox]) {
-    return nullptr;
+    SandboxingKind aSandbox, const nsACString& aInstanceKey) {
+  for (auto& p : mProcesses) {
+    if (p->mSandbox == aSandbox && p->mInstanceKey == aInstanceKey) {
+      return p;
+    }
   }
-
-  return mProcesses[aSandbox];
+  return nullptr;
 }
 
 RefPtr<UtilityProcessManager::SharedLaunchPromise<Ok>>
-UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
-  LOGD("[%p] UtilityProcessManager::LaunchProcess SandboxingKind=%" PRIu64,
-       this, aSandbox);
+UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox,
+                                     const nsACString& aInstanceKey) {
+  LOGD("[%p] UtilityProcessManager::LaunchProcess SandboxingKind=%" PRIu64
+       " InstanceKey=%s",
+       this, aSandbox, nsCString(aInstanceKey).get());
   using RetPromise = SharedLaunchPromise<Ok>;
 
   MOZ_ASSERT(NS_IsMainThread());
@@ -159,7 +158,7 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
         LaunchError("UPM::LaunchProcess(): IsShutdown()"), __func__);
   }
 
-  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  RefPtr<ProcessFields> p = GetProcess(aSandbox, aInstanceKey);
   if (p && p->mNumProcessAttempts) {
     // We failed to start the Utility process earlier, abort now.
     NS_WARNING("Reject LaunchProcess() for earlier mNumProcessAttempts");
@@ -172,8 +171,8 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
   }
 
   if (!p) {
-    p = new ProcessFields(aSandbox);
-    mProcesses[aSandbox] = p;
+    p = new ProcessFields(aSandbox, aInstanceKey);
+    mProcesses.AppendElement(p);
   }
 
   geckoargs::ChildProcessArgs extraArgs;
@@ -185,7 +184,7 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
   p->mProcess = new UtilityProcessHost(aSandbox, this);
   if (!p->mProcess->Launch(std::move(extraArgs))) {
     p->mNumProcessAttempts++;
-    DestroyProcess(aSandbox);
+    DestroyProcess(aSandbox, aInstanceKey);
     NS_WARNING("Reject LaunchProcess() for mNumProcessAttempts++");
     return RetPromise::CreateAndReject(
         LaunchError("UPM::LaunchProcess(): mNumProcessAttempts++"), __func__);
@@ -203,7 +202,7 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
               __func__);
         }
 
-        if (self->IsProcessDestroyed(aSandbox)) {
+        if (self->IsProcessDestroyed(aSandbox, p->mInstanceKey)) {
           NS_WARNING(
               "Reject LaunchProcess() after LaunchPromise() for destroyed "
               "process");
@@ -231,7 +230,7 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
       [self, p, aSandbox](LaunchError error) {
         if (GetSingleton()) {
           p->mNumProcessAttempts++;
-          self->DestroyProcess(aSandbox);
+          self->DestroyProcess(aSandbox, p->mInstanceKey);
         }
         NS_WARNING("Reject LaunchProcess() for LaunchPromise() rejection");
         return RetPromise::CreateAndReject(std::move(error), __func__);
@@ -241,17 +240,18 @@ UtilityProcessManager::LaunchProcess(SandboxingKind aSandbox) {
 }
 
 already_AddRefed<UtilityProcessKeepAlive>
-UtilityProcessManager::LaunchProcessWithKeepAlive(SandboxingKind aSandbox) {
+UtilityProcessManager::LaunchProcessWithKeepAlive(
+    SandboxingKind aSandbox, const nsACString& aInstanceKey) {
   MOZ_ASSERT(NS_IsMainThread());
 
   // Nothing here needs the launch promise: it is reachable from the keep-alive.
-  LaunchProcess(aSandbox);
+  LaunchProcess(aSandbox, aInstanceKey);
 
-  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  RefPtr<ProcessFields> p = GetProcess(aSandbox, aInstanceKey);
   if (!p) {
     LOGD("[%p] LaunchProcessWithKeepAlive SandboxingKind=%" PRIu64
-         " - launch failed",
-         this, aSandbox);
+         " InstanceKey=%s - launch failed",
+         this, aSandbox, nsCString(aInstanceKey).get());
     return nullptr;
   }
 
@@ -265,7 +265,8 @@ UtilityProcessManager::LaunchProcessWithKeepAlive(SandboxingKind aSandbox) {
 template <typename Actor>
 RefPtr<UtilityProcessManager::LaunchPromise<Ok>>
 UtilityProcessManager::StartUtility(RefPtr<Actor> aActor,
-                                    SandboxingKind aSandbox) {
+                                    SandboxingKind aSandbox,
+                                    const nsACString& aInstanceKey) {
   using RetPromise = LaunchPromise<Ok>;
 
   LOGD(
@@ -328,14 +329,14 @@ UtilityProcessManager::StartUtilityOnProcess(
               LaunchError("UPM::GetProcessParent"), __func__);
         }
 
-        // It is possible if multiple processes concurrently request a utility
-        // actor that the previous CanSend() check returned false for both but
-        // that by the time we have started our process for real, one of them
-        // has already been able to establish the IPC connection and thus we
-        // would perform more than one Open() call.
+        // It is possible if multiple processes concurrently request a
+        // utility actor that the previous CanSend() check returned false
+        // for both but that by the time we have started our process for
+        // real, one of them has already been able to establish the IPC
+        // connection and thus we would perform more than one Open() call.
         //
-        // The tests within browser_utility_multipleAudio.js should be able to
-        // catch that behavior.
+        // The tests within browser_utility_multipleAudio.js should be able
+        // to catch that behavior.
         if (!aActor->CanSend()) {
           if (!utilityParent->CanSend()) {
             NS_WARNING("Utility process died before IPC could be established");
@@ -599,43 +600,59 @@ UtilityProcessManager::StartPKCS11Module() {
 
 #ifndef ANDROID
 RefPtr<UtilityProcessManager::HWInferencePromise>
-UtilityProcessManager::StartHWInference() {
-  LOGD("[%p] StartHWInference called", this);
+UtilityProcessManager::StartHWInference(const nsACString& aInstanceKey) {
+  LOGD("[%p] StartHWInference called instanceKey=%s", this,
+       nsCString(aInstanceKey).get());
   RefPtr<UtilityProcessManager> self = this;
   using RetPromise = HWInferencePromise;
+  nsCString instanceKey(aInstanceKey);
   RefPtr<hwinference::HWInferenceParent> hwip =
-      hwinference::HWInferenceParent::GetSingleton();
+      hwinference::HWInferenceParent::GetSingleton(aInstanceKey);
   MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
-  LOGD("[%p] Starting HWInference utility process with HW_INFERENCE sandboxing",
-       this);
-  return StartUtility(hwip, SandboxingKind::HW_INFERENCE)
+  LOGD(
+      "[%p] Starting HWInference utility process with HW_INFERENCE sandboxing "
+      "instanceKey=%s",
+      this, instanceKey.get());
+  return StartUtility(hwip, SandboxingKind::HW_INFERENCE, aInstanceKey)
       ->Then(
           GetMainThreadSerialEventTarget(), __func__,
-          [self, hwip]() {
-            LOGD("StartHWInference: Utility process started successfully");
+          [self, hwip, instanceKey]() {
+            LOGD(
+                "StartHWInference: Utility process started successfully "
+                "instanceKey=%s",
+                instanceKey.get());
             if (!hwip->CanSend()) {
               MOZ_ASSERT(false, "HWInferenceParent lost in the middle");
-              LOGD("StartHWInference: HWInferenceParent cannot send!");
+              LOGD(
+                  "StartHWInference: HWInferenceParent cannot send! "
+                  "instanceKey=%s",
+                  instanceKey.get());
               return RetPromise::CreateAndReject(
                   LaunchError("StartHWInference: !hwip->CanSend()"),
                   __PRETTY_FUNCTION__);
             }
-            LOGD("StartHWInference: HWInferenceParent ready, CanSend=true");
+            LOGD(
+                "StartHWInference: HWInferenceParent ready, CanSend=true "
+                "instanceKey=%s",
+                instanceKey.get());
             return RetPromise::CreateAndResolve(std::move(hwip), __func__);
           },
-          [](LaunchError&& aError) {
-            LOGD("StartHWInference: Failed to start utility process: %s",
-                 aError.FunctionName().get());
+          [instanceKey](LaunchError&& aError) {
+            LOGD(
+                "StartHWInference: Failed to start utility process: %s "
+                "instanceKey=%s",
+                aError.FunctionName().get(), instanceKey.get());
             MOZ_ASSERT_UNREACHABLE("PHWInference: failure when starting actor");
             return RetPromise::CreateAndReject(std::move(aError), __func__);
           });
 }
 #endif  // !ANDROID
 
-bool UtilityProcessManager::IsProcessLaunching(SandboxingKind aSandbox) {
+bool UtilityProcessManager::IsProcessLaunching(SandboxingKind aSandbox,
+                                               const nsACString& aInstanceKey) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  RefPtr<ProcessFields> p = GetProcess(aSandbox, aInstanceKey);
   if (!p) {
     MOZ_CRASH("Cannot check process launching with no process");
     return false;
@@ -644,9 +661,10 @@ bool UtilityProcessManager::IsProcessLaunching(SandboxingKind aSandbox) {
   return p->mProcess && !(p->mProcessParent);
 }
 
-bool UtilityProcessManager::IsProcessDestroyed(SandboxingKind aSandbox) {
+bool UtilityProcessManager::IsProcessDestroyed(SandboxingKind aSandbox,
+                                               const nsACString& aInstanceKey) {
   MOZ_ASSERT(NS_IsMainThread());
-  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  RefPtr<ProcessFields> p = GetProcess(aSandbox, aInstanceKey);
   if (!p) {
     // DestroyProcess() removes the entry, so having none is the end state of a
     // destroyed process rather than a caller error.
@@ -660,9 +678,9 @@ void UtilityProcessManager::OnProcessUnexpectedShutdown(
   MOZ_ASSERT(NS_IsMainThread());
 
   for (auto& it : mProcesses) {
-    if (it && it->mProcess && it->mProcess == aHost) {
+    if (it->mProcess && it->mProcess == aHost) {
       it->mNumUnexpectedCrashes++;
-      DestroyProcess(it->mSandbox);
+      DestroyProcess(it->mSandbox, it->mInstanceKey);
       return;
     }
   }
@@ -675,33 +693,28 @@ void UtilityProcessManager::OnProcessUnexpectedShutdown(
 void UtilityProcessManager::CleanShutdownAllProcesses() {
   LOGD("[%p] UtilityProcessManager::CleanShutdownAllProcesses", this);
 
-  for (auto& it : mProcesses) {
-    if (it) {
-      DestroyProcess(it->mSandbox);
-    }
+  // DestroyProcess() removes the matched entry from mProcesses, so iterate
+  // backwards to keep the not-yet-visited indices valid.
+  for (size_t i = mProcesses.Length(); i > 0; --i) {
+    RefPtr<ProcessFields> p = mProcesses[i - 1];
+    DestroyProcess(p->mSandbox, p->mInstanceKey);
   }
 }
 
-void UtilityProcessManager::CleanShutdown(SandboxingKind aSandbox) {
+void UtilityProcessManager::CleanShutdown(SandboxingKind aSandbox,
+                                          const nsACString& aInstanceKey) {
   LOGD("[%p] UtilityProcessManager::CleanShutdown SandboxingKind=%" PRIu64,
        this, aSandbox);
 
-  DestroyProcess(aSandbox);
+  DestroyProcess(aSandbox, aInstanceKey);
 }
 
-uint16_t UtilityProcessManager::AliveProcesses() {
-  uint16_t alive = 0;
-  for (auto& p : mProcesses) {
-    if (p != nullptr) {
-      alive++;
-    }
-  }
-  return alive;
-}
+uint16_t UtilityProcessManager::AliveProcesses() { return mProcesses.Length(); }
 
-bool UtilityProcessManager::NoMoreProcesses() { return AliveProcesses() == 0; }
+bool UtilityProcessManager::NoMoreProcesses() { return mProcesses.IsEmpty(); }
 
-void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox) {
+void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox,
+                                           const nsACString& aInstanceKey) {
   LOGD("[%p] UtilityProcessManager::DestroyProcess SandboxingKind=%" PRIu64,
        this, aSandbox);
 
@@ -715,7 +728,7 @@ void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox) {
     mObserver = nullptr;
   }
 
-  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  RefPtr<ProcessFields> p = GetProcess(aSandbox, aInstanceKey);
   if (!p) {
     return;
   }
@@ -730,7 +743,7 @@ void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox) {
 
   // Unconditionally, so a process that is already gone does not stay in
   // mProcesses as a dead entry that GetProcess() would keep handing out.
-  mProcesses[aSandbox] = nullptr;
+  mProcesses.RemoveElement(p);
 
   CrashReporter::RecordAnnotationCString(
       CrashReporter::Annotation::UtilityProcessStatus, "Destroyed");
@@ -741,9 +754,9 @@ void UtilityProcessManager::DestroyProcess(SandboxingKind aSandbox) {
 }
 
 Maybe<base::ProcessId> UtilityProcessManager::ProcessPid(
-    SandboxingKind aSandbox) {
+    SandboxingKind aSandbox, const nsACString& aInstanceKey) {
   MOZ_ASSERT(NS_IsMainThread());
-  RefPtr<ProcessFields> p = GetProcess(aSandbox);
+  RefPtr<ProcessFields> p = GetProcess(aSandbox, aInstanceKey);
   if (!p) {
     return Nothing();
   }
@@ -810,11 +823,12 @@ UtilityProcessManager::StartContentHWInferenceManager(
   // Before launching, so that an actor cached from a process that is already
   // gone gets evicted rather than rebound: see GetSingleton().
   RefPtr<hwinference::HWInferenceParent> hwip =
-      hwinference::HWInferenceParent::GetSingleton();
+      hwinference::HWInferenceParent::GetSingleton(
+          HWINFERENCE_CONTENT_INSTANCE_KEY);
   MOZ_ASSERT(hwip, "Unable to get a singleton for HWInference");
 
-  RefPtr<UtilityProcessKeepAlive> keepAlive =
-      LaunchProcessWithKeepAlive(SandboxingKind::HW_INFERENCE);
+  RefPtr<UtilityProcessKeepAlive> keepAlive = LaunchProcessWithKeepAlive(
+      SandboxingKind::HW_INFERENCE, HWINFERENCE_CONTENT_INSTANCE_KEY);
   if (!keepAlive) {
     return nullptr;
   }
@@ -849,17 +863,21 @@ UtilityProcessKeepAlive::~UtilityProcessKeepAlive() {
   MOZ_ASSERT(mProcess->mKeepAlive == this);
   mProcess->mKeepAlive = nullptr;
 
-  // Only shut down if this process is still the live one: it may have crashed
+  // Only shut down if this instance is still the live one: it may have crashed
   // and been relaunched, and that replacement is not ours to kill.
   RefPtr<UtilityProcessManager> upm = UtilityProcessManager::GetIfExists();
-  if (!upm || upm->GetProcess(mProcess->mSandbox) != mProcess) {
-    LOGD("[%p] ~UtilityProcessKeepAlive - process already gone", this);
+  if (!upm ||
+      upm->GetProcess(mProcess->mSandbox, mProcess->mInstanceKey) != mProcess) {
+    LOGD("[%p] ~UtilityProcessKeepAlive instanceKey=%s - process already gone",
+         this, mProcess->mInstanceKey.get());
     return;
   }
 
-  LOGD("[%p] ~UtilityProcessKeepAlive - last consumer gone, shutting down",
-       this);
-  upm->CleanShutdown(mProcess->mSandbox);
+  LOGD(
+      "[%p] ~UtilityProcessKeepAlive instanceKey=%s - last consumer gone, "
+      "shutting the process down",
+      this, mProcess->mInstanceKey.get());
+  upm->CleanShutdown(mProcess->mSandbox, mProcess->mInstanceKey);
 }
 
 RefPtr<UtilityProcessManager::SharedLaunchPromise<Ok>>
