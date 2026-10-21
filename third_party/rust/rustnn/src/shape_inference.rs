@@ -1,0 +1,4144 @@
+//! Output shape computation for WebNN operations.
+//!
+//! The `infer_*_shape` functions implement the shape rules of the WebNN specification
+//! (broadcasting, convolution and pooling arithmetic, reductions, gathers, and so on). They
+//! are called by [`crate::mlgraphbuilder::MLGraphBuilder`] when an operation is recorded and
+//! by [`crate::webnn_json`] when a stored graph is imported. Functions with a `_dimensions`
+//! suffix operate on [`Dimension`] values and propagate dynamic bounds.
+
+use crate::error::GraphError;
+use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size, to_dimension_vector};
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+};
+use crate::operator_options::{MLConv2dOptions, MLConvTranspose2dOptions, MLPool2dOptions};
+
+/// Compute the broadcasted shape for two operands following NumPy broadcasting rules
+///
+/// Broadcasting rules:
+/// 1. If arrays have different ranks, prepend 1s to the smaller rank
+/// 2. Two dimensions are compatible if they are equal or one of them is 1
+/// 3. Output shape is the maximum of each dimension
+pub fn broadcast_shapes(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    let max_rank = shape_a.len().max(shape_b.len());
+    let mut result = Vec::with_capacity(max_rank);
+
+    // Iterate from right to left (least significant dimension first)
+    for i in 0..max_rank {
+        let dim_a = if i < shape_a.len() {
+            shape_a[shape_a.len() - 1 - i]
+        } else {
+            1
+        };
+
+        let dim_b = if i < shape_b.len() {
+            shape_b[shape_b.len() - 1 - i]
+        } else {
+            1
+        };
+
+        if dim_a == dim_b || dim_a == 1 || dim_b == 1 {
+            result.push(dim_a.max(dim_b));
+        } else {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Incompatible shapes for broadcasting: {:?} and {:?} (dimension {} incompatible: {} vs {})",
+                    shape_a, shape_b, i, dim_a, dim_b
+                ),
+            });
+        }
+    }
+
+    // Reverse to get back to original order
+    result.reverse();
+    Ok(result)
+}
+
+fn merge_dynamic_names(lhs: &str, rhs: &str) -> String {
+    if !lhs.is_empty() {
+        lhs.to_string()
+    } else {
+        rhs.to_string()
+    }
+}
+
+fn merge_broadcast_dim(dim_a: &Dimension, dim_b: &Dimension) -> Result<Dimension, GraphError> {
+    match (dim_a, dim_b) {
+        (Dimension::Static(a), Dimension::Static(b)) => {
+            if *a == *b || *a == 1 {
+                Ok(Dimension::Static(*b))
+            } else if *b == 1 {
+                Ok(Dimension::Static(*a))
+            } else {
+                Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Incompatible static dimensions for broadcasting: {} vs {}",
+                        a, b
+                    ),
+                })
+            }
+        }
+        (Dimension::Static(1), other) | (other, Dimension::Static(1)) => Ok(other.clone()),
+        (Dimension::Static(a), Dimension::Dynamic(b))
+        | (Dimension::Dynamic(b), Dimension::Static(a)) => {
+            Ok(Dimension::Dynamic(DynamicDimension {
+                name: b.name.clone(),
+                max_size: (*a).max(b.max_size),
+            }))
+        }
+        (Dimension::Dynamic(a), Dimension::Dynamic(b)) => {
+            if a.name == b.name && !a.name.is_empty() {
+                Ok(Dimension::Dynamic(DynamicDimension {
+                    name: a.name.clone(),
+                    max_size: a.max_size.max(b.max_size),
+                }))
+            } else {
+                Ok(Dimension::Dynamic(DynamicDimension {
+                    name: merge_dynamic_names(&a.name, &b.name),
+                    max_size: a.max_size.max(b.max_size),
+                }))
+            }
+        }
+    }
+}
+
+/// Compute the broadcasted shape for two operands following NumPy broadcasting rules, preserving dynamic dimensions.
+pub fn broadcast_shapes_dimensions(
+    shape_a: &[Dimension],
+    shape_b: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    let max_rank = shape_a.len().max(shape_b.len());
+    let mut result = Vec::with_capacity(max_rank);
+
+    for i in 0..max_rank {
+        let dim_a = if i < shape_a.len() {
+            shape_a[shape_a.len() - 1 - i].clone()
+        } else {
+            Dimension::Static(1)
+        };
+        let dim_b = if i < shape_b.len() {
+            shape_b[shape_b.len() - 1 - i].clone()
+        } else {
+            Dimension::Static(1)
+        };
+
+        result.push(merge_broadcast_dim(&dim_a, &dim_b)?);
+    }
+
+    result.reverse();
+    Ok(result)
+}
+
+/// Infer output shape for matrix multiplication (matmul)
+///
+/// For 2D matrices: [M, K] @ [K, N] -> [M, N]
+/// For batched matmul: broadcasting is applied to batch dimensions
+pub fn infer_matmul_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    if shape_a.len() < 2 || shape_b.len() < 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Matmul requires at least 2D tensors, got shapes {:?} and {:?}",
+                shape_a, shape_b
+            ),
+        });
+    }
+
+    let a_rows = shape_a[shape_a.len() - 2];
+    let a_cols = shape_a[shape_a.len() - 1];
+    let b_rows = shape_b[shape_b.len() - 2];
+    let b_cols = shape_b[shape_b.len() - 1];
+
+    if a_cols != b_rows {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Incompatible shapes for matmul: {:?} and {:?} (inner dimensions {} != {})",
+                shape_a, shape_b, a_cols, b_rows
+            ),
+        });
+    }
+
+    // For simple 2D case
+    if shape_a.len() == 2 && shape_b.len() == 2 {
+        return Ok(vec![a_rows, b_cols]);
+    }
+
+    // For batched matmul, broadcast batch dimensions
+    let batch_a = &shape_a[..shape_a.len() - 2];
+    let batch_b = &shape_b[..shape_b.len() - 2];
+    let mut batch_dims = broadcast_shapes(batch_a, batch_b)?;
+    batch_dims.push(a_rows);
+    batch_dims.push(b_cols);
+
+    Ok(batch_dims)
+}
+
+/// Infer output shape for matrix multiplication (matmul), preserving dynamic dimensions.
+pub fn infer_matmul_shape_dimensions(
+    shape_a: &[Dimension],
+    shape_b: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    if shape_a.len() < 2 || shape_b.len() < 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Matmul requires at least 2D tensors, got shapes {:?} and {:?}",
+                shape_a, shape_b
+            ),
+        });
+    }
+
+    let a_rows = shape_a[shape_a.len() - 2].clone();
+    let a_cols = &shape_a[shape_a.len() - 1];
+    let b_rows = &shape_b[shape_b.len() - 2];
+    let b_cols = shape_b[shape_b.len() - 1].clone();
+
+    if let (Dimension::Static(a), Dimension::Static(b)) = (a_cols, b_rows)
+        && a != b
+    {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Incompatible shapes for matmul: {:?} and {:?} (inner dimensions {} != {})",
+                shape_a, shape_b, a, b
+            ),
+        });
+    }
+
+    if shape_a.len() == 2 && shape_b.len() == 2 {
+        return Ok(vec![a_rows, b_cols]);
+    }
+
+    let batch_a = &shape_a[..shape_a.len() - 2];
+    let batch_b = &shape_b[..shape_b.len() - 2];
+    let mut batch_dims = broadcast_shapes_dimensions(batch_a, batch_b)?;
+    batch_dims.push(a_rows);
+    batch_dims.push(b_cols);
+    Ok(batch_dims)
+}
+
+/// Validate that a reshape operation is valid
+pub fn validate_reshape(input_shape: &[u32], output_shape: &[u32]) -> Result<(), GraphError> {
+    let input_size: u32 = input_shape.iter().product();
+    let output_size: u32 = output_shape.iter().product();
+
+    if input_size != output_size {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Reshape requires same number of elements: input {:?} ({} elements) != output {:?} ({} elements)",
+                input_shape, input_size, output_shape, output_size
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+/// Layout for conv2d input tensors
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputLayout {
+    /// Channels-first: [batch, channels, height, width]
+    Nchw,
+    /// Channels-last: [batch, height, width, channels]
+    Nhwc,
+}
+
+/// Layout for conv2d filter tensors
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conv2dFilterLayout {
+    /// [out_channels, in_channels, height, width]
+    Oihw,
+    /// [height, width, in_channels, out_channels]
+    Hwio,
+    /// [out_channels, height, width, in_channels]
+    Ohwi,
+    /// [in_channels, height, width, out_channels]
+    Ihwo,
+}
+
+fn conv2d_input_layout_from_options(layout: MLInputOperandLayout) -> InputLayout {
+    match layout {
+        MLInputOperandLayout::Nchw => InputLayout::Nchw,
+        MLInputOperandLayout::Nhwc => InputLayout::Nhwc,
+    }
+}
+
+fn conv2d_filter_layout_from_options(layout: MLConv2dFilterOperandLayout) -> Conv2dFilterLayout {
+    match layout {
+        MLConv2dFilterOperandLayout::Oihw => Conv2dFilterLayout::Oihw,
+        MLConv2dFilterOperandLayout::Hwio => Conv2dFilterLayout::Hwio,
+        MLConv2dFilterOperandLayout::Ohwi => Conv2dFilterLayout::Ohwi,
+        MLConv2dFilterOperandLayout::Ihwo => Conv2dFilterLayout::Ihwo,
+    }
+}
+
+/// `(filter_in_channels, out_channels_per_group, kernel_h, kernel_w)` for convTranspose2d.
+///
+fn conv_transpose_filter_dims_from_layout(
+    layout: MLConvTranspose2dFilterOperandLayout,
+    filter_shape: &[u32],
+) -> Result<(u32, u32, u32, u32), GraphError> {
+    if filter_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d filter must be 4D, got shape {:?}",
+                filter_shape
+            ),
+        });
+    }
+    let f = filter_shape;
+    Ok(match layout {
+        MLConvTranspose2dFilterOperandLayout::Iohw => (f[0], f[1], f[2], f[3]),
+        MLConvTranspose2dFilterOperandLayout::Ohwi => (f[3], f[0], f[1], f[2]),
+        MLConvTranspose2dFilterOperandLayout::Hwoi => (f[3], f[2], f[0], f[1]),
+    })
+}
+
+/// Infer output shape for 2D convolution
+///
+/// Following the W3C WebNN specification for conv2d:
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d>
+///
+/// Uses [`MLConv2dOptions`]. `padding` is WebNN order:
+/// `[beginning_height, ending_height, beginning_width, ending_width]`.
+/// Empty `strides` / `dilations` default to `[1, 1]`; empty `padding` defaults to zeros.
+pub fn infer_conv2d_shape(
+    input_shape: &[u32],
+    filter_shape: &[u32],
+    options: &MLConv2dOptions,
+) -> Result<Vec<u32>, GraphError> {
+    // Input must be 4D: [batch, channels, height, width] or [batch, height, width, channels]
+    if input_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Conv2d input must be 4D, got shape {:?}", input_shape),
+        });
+    }
+
+    // Filter must be 4D
+    if filter_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Conv2d filter must be 4D, got shape {:?}", filter_shape),
+        });
+    }
+
+    let input_layout = conv2d_input_layout_from_options(options.input_layout);
+    let filter_layout = conv2d_filter_layout_from_options(options.filter_layout);
+
+    // Extract dimensions based on layout
+    let (batch, in_channels, input_h, input_w) = match input_layout {
+        InputLayout::Nchw => (
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+        ),
+        InputLayout::Nhwc => (
+            input_shape[0],
+            input_shape[3],
+            input_shape[1],
+            input_shape[2],
+        ),
+    };
+
+    let (out_channels, filter_in_channels, kernel_h, kernel_w) = match filter_layout {
+        Conv2dFilterLayout::Oihw => (
+            filter_shape[0],
+            filter_shape[1],
+            filter_shape[2],
+            filter_shape[3],
+        ),
+        Conv2dFilterLayout::Hwio => (
+            filter_shape[3],
+            filter_shape[2],
+            filter_shape[0],
+            filter_shape[1],
+        ),
+        Conv2dFilterLayout::Ohwi => (
+            filter_shape[0],
+            filter_shape[3],
+            filter_shape[1],
+            filter_shape[2],
+        ),
+        Conv2dFilterLayout::Ihwo => (
+            filter_shape[3],
+            filter_shape[0],
+            filter_shape[1],
+            filter_shape[2],
+        ),
+    };
+
+    // Validate groups
+    if options.groups == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Conv2d groups must be > 0".to_string(),
+        });
+    }
+
+    if in_channels % options.groups != 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Conv2d input channels {} must be divisible by groups {}",
+                in_channels, options.groups
+            ),
+        });
+    }
+
+    if filter_in_channels * options.groups != in_channels {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Conv2d filter input channels {} * groups {} must equal input channels {}",
+                filter_in_channels, options.groups, in_channels
+            ),
+        });
+    }
+
+    let (stride_h, stride_w) = if options.strides.len() >= 2 {
+        (options.strides[0], options.strides[1])
+    } else if options.strides.is_empty() {
+        (1u32, 1u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Conv2d strides must have 2 elements when set, got {:?}",
+                options.strides
+            ),
+        });
+    };
+
+    if stride_h == 0 || stride_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Conv2d strides must be > 0".to_string(),
+        });
+    }
+
+    let (dilation_h, dilation_w) = if options.dilations.len() >= 2 {
+        (options.dilations[0], options.dilations[1])
+    } else if options.dilations.is_empty() {
+        (1u32, 1u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Conv2d dilations must have 2 elements when set, got {:?}",
+                options.dilations
+            ),
+        });
+    };
+
+    if dilation_h == 0 || dilation_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Conv2d dilations must be > 0".to_string(),
+        });
+    }
+
+    let (pad_begin_h, pad_end_h, pad_begin_w, pad_end_w) = if options.padding.len() >= 4 {
+        (
+            options.padding[0],
+            options.padding[1],
+            options.padding[2],
+            options.padding[3],
+        )
+    } else if options.padding.is_empty() {
+        (0, 0, 0, 0)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Conv2d padding must have 4 elements or be empty (default zeros), got {:?}",
+                options.padding
+            ),
+        });
+    };
+
+    // Compute effective kernel size with dilation
+    let effective_kernel_h = dilation_h * (kernel_h - 1) + 1;
+    let effective_kernel_w = dilation_w * (kernel_w - 1) + 1;
+
+    // Compute output spatial dimensions
+    // Formula: floor((input_size + pad_begin + pad_end - effective_kernel_size) / stride) + 1
+    let padded_h = input_h + pad_begin_h + pad_end_h;
+    let padded_w = input_w + pad_begin_w + pad_end_w;
+
+    if padded_h < effective_kernel_h || padded_w < effective_kernel_w {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Conv2d: padded input size [{}, {}] is smaller than effective kernel size [{}, {}]",
+                padded_h, padded_w, effective_kernel_h, effective_kernel_w
+            ),
+        });
+    }
+
+    let output_h = (padded_h - effective_kernel_h) / stride_h + 1;
+    let output_w = (padded_w - effective_kernel_w) / stride_w + 1;
+
+    // Build output shape based on input layout
+    let output_shape = match input_layout {
+        InputLayout::Nchw => vec![batch, out_channels, output_h, output_w],
+        InputLayout::Nhwc => vec![batch, output_h, output_w, out_channels],
+    };
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for 2D transposed convolution (deconvolution)
+///
+/// Following the W3C WebNN specification for convTranspose2d:
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d>
+///
+/// Uses [`MLConvTranspose2dOptions`]. `padding` is WebNN order:
+/// `[beginning_height, ending_height, beginning_width, ending_width]`.
+/// Empty `strides` / `dilations` default to `[1, 1]`; empty `padding` and `output_padding` default to zeros.
+pub fn infer_conv_transpose2d_shape(
+    input_shape: &[u32],
+    filter_shape: &[u32],
+    options: &MLConvTranspose2dOptions,
+) -> Result<Vec<u32>, GraphError> {
+    // Input must be 4D: [batch, channels, height, width] or [batch, height, width, channels]
+    if input_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d input must be 4D, got shape {:?}",
+                input_shape
+            ),
+        });
+    }
+
+    // Filter must be 4D
+    if filter_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d filter must be 4D, got shape {:?}",
+                filter_shape
+            ),
+        });
+    }
+
+    let input_layout = conv2d_input_layout_from_options(options.input_layout);
+
+    // Extract dimensions based on layout
+    let (batch, in_channels, input_h, input_w) = match input_layout {
+        InputLayout::Nchw => (
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+        ),
+        InputLayout::Nhwc => (
+            input_shape[0],
+            input_shape[3],
+            input_shape[1],
+            input_shape[2],
+        ),
+    };
+
+    let (filter_in_channels, out_channels_per_group, kernel_h, kernel_w) =
+        conv_transpose_filter_dims_from_layout(options.filter_layout, filter_shape)?;
+
+    // Validate groups
+    if options.groups == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "ConvTranspose2d groups must be > 0".to_string(),
+        });
+    }
+
+    if in_channels % options.groups != 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d input channels {} must be divisible by groups {}",
+                in_channels, options.groups
+            ),
+        });
+    }
+
+    if filter_in_channels != in_channels {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d filter input channels {} must equal input channels {}",
+                filter_in_channels, in_channels
+            ),
+        });
+    }
+
+    let out_channels = out_channels_per_group * options.groups;
+
+    let (stride_h, stride_w) = if options.strides.len() >= 2 {
+        (options.strides[0], options.strides[1])
+    } else if options.strides.is_empty() {
+        (1u32, 1u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d strides must have 2 elements when set, got {:?}",
+                options.strides
+            ),
+        });
+    };
+
+    if stride_h == 0 || stride_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "ConvTranspose2d strides must be > 0".to_string(),
+        });
+    }
+
+    let (dilation_h, dilation_w) = if options.dilations.len() >= 2 {
+        (options.dilations[0], options.dilations[1])
+    } else if options.dilations.is_empty() {
+        (1u32, 1u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d dilations must have 2 elements when set, got {:?}",
+                options.dilations
+            ),
+        });
+    };
+
+    if dilation_h == 0 || dilation_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "ConvTranspose2d dilations must be > 0".to_string(),
+        });
+    }
+
+    let (pad_begin_h, pad_end_h, pad_begin_w, pad_end_w) = if options.padding.len() >= 4 {
+        (
+            options.padding[0],
+            options.padding[1],
+            options.padding[2],
+            options.padding[3],
+        )
+    } else if options.padding.is_empty() {
+        (0, 0, 0, 0)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d padding must have 4 elements or be empty (default zeros), got {:?}",
+                options.padding
+            ),
+        });
+    };
+
+    let (output_pad_h, output_pad_w) = if options.output_padding.len() >= 2 {
+        (options.output_padding[0], options.output_padding[1])
+    } else if options.output_padding.is_empty() {
+        (0u32, 0u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d output_padding must have 2 elements when set, got {:?}",
+                options.output_padding
+            ),
+        });
+    };
+
+    // Compute effective kernel size with dilation
+    let effective_kernel_h = dilation_h * (kernel_h - 1) + 1;
+    let effective_kernel_w = dilation_w * (kernel_w - 1) + 1;
+
+    // Compute output spatial dimensions
+    // Formula for transposed convolution:
+    // output_size = (input_size - 1) * stride + effective_kernel_size - pad_begin - pad_end + output_padding
+    let output_h = if let Some(ref sizes) = options.output_sizes {
+        if sizes.len() != 2 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "ConvTranspose2d output_sizes must have 2 elements, got {:?}",
+                    sizes
+                ),
+            });
+        }
+        sizes[0]
+    } else {
+        (input_h - 1) * stride_h + effective_kernel_h - pad_begin_h - pad_end_h + output_pad_h
+    };
+
+    let output_w = if let Some(ref sizes) = options.output_sizes {
+        sizes[1]
+    } else {
+        (input_w - 1) * stride_w + effective_kernel_w - pad_begin_w - pad_end_w + output_pad_w
+    };
+
+    // Build output shape based on input layout
+    let output_shape = match input_layout {
+        InputLayout::Nchw => vec![batch, out_channels, output_h, output_w],
+        InputLayout::Nhwc => vec![batch, output_h, output_w, out_channels],
+    };
+
+    Ok(output_shape)
+}
+
+fn pool2d_layout_from_options(layout: &str) -> InputLayout {
+    if layout.eq_ignore_ascii_case("nhwc") {
+        InputLayout::Nhwc
+    } else {
+        InputLayout::Nchw
+    }
+}
+
+fn pool2d_ceil_output_spatial(output_shape_rounding: &str) -> bool {
+    output_shape_rounding.eq_ignore_ascii_case("ceil")
+}
+
+/// Infer output shape for 2D pooling operations (average, max)
+///
+/// Following the W3C WebNN specification for pool2d:
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d>
+///
+/// Uses [`MLPool2dOptions`]: `padding` is WebNN order
+/// `[beginning_height, ending_height, beginning_width, ending_width]`.
+/// When `output_sizes` has at least two entries, spatial dimensions are taken from it and
+/// `output_shape_rounding` is ignored.
+pub fn infer_pool2d_shape(
+    input_shape: &[u32],
+    options: &MLPool2dOptions,
+) -> Result<Vec<u32>, GraphError> {
+    // Input must be 4D: [batch, channels, height, width] or [batch, height, width, channels]
+    if input_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Pool2d input must be 4D, got shape {:?}", input_shape),
+        });
+    }
+
+    let layout_enum = pool2d_layout_from_options(&options.layout);
+
+    // Extract dimensions based on layout
+    let (batch, channels, input_h, input_w) = match layout_enum {
+        InputLayout::Nchw => (
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+        ),
+        InputLayout::Nhwc => (
+            input_shape[0],
+            input_shape[3],
+            input_shape[1],
+            input_shape[2],
+        ),
+    };
+
+    if let Some(sizes) = options.output_sizes.as_ref()
+        && sizes.len() >= 2
+    {
+        let oh = sizes[0];
+        let ow = sizes[1];
+        let output_shape = match layout_enum {
+            InputLayout::Nchw => vec![batch, channels, oh, ow],
+            InputLayout::Nhwc => vec![batch, oh, ow, channels],
+        };
+        return Ok(output_shape);
+    }
+
+    let ceil_output_spatial = pool2d_ceil_output_spatial(&options.output_shape_rounding);
+
+    // Validate window dimensions (default: full spatial size per WebNN)
+    let (window_h, window_w) = match options.window_dimensions.as_ref() {
+        Some(w) if w.len() == 2 => (w[0], w[1]),
+        Some(w) => {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Pool2d window_dimensions must have 2 elements when set, got {:?}",
+                    w
+                ),
+            });
+        }
+        None => (input_h, input_w),
+    };
+
+    if window_h == 0 || window_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Pool2d window dimensions must be > 0".to_string(),
+        });
+    }
+
+    let (stride_h, stride_w) = if options.strides.len() >= 2 {
+        (options.strides[0], options.strides[1])
+    } else if options.strides.is_empty() {
+        (1u32, 1u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Pool2d strides must have 2 elements when set, got {:?}",
+                options.strides
+            ),
+        });
+    };
+
+    if stride_h == 0 || stride_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Pool2d strides must be > 0".to_string(),
+        });
+    }
+
+    let (dilation_h, dilation_w) = if options.dilations.len() >= 2 {
+        (options.dilations[0], options.dilations[1])
+    } else if options.dilations.is_empty() {
+        (1u32, 1u32)
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Pool2d dilations must have 2 elements when set, got {:?}",
+                options.dilations
+            ),
+        });
+    };
+
+    if dilation_h == 0 || dilation_w == 0 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Pool2d dilations must be > 0".to_string(),
+        });
+    }
+
+    let (pad_begin_h, pad_end_h, pad_begin_w, pad_end_w) = if options.padding.len() >= 4 {
+        (
+            options.padding[0],
+            options.padding[1],
+            options.padding[2],
+            options.padding[3],
+        )
+    } else {
+        (0, 0, 0, 0)
+    };
+
+    // Compute effective window size with dilation
+    let effective_window_h = dilation_h * (window_h - 1) + 1;
+    let effective_window_w = dilation_w * (window_w - 1) + 1;
+
+    // Compute output spatial dimensions
+    // Formula: floor((input_size + pad_begin + pad_end - effective_window_size) / stride) + 1
+    let padded_h = input_h + pad_begin_h + pad_end_h;
+    let padded_w = input_w + pad_begin_w + pad_end_w;
+
+    if padded_h < effective_window_h || padded_w < effective_window_w {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Pool2d: padded input size [{}, {}] is smaller than effective window size [{}, {}]",
+                padded_h, padded_w, effective_window_h, effective_window_w
+            ),
+        });
+    }
+
+    let span_h = padded_h - effective_window_h;
+    let span_w = padded_w - effective_window_w;
+    let output_h = if ceil_output_spatial {
+        span_h.div_ceil(stride_h) + 1
+    } else {
+        span_h / stride_h + 1
+    };
+    let output_w = if ceil_output_spatial {
+        span_w.div_ceil(stride_w) + 1
+    } else {
+        span_w / stride_w + 1
+    };
+
+    // Build output shape based on layout (channels remain unchanged)
+    let output_shape = match layout_enum {
+        InputLayout::Nchw => vec![batch, channels, output_h, output_w],
+        InputLayout::Nhwc => vec![batch, output_h, output_w, channels],
+    };
+
+    Ok(output_shape)
+}
+
+/// Infer pool2d output shape as [`Dimension`] values (WebNN `MLPool2dOptions` defaults applied).
+///
+/// When `output_sizes` has at least two entries, spatial dimensions are taken from it and
+/// `outputShapeRounding` is ignored (WebNN).
+#[allow(clippy::too_many_arguments)]
+pub fn infer_pool2d_shape_dimensions(
+    input_shape: &[Dimension],
+    layout: &str,
+    window_dimensions: Option<&[u32]>,
+    strides: &[u32],
+    dilations: &[u32],
+    padding: &[u32],
+    output_sizes: Option<&[u32]>,
+    ceil_output_spatial: bool,
+) -> Result<Vec<Dimension>, GraphError> {
+    if input_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Pool2d input must be 4D, got {} dimensions",
+                input_shape.len()
+            ),
+        });
+    }
+
+    let layout_enum = if layout.eq_ignore_ascii_case("nhwc") {
+        InputLayout::Nhwc
+    } else {
+        InputLayout::Nchw
+    };
+
+    if let Some(sizes) = output_sizes
+        && sizes.len() >= 2
+    {
+        let oh = sizes[0];
+        let ow = sizes[1];
+        let output_shape = match layout_enum {
+            InputLayout::Nchw => vec![
+                input_shape[0].clone(),
+                input_shape[1].clone(),
+                Dimension::Static(oh),
+                Dimension::Static(ow),
+            ],
+            InputLayout::Nhwc => vec![
+                input_shape[0].clone(),
+                Dimension::Static(oh),
+                Dimension::Static(ow),
+                input_shape[3].clone(),
+            ],
+        };
+        return Ok(output_shape);
+    }
+
+    let strides_v: Vec<u32> = if strides.len() >= 2 {
+        vec![strides[0], strides[1]]
+    } else {
+        vec![1, 1]
+    };
+
+    let dilations_v: Vec<u32> = if dilations.len() >= 2 {
+        vec![dilations[0], dilations[1]]
+    } else {
+        vec![1, 1]
+    };
+
+    let pads_v: Vec<u32> = if padding.len() >= 4 {
+        vec![padding[0], padding[1], padding[2], padding[3]]
+    } else {
+        vec![0, 0, 0, 0]
+    };
+
+    let input_u32: Vec<u32> = input_shape.iter().map(get_static_or_max_size).collect();
+    let pool_opts = MLPool2dOptions {
+        window_dimensions: window_dimensions.and_then(|w| {
+            if w.len() >= 2 {
+                Some(vec![w[0], w[1]])
+            } else {
+                None
+            }
+        }),
+        padding: pads_v,
+        strides: strides_v,
+        dilations: dilations_v,
+        layout: layout.to_string(),
+        output_shape_rounding: if ceil_output_spatial {
+            "ceil".to_string()
+        } else {
+            "floor".to_string()
+        },
+        ..Default::default()
+    };
+    let out = infer_pool2d_shape(&input_u32, &pool_opts)?;
+    Ok(to_dimension_vector(&out))
+}
+
+/// Infer the output shape for global pooling operations
+/// Global pooling reduces spatial dimensions to 1x1
+pub fn infer_global_pool_shape(
+    input_shape: &[u32],
+    layout: InputLayout,
+) -> Result<Vec<u32>, GraphError> {
+    // Validate input is 4D
+    if input_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Global pooling input must be 4D, got {}D tensor {:?}",
+                input_shape.len(),
+                input_shape
+            ),
+        });
+    }
+
+    // Global pooling reduces spatial dimensions to 1x1
+    // Output shape depends on layout
+    let output_shape = match layout {
+        InputLayout::Nchw => {
+            // [N, C, H, W] -> [N, C, 1, 1]
+            vec![input_shape[0], input_shape[1], 1, 1]
+        }
+        InputLayout::Nhwc => {
+            // [N, H, W, C] -> [N, 1, 1, C]
+            vec![input_shape[0], 1, 1, input_shape[3]]
+        }
+    };
+
+    Ok(output_shape)
+}
+
+/// Infer the output shape for batchNormalization
+/// Batch normalization output has the same shape as input
+pub fn infer_batch_normalization_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    // Batch normalization preserves the input shape
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for instanceNormalization
+/// Instance normalization output has the same shape as input
+pub fn infer_instance_normalization_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    // Instance normalization preserves the input shape
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for layerNormalization
+/// Layer normalization output has the same shape as input
+pub fn infer_layer_normalization_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    // Layer normalization preserves the input shape
+    Ok(input_shape.to_vec())
+}
+
+/// Options for reduction operations
+#[derive(Debug, Clone)]
+pub struct ReduceOptions {
+    /// Dimensions to reduce; empty means all.
+    pub axes: Vec<u32>,
+    /// Keep reduced dimensions as size 1.
+    pub keep_dimensions: bool,
+}
+
+/// Infer the output shape for reduction operations
+///
+/// Reduction operations reduce input tensor dimensions by applying a reduction function
+/// across specified axes.
+///
+/// Following the W3C WebNN specification for reduction operations:
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
+pub fn infer_reduce_shape(
+    input_shape: &[u32],
+    options: &ReduceOptions,
+) -> Result<Vec<u32>, GraphError> {
+    // `axes` lists dimensions to reduce; an empty list reduces over no dimensions.
+    let axes_to_reduce = options.axes.clone();
+
+    // Validate that all axes are within bounds
+    for &axis in &axes_to_reduce {
+        if axis >= input_shape.len() as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Reduce axis {} out of bounds for shape {:?} (rank {})",
+                    axis,
+                    input_shape,
+                    input_shape.len()
+                ),
+            });
+        }
+    }
+
+    // Check for duplicate axes
+    let mut sorted_axes = axes_to_reduce.clone();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Duplicate axis {} in reduction axes", sorted_axes[i]),
+            });
+        }
+    }
+
+    // Build output shape
+    let mut output_shape = Vec::new();
+    for (idx, &dim) in input_shape.iter().enumerate() {
+        let is_reduced = axes_to_reduce.contains(&(idx as u32));
+        if is_reduced {
+            if options.keep_dimensions {
+                output_shape.push(1);
+            }
+            // else: omit this dimension
+        } else {
+            output_shape.push(dim);
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for reduction operations while preserving dynamic dimensions.
+pub fn infer_reduce_shape_dimensions(
+    input_shape: &[Dimension],
+    options: &ReduceOptions,
+) -> Result<Vec<Dimension>, GraphError> {
+    let axes_to_reduce = options.axes.clone();
+
+    for &axis in &axes_to_reduce {
+        if axis >= input_shape.len() as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Reduce axis {} out of bounds for shape {:?} (rank {})",
+                    axis,
+                    input_shape,
+                    input_shape.len()
+                ),
+            });
+        }
+    }
+
+    let mut sorted_axes = axes_to_reduce.clone();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Duplicate axis {} in reduction axes", sorted_axes[i]),
+            });
+        }
+    }
+
+    let mut output_shape = Vec::new();
+    for (idx, dim) in input_shape.iter().enumerate() {
+        let is_reduced = axes_to_reduce.contains(&(idx as u32));
+        if is_reduced {
+            if options.keep_dimensions {
+                output_shape.push(Dimension::Static(1));
+            }
+        } else {
+            output_shape.push(dim.clone());
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer the output shape for element-wise unary operations
+/// All element-wise unary operations preserve the input shape
+///
+pub fn infer_abs_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `ceil` operation for the given input shape(s).
+pub fn infer_ceil_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `floor` operation for the given input shape(s).
+pub fn infer_floor_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `round even` operation for the given input shape(s).
+pub fn infer_round_even_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `neg` operation for the given input shape(s).
+pub fn infer_neg_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `sign` operation for the given input shape(s).
+pub fn infer_sign_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `exp` operation for the given input shape(s).
+pub fn infer_exp_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `log` operation for the given input shape(s).
+pub fn infer_log_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `sqrt` operation for the given input shape(s).
+pub fn infer_sqrt_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `reciprocal` operation for the given input shape(s).
+pub fn infer_reciprocal_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `sin` operation for the given input shape(s).
+pub fn infer_sin_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `cos` operation for the given input shape(s).
+pub fn infer_cos_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `tan` operation for the given input shape(s).
+pub fn infer_tan_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `erf` operation for the given input shape(s).
+pub fn infer_erf_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Output shape of the `identity` operation for the given input shape(s).
+pub fn infer_identity_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for binary comparison operations
+/// Comparison operations use NumPy-style broadcasting and return uint8 output
+pub fn infer_equal_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Output shape of the `greater` operation for the given input shape(s).
+pub fn infer_greater_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Output shape of the `greater or equal` operation for the given input shape(s).
+pub fn infer_greater_or_equal_shape(
+    shape_a: &[u32],
+    shape_b: &[u32],
+) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Output shape of the `lesser` operation for the given input shape(s).
+pub fn infer_lesser_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Output shape of the `lesser or equal` operation for the given input shape(s).
+pub fn infer_lesser_or_equal_shape(
+    shape_a: &[u32],
+    shape_b: &[u32],
+) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Infer the output shape for unary logical operations
+/// logicalNot preserves input shape and returns uint8 output
+pub fn infer_logical_not_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for binary logical operations
+/// Logical operations use NumPy-style broadcasting and return uint8 output
+pub fn infer_logical_and_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Output shape of the `logical or` operation for the given input shape(s).
+pub fn infer_logical_or_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Output shape of the `logical xor` operation for the given input shape(s).
+pub fn infer_logical_xor_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Infer the output shape for dequantizeLinear
+/// Converts quantized integer values to floating-point, preserving shape
+/// Formula: output = (input - zeroPoint) * scale
+pub fn infer_dequantize_linear_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for quantizeLinear
+/// Converts floating-point values to quantized integers, preserving shape
+/// Formula: output = input / scale + zeroPoint
+pub fn infer_quantize_linear_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for transpose operation
+///
+/// Transpose reorders tensor dimensions according to a permutation.
+/// If no permutation is provided, dimensions are reversed.
+pub fn infer_transpose_shape(
+    input_shape: &[u32],
+    permutation: Option<&[u32]>,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    // If no permutation, reverse dimensions (default WebNN behavior)
+    if permutation.is_none() {
+        let mut output_shape = input_shape.to_vec();
+        output_shape.reverse();
+        return Ok(output_shape);
+    }
+
+    let perm = permutation.unwrap();
+
+    // Validate permutation length matches input rank
+    if perm.len() != rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Transpose permutation length {} must match input rank {}, input shape: {:?}",
+                perm.len(),
+                rank,
+                input_shape
+            ),
+        });
+    }
+
+    // Validate permutation contains unique values in range [0, rank)
+    let mut seen = vec![false; rank];
+    for &axis in perm {
+        if axis >= rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Transpose permutation axis {} out of bounds for rank {}, input shape: {:?}",
+                    axis, rank, input_shape
+                ),
+            });
+        }
+        if seen[axis as usize] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Transpose permutation contains duplicate axis {}", axis),
+            });
+        }
+        seen[axis as usize] = true;
+    }
+
+    // Build output shape by permuting dimensions
+    let output_shape: Vec<u32> = perm.iter().map(|&i| input_shape[i as usize]).collect();
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for transpose operation while preserving dynamic dimensions.
+pub fn infer_transpose_shape_dimensions(
+    input_shape: &[Dimension],
+    permutation: Option<&[u32]>,
+) -> Result<Vec<Dimension>, GraphError> {
+    let rank = input_shape.len();
+
+    if permutation.is_none() {
+        let mut output_shape = input_shape.to_vec();
+        output_shape.reverse();
+        return Ok(output_shape);
+    }
+
+    let perm = permutation.expect("permutation checked above");
+    if perm.len() != rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Transpose permutation length {} must match input rank {}, input shape: {:?}",
+                perm.len(),
+                rank,
+                input_shape
+            ),
+        });
+    }
+
+    let mut seen = vec![false; rank];
+    for &axis in perm {
+        if axis >= rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Transpose permutation axis {} out of bounds for rank {}, input shape: {:?}",
+                    axis, rank, input_shape
+                ),
+            });
+        }
+        if seen[axis as usize] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Transpose permutation contains duplicate axis {}", axis),
+            });
+        }
+        seen[axis as usize] = true;
+    }
+
+    let output_shape: Vec<Dimension> = perm
+        .iter()
+        .map(|&i| input_shape[i as usize].clone())
+        .collect();
+    Ok(output_shape)
+}
+
+/// Infer output shape for concat operation
+///
+/// Concatenates multiple tensors along a specified axis.
+pub fn infer_concat_shape(input_shapes: &[Vec<u32>], axis: u32) -> Result<Vec<u32>, GraphError> {
+    if input_shapes.is_empty() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Concat requires at least one input".to_string(),
+        });
+    }
+
+    let first_shape = &input_shapes[0];
+    let rank = first_shape.len();
+
+    // Validate axis is within bounds
+    if axis >= rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Concat axis {} out of bounds for rank {}, shape: {:?}",
+                axis, rank, first_shape
+            ),
+        });
+    }
+
+    // Validate all inputs have same rank
+    for (idx, shape) in input_shapes.iter().enumerate() {
+        if shape.len() != rank {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Concat input {} has rank {} but expected rank {}, shapes: {:?}",
+                    idx,
+                    shape.len(),
+                    rank,
+                    input_shapes
+                ),
+            });
+        }
+    }
+
+    // Validate all dimensions except concat axis match
+    for dim_idx in 0..rank {
+        if dim_idx == axis as usize {
+            continue;
+        }
+        let expected_dim = first_shape[dim_idx];
+        for (input_idx, shape) in input_shapes.iter().enumerate() {
+            if shape[dim_idx] != expected_dim {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Concat input {} dimension {} is {} but expected {} (all non-concat dimensions must match)",
+                        input_idx, dim_idx, shape[dim_idx], expected_dim
+                    ),
+                });
+            }
+        }
+    }
+
+    // Compute output shape: sum concat axis, others match first input
+    let mut output_shape = first_shape.clone();
+    let concat_dim_size: u32 = input_shapes.iter().map(|shape| shape[axis as usize]).sum();
+    output_shape[axis as usize] = concat_dim_size;
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for concat while preserving dynamic dimensions.
+pub fn infer_concat_shape_dimensions(
+    input_shapes: &[Vec<Dimension>],
+    axis: u32,
+) -> Result<Vec<Dimension>, GraphError> {
+    if input_shapes.is_empty() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Concat requires at least one input".to_string(),
+        });
+    }
+
+    let first_shape = &input_shapes[0];
+    let rank = first_shape.len();
+    if axis >= rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Concat axis {} out of bounds for rank {}, shape: {:?}",
+                axis, rank, first_shape
+            ),
+        });
+    }
+
+    for (idx, shape) in input_shapes.iter().enumerate() {
+        if shape.len() != rank {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Concat input {} has rank {} but expected rank {}, shapes: {:?}",
+                    idx,
+                    shape.len(),
+                    rank,
+                    input_shapes
+                ),
+            });
+        }
+    }
+
+    let axis_idx = axis as usize;
+    let mut output_shape = first_shape.clone();
+    for dim_idx in 0..rank {
+        if dim_idx == axis_idx {
+            continue;
+        }
+
+        let mut merged = first_shape[dim_idx].clone();
+        for shape in input_shapes.iter().skip(1) {
+            merged = match (&merged, &shape[dim_idx]) {
+                (Dimension::Static(a), Dimension::Static(b)) if a != b => {
+                    return Err(GraphError::ShapeInferenceFailed {
+                        reason: format!(
+                            "Concat dimension {} mismatch on non-axis dimensions: {} vs {}",
+                            dim_idx, a, b
+                        ),
+                    });
+                }
+                _ => merge_broadcast_dim(&merged, &shape[dim_idx])?,
+            };
+        }
+        output_shape[dim_idx] = merged;
+    }
+
+    let mut sum = 0u32;
+    let mut has_dynamic_axis = false;
+    for shape in input_shapes {
+        let dim = &shape[axis_idx];
+        sum = sum.saturating_add(get_static_or_max_size(dim));
+        if matches!(dim, Dimension::Dynamic(_)) {
+            has_dynamic_axis = true;
+        }
+    }
+
+    output_shape[axis_idx] = if has_dynamic_axis {
+        Dimension::Dynamic(DynamicDimension {
+            name: String::new(),
+            max_size: sum,
+        })
+    } else {
+        Dimension::Static(sum)
+    };
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for slice operation.
+///
+/// WebNN `sizes` are window lengths in input index space along each axis; with `strides`
+/// greater than 1 the output extent is `ceil(sizes[i] / strides[i])`.
+pub fn infer_slice_shape(
+    input_shape: &[u32],
+    starts: &[u32],
+    sizes: &[u32],
+    strides: Option<&[u32]>,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    // Validate starts and sizes have same length as input rank
+    if starts.len() != rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Slice starts length {} must match input rank {}, input shape: {:?}",
+                starts.len(),
+                rank,
+                input_shape
+            ),
+        });
+    }
+
+    if sizes.len() != rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Slice sizes length {} must match input rank {}, input shape: {:?}",
+                sizes.len(),
+                rank,
+                input_shape
+            ),
+        });
+    }
+
+    let strides: Vec<u32> = match strides {
+        None | Some([]) => vec![1; rank],
+        Some(s) => {
+            if s.len() != rank {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Slice strides length {} must match input rank {}, input shape: {:?}",
+                        s.len(),
+                        rank,
+                        input_shape
+                    ),
+                });
+            }
+            s.to_vec()
+        }
+    };
+
+    // Validate starts and sizes are within bounds
+    let mut output_shape = Vec::with_capacity(rank);
+    for (dim_idx, (&start, &size)) in starts.iter().zip(sizes.iter()).enumerate() {
+        let input_dim = input_shape[dim_idx];
+        let stride = strides[dim_idx];
+
+        if stride == 0 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Slice stride for dimension {dim_idx} must be > 0"),
+            });
+        }
+
+        if start >= input_dim {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Slice start {} for dimension {} exceeds input dimension size {}",
+                    start, dim_idx, input_dim
+                ),
+            });
+        }
+
+        if start + size > input_dim {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Slice end {} (start {} + size {}) for dimension {} exceeds input dimension size {}",
+                    start + size,
+                    start,
+                    size,
+                    dim_idx,
+                    input_dim
+                ),
+            });
+        }
+
+        let out_dim = if stride == 1 {
+            size
+        } else {
+            size.div_ceil(stride)
+        };
+        output_shape.push(out_dim);
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for expand operation
+///
+/// Broadcasts a tensor to a larger shape. Dimensions of size 1 can be expanded to larger sizes.
+pub fn infer_expand_shape(input_shape: &[u32], new_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = new_shape.len();
+
+    // Output rank must be >= input rank
+    if output_rank < input_rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Expand new_shape rank {} must be >= input rank {}, input shape: {:?}, new_shape: {:?}",
+                output_rank, input_rank, input_shape, new_shape
+            ),
+        });
+    }
+
+    // Align shapes from the right (trailing dimensions)
+    let offset = output_rank - input_rank;
+
+    for i in 0..input_rank {
+        let input_dim = input_shape[i];
+        let output_dim = new_shape[offset + i];
+
+        // Input dimension must be 1 or match output dimension
+        if input_dim != 1 && input_dim != output_dim {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Expand dimension {} mismatch: input {} can only expand if it's 1, but new_shape specifies {}, input shape: {:?}, new_shape: {:?}",
+                    i, input_dim, output_dim, input_shape, new_shape
+                ),
+            });
+        }
+    }
+
+    // Output shape is the new_shape
+    Ok(new_shape.to_vec())
+}
+
+fn propagate_expand_dimension(input_dim: &Dimension, target_dim: &Dimension) -> Dimension {
+    match (input_dim, target_dim) {
+        // Keep a named dynamic input when newShape encodes only its current maxSize.
+        (Dimension::Dynamic(input_dyn), Dimension::Static(target))
+            if *target == input_dyn.max_size && *target != 1 =>
+        {
+            Dimension::Dynamic(input_dyn.clone())
+        }
+        // If target is dynamic but unnamed and has same max as input, keep the input name.
+        (Dimension::Dynamic(input_dyn), Dimension::Dynamic(target_dyn))
+            if target_dyn.name.is_empty() && target_dyn.max_size == input_dyn.max_size =>
+        {
+            Dimension::Dynamic(DynamicDimension {
+                name: input_dyn.name.clone(),
+                max_size: target_dyn.max_size,
+            })
+        }
+        _ => target_dim.clone(),
+    }
+}
+
+/// Infer output shape for expand operation while preserving dynamic dimensions.
+///
+/// Explicit propagation rules:
+/// - New dimensions (leading rank expansion) come from `new_shape`.
+/// - If input dimension is dynamic and `new_shape` uses a static maxSize placeholder,
+///   keep the input dynamic dimension in output.
+/// - Otherwise output dimension follows `new_shape`.
+pub fn infer_expand_shape_dimensions(
+    input_shape: &[Dimension],
+    new_shape: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = new_shape.len();
+
+    if output_rank < input_rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Expand new_shape rank {} must be >= input rank {}, input shape: {:?}, new_shape: {:?}",
+                output_rank, input_rank, input_shape, new_shape
+            ),
+        });
+    }
+
+    let offset = output_rank - input_rank;
+    let mut output = new_shape.to_vec();
+
+    for i in 0..input_rank {
+        let input_dim = &input_shape[i];
+        let target_dim = &new_shape[offset + i];
+        let input_max = get_static_or_max_size(input_dim);
+        let target_max = get_static_or_max_size(target_dim);
+
+        if let (Dimension::Static(in_static), Dimension::Static(out_static)) =
+            (input_dim, target_dim)
+            && *in_static != 1
+            && *in_static != *out_static
+        {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Expand dimension {} mismatch: input {} can only expand if it's 1, but new_shape specifies {}, input shape: {:?}, new_shape: {:?}",
+                    i, in_static, out_static, input_shape, new_shape
+                ),
+            });
+        }
+
+        if let (Dimension::Static(in_static), Dimension::Dynamic(_)) = (input_dim, target_dim)
+            && *in_static != 1
+            && target_max < *in_static
+        {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Expand dimension {} mismatch: input {} exceeds dynamic new_shape max {}",
+                    i, in_static, target_max
+                ),
+            });
+        }
+
+        // Keep explicit dynamic information when possible.
+        if input_max != 1 || target_max != 1 {
+            output[offset + i] = propagate_expand_dimension(input_dim, target_dim);
+        }
+    }
+
+    Ok(output)
+}
+
+/// Infer output shape for gather operation
+///
+/// Gathers values from input tensor along an axis according to indices.
+pub fn infer_gather_shape(
+    input_shape: &[u32],
+    indices_shape: &[u32],
+    axis: u32,
+) -> Result<Vec<u32>, GraphError> {
+    let input_rank = input_shape.len();
+
+    // Validate axis is within bounds
+    if axis >= input_rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Gather axis {} out of bounds for input rank {}, input shape: {:?}",
+                axis, input_rank, input_shape
+            ),
+        });
+    }
+
+    // Output shape = input_shape[0:axis] + indices_shape + input_shape[axis+1:]
+    let mut output_shape = Vec::new();
+    output_shape.extend_from_slice(&input_shape[..axis as usize]);
+    output_shape.extend_from_slice(indices_shape);
+    output_shape.extend_from_slice(&input_shape[(axis as usize + 1)..]);
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for gather while preserving dynamic dimensions.
+pub fn infer_gather_shape_dimensions(
+    input_shape: &[Dimension],
+    indices_shape: &[Dimension],
+    axis: u32,
+) -> Result<Vec<Dimension>, GraphError> {
+    let input_rank = input_shape.len();
+    if axis >= input_rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Gather axis {} out of bounds for input rank {}, input shape: {:?}",
+                axis, input_rank, input_shape
+            ),
+        });
+    }
+
+    let mut output_shape = Vec::new();
+    output_shape.extend_from_slice(&input_shape[..axis as usize]);
+    output_shape.extend_from_slice(indices_shape);
+    output_shape.extend_from_slice(&input_shape[(axis as usize + 1)..]);
+    Ok(output_shape)
+}
+
+/// Represents the split specification
+#[derive(Debug, Clone)]
+pub enum SplitSpec {
+    /// Split into N equal parts
+    Count(u32),
+    /// Split into parts of specified sizes
+    Sizes(Vec<u32>),
+}
+
+/// Infer output shapes for split operation
+///
+/// Splits a tensor into multiple sub-tensors along an axis.
+pub fn infer_split_shapes(
+    input_shape: &[u32],
+    split_spec: &SplitSpec,
+    axis: u32,
+) -> Result<Vec<Vec<u32>>, GraphError> {
+    let input_rank = input_shape.len();
+
+    // Validate axis is within bounds
+    if axis >= input_rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Split axis {} out of bounds for input rank {}, input shape: {:?}",
+                axis, input_rank, input_shape
+            ),
+        });
+    }
+
+    let axis_size = input_shape[axis as usize];
+
+    let split_sizes: Vec<u32> = match split_spec {
+        SplitSpec::Count(count) => {
+            if *count == 0 {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: "Split count must be > 0".to_string(),
+                });
+            }
+
+            if !axis_size.is_multiple_of(*count) {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Split count {} does not evenly divide axis size {}, input shape: {:?}",
+                        count, axis_size, input_shape
+                    ),
+                });
+            }
+
+            let size_per_split = axis_size / count;
+            vec![size_per_split; *count as usize]
+        }
+        SplitSpec::Sizes(sizes) => {
+            let total: u32 = sizes.iter().sum();
+            if total != axis_size {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Split sizes {:?} sum to {} but axis size is {}, input shape: {:?}",
+                        sizes, total, axis_size, input_shape
+                    ),
+                });
+            }
+            sizes.clone()
+        }
+    };
+
+    // Create output shapes
+    let mut output_shapes = Vec::new();
+    for &split_size in &split_sizes {
+        let mut shape = input_shape.to_vec();
+        shape[axis as usize] = split_size;
+        output_shapes.push(shape);
+    }
+
+    Ok(output_shapes)
+}
+
+/// Infer output shape for where operation
+///
+/// Selects elements from trueValue or falseValue based on condition.
+/// All inputs are broadcast to a common shape.
+pub fn infer_where_shape(
+    condition_shape: &[u32],
+    true_value_shape: &[u32],
+    false_value_shape: &[u32],
+) -> Result<Vec<u32>, GraphError> {
+    // All three inputs are broadcast to a common shape
+    let temp_shape = broadcast_shapes(condition_shape, true_value_shape)?;
+    let output_shape = broadcast_shapes(&temp_shape, false_value_shape)?;
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for where while preserving dynamic dimensions.
+pub fn infer_where_shape_dimensions(
+    condition_shape: &[Dimension],
+    true_value_shape: &[Dimension],
+    false_value_shape: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    let temp_shape = broadcast_shapes_dimensions(condition_shape, true_value_shape)?;
+    broadcast_shapes_dimensions(&temp_shape, false_value_shape)
+}
+
+/// Pad mode for pad operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadMode {
+    /// Fill with a constant value.
+    Constant,
+    /// Repeat the edge value.
+    Edge,
+    /// Mirror without repeating the edge.
+    Reflection,
+    /// Mirror including the edge.
+    Symmetric,
+}
+
+/// Infer output shape for pad operation
+///
+/// Adds padding around the input tensor.
+/// Padding is specified as [begin_0, begin_1, ..., begin_n, end_0, end_1, ..., end_n]
+pub fn infer_pad_shape(input_shape: &[u32], padding: &[u32]) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    // Padding must have length 2 * rank (begin and end for each dimension)
+    if padding.len() != 2 * rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Pad padding length {} must be 2 * input rank {}, input shape: {:?}",
+                padding.len(),
+                rank,
+                input_shape
+            ),
+        });
+    }
+
+    // Compute output shape
+    let mut output_shape = Vec::with_capacity(rank);
+    for i in 0..rank {
+        let begin_pad = padding[i];
+        let end_pad = padding[rank + i];
+        output_shape.push(input_shape[i] + begin_pad + end_pad);
+    }
+
+    Ok(output_shape)
+}
+/// Infer output shape for gelu operation (element-wise)
+pub fn infer_gelu_shape(input_shape: &[u32]) -> Vec<u32> {
+    // GELU is element-wise: output shape = input shape
+    input_shape.to_vec()
+}
+
+/// Infer output shape for squeeze operation (remove dimensions of size 1)
+pub fn infer_squeeze_shape(
+    input_shape: &[u32],
+    axes: Option<&[u32]>,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    let axes_to_squeeze = if let Some(axes) = axes {
+        // Validate axes
+        for &axis in axes {
+            if axis >= rank as u32 {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Squeeze axis {} out of bounds for rank {}, input shape: {:?}",
+                        axis, rank, input_shape
+                    ),
+                });
+            }
+            // Verify dimension is 1
+            if input_shape[axis as usize] != 1 {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Squeeze axis {} has size {}, must be 1, input shape: {:?}",
+                        axis, input_shape[axis as usize], input_shape
+                    ),
+                });
+            }
+        }
+        axes.to_vec()
+    } else {
+        // No axes specified: squeeze all dimensions of size 1
+        (0..rank)
+            .filter(|&i| input_shape[i] == 1)
+            .map(|i| i as u32)
+            .collect()
+    };
+
+    // Build output shape by excluding squeezed axes
+    let mut output_shape = Vec::new();
+    for (i, &dim) in input_shape.iter().enumerate() {
+        if !axes_to_squeeze.contains(&(i as u32)) {
+            output_shape.push(dim);
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for unsqueeze operation (add dimensions of size 1)
+pub fn infer_unsqueeze_shape(input_shape: &[u32], axes: &[u32]) -> Result<Vec<u32>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = input_rank + axes.len();
+
+    // Validate axes: must be in range [0, output_rank).
+    for &axis in axes {
+        if axis >= output_rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Unsqueeze axis {} out of bounds for output rank {}, input shape: {:?}",
+                    axis, output_rank, input_shape
+                ),
+            });
+        }
+    }
+
+    // Check for duplicate axes
+    let mut sorted_axes = axes.to_vec();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Unsqueeze axes contain duplicate: {}", sorted_axes[i]),
+            });
+        }
+    }
+
+    // Build output shape by inserting 1s at specified axes
+    let mut output_shape = Vec::with_capacity(output_rank);
+    let mut input_idx = 0;
+
+    for out_idx in 0..output_rank {
+        if sorted_axes.contains(&(out_idx as u32)) {
+            output_shape.push(1);
+        } else {
+            output_shape.push(input_shape[input_idx]);
+            input_idx += 1;
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for unsqueeze operation while preserving dynamic dimensions.
+pub fn infer_unsqueeze_shape_dimensions(
+    input_shape: &[Dimension],
+    axes: &[u32],
+) -> Result<Vec<Dimension>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = input_rank + axes.len();
+
+    for &axis in axes {
+        if axis >= output_rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Unsqueeze axis {} out of bounds for output rank {}, input shape: {:?}",
+                    axis, output_rank, input_shape
+                ),
+            });
+        }
+    }
+
+    let mut sorted_axes = axes.to_vec();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Unsqueeze axes contain duplicate: {}", sorted_axes[i]),
+            });
+        }
+    }
+
+    let mut output_shape = Vec::with_capacity(output_rank);
+    let mut input_idx = 0;
+
+    for out_idx in 0..output_rank {
+        if sorted_axes.contains(&(out_idx as u32)) {
+            output_shape.push(Dimension::Static(1));
+        } else {
+            output_shape.push(input_shape[input_idx].clone());
+            input_idx += 1;
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for argMax/argMin operations
+pub fn infer_arg_reduce_shape(
+    input_shape: &[u32],
+    axis: u32,
+    keep_dimensions: bool,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    // Validate axis
+    if axis >= rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Arg reduce axis {} out of bounds for rank {}, input shape: {:?}",
+                axis, rank, input_shape
+            ),
+        });
+    }
+
+    let mut output_shape = Vec::new();
+
+    if keep_dimensions {
+        // Keep the reduced axis with size 1
+        for (i, &dim) in input_shape.iter().enumerate() {
+            if i == axis as usize {
+                output_shape.push(1);
+            } else {
+                output_shape.push(dim);
+            }
+        }
+    } else {
+        // Remove the reduced axis
+        for (i, &dim) in input_shape.iter().enumerate() {
+            if i != axis as usize {
+                output_shape.push(dim);
+            }
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for cast operation (shape unchanged, only type changes)
+pub fn infer_cast_shape(input_shape: &[u32]) -> Vec<u32> {
+    // Cast is element-wise: output shape = input shape
+    input_shape.to_vec()
+}
+
+/// Infer output shape for scatterElements operation
+/// Output shape equals input shape.
+/// `axis` must be in range [0, rank).
+pub fn infer_scatter_elements_shape(
+    input_shape: &[u32],
+    indices_shape: &[u32],
+    updates_shape: &[u32],
+    axis: u32,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    // Validate axis (valid range is [0, rank))
+    if axis >= rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ScatterElements axis {} out of bounds for rank {}, input shape: {:?}",
+                axis, rank, input_shape
+            ),
+        });
+    }
+
+    // Validate that indices and updates have same shape
+    if indices_shape != updates_shape {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ScatterElements indices shape {:?} must match updates shape {:?}",
+                indices_shape, updates_shape
+            ),
+        });
+    }
+
+    // Validate that indices/updates have same rank as input
+    if indices_shape.len() != input_shape.len() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ScatterElements indices/updates rank {} must match input rank {}, input shape: {:?}",
+                indices_shape.len(),
+                input_shape.len(),
+                input_shape
+            ),
+        });
+    }
+
+    // Output shape equals input shape
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for resample2d.
+///
+/// Resizes the two spatial axes given by `axes` (default last two). `sizes` takes precedence
+/// over `scales` when both are set (WebNN semantics).
+pub fn infer_resample2d_shape(
+    input_shape: &[Dimension],
+    axes: [usize; 2],
+    sizes: Option<&[u32]>,
+    scales: &[f32],
+) -> Result<Vec<Dimension>, GraphError> {
+    let rank = input_shape.len();
+    if rank == 0 {
+        return Ok(input_shape.to_vec());
+    }
+    if axes[0] >= rank || axes[1] >= rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Resample2d axes {:?} out of bounds for rank {}", axes, rank),
+        });
+    }
+
+    let mut output = input_shape.to_vec();
+
+    if let Some(sizes) = sizes {
+        if sizes.len() != 2 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Resample2d sizes must have length 2, got {:?}", sizes),
+            });
+        }
+        output[axes[0]] = Dimension::Static(sizes[0]);
+        output[axes[1]] = Dimension::Static(sizes[1]);
+        return Ok(output);
+    }
+
+    let scale_pair: [f32; 2] = if scales.len() >= 2 {
+        [scales[0], scales[1]]
+    } else {
+        [1.0, 1.0]
+    };
+
+    for (axis_idx, scale) in scale_pair.iter().enumerate() {
+        let axis = axes[axis_idx];
+        output[axis] = match &input_shape[axis] {
+            Dimension::Static(in_dim) => {
+                Dimension::Static(((*in_dim).max(1) as f32 * scale).round().max(1.0) as u32)
+            }
+            Dimension::Dynamic(d) => {
+                if (*scale - 1.0).abs() < f32::EPSILON {
+                    Dimension::Dynamic(d.clone())
+                } else {
+                    Dimension::Dynamic(DynamicDimension {
+                        name: d.name.clone(),
+                        max_size: ((d.max_size.max(1) as f32) * scale).round().max(1.0) as u32,
+                    })
+                }
+            }
+        };
+    }
+
+    Ok(output)
+}
+
+/// Infer output shape for scatterND operation
+/// Output shape equals input shape
+pub fn infer_scatter_nd_shape(
+    input_shape: &[u32],
+    indices_shape: &[u32],
+    updates_shape: &[u32],
+) -> Result<Vec<u32>, GraphError> {
+    let input_rank = input_shape.len();
+    let indices_rank = indices_shape.len();
+
+    if indices_rank < 1 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "ScatterND indices must have rank >= 1".to_string(),
+        });
+    }
+
+    // k = last dimension of indices (number of index components)
+    let k = indices_shape[indices_rank - 1] as usize;
+
+    if k > input_rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ScatterND indices last dimension {} cannot exceed input rank {}, input shape: {:?}",
+                k, input_rank, input_shape
+            ),
+        });
+    }
+
+    // Expected updates shape: indices.shape[:-1] + input.shape[k:]
+    let mut expected_updates_shape = indices_shape[..indices_rank - 1].to_vec();
+    expected_updates_shape.extend_from_slice(&input_shape[k..]);
+
+    if updates_shape != expected_updates_shape.as_slice() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ScatterND updates shape {:?} must equal indices.shape[:-1] + input.shape[k:] = {:?}",
+                updates_shape, expected_updates_shape
+            ),
+        });
+    }
+
+    // Output shape equals input shape
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for tile operation
+/// Output shape = input shape * repetitions
+pub fn infer_tile_shape(input_shape: &[u32], repetitions: &[u32]) -> Result<Vec<u32>, GraphError> {
+    // Rank-0 input: repetitions must be `[]` (no axes to repeat); output stays scalar.
+    if input_shape.is_empty() && repetitions.is_empty() {
+        return Ok(Vec::new());
+    }
+    if input_shape.len() != repetitions.len() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Tile repetitions length {} must equal input rank {}, input shape: {:?}",
+                repetitions.len(),
+                input_shape.len(),
+                input_shape
+            ),
+        });
+    }
+
+    let output_shape: Vec<u32> = input_shape
+        .iter()
+        .zip(repetitions.iter())
+        .map(|(&dim, &rep)| dim * rep)
+        .collect();
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for triangular operation
+/// Output shape equals input shape (operation applies to last 2 dimensions)
+pub fn infer_triangular_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    if rank < 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Triangular operation requires rank >= 2, got rank {}, input shape: {:?}",
+                rank, input_shape
+            ),
+        });
+    }
+
+    // Output shape equals input shape
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for hardSigmoid operation
+/// hardSigmoid is an element-wise operation: output shape = input shape
+pub fn infer_hardsigmoid_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for hardSwish operation
+/// hardSwish is an element-wise operation: output shape = input shape
+pub fn infer_hardswish_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for softplus operation
+/// softplus is an element-wise operation: output shape = input shape
+pub fn infer_softplus_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for softsign operation
+/// softsign is an element-wise operation: output shape = input shape
+pub fn infer_softsign_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for elu operation
+/// elu is an element-wise operation: output shape = input shape
+pub fn infer_elu_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for leakyRelu operation
+/// leakyRelu is an element-wise operation: output shape = input shape
+pub fn infer_leakyrelu_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for prelu operation.
+/// Output shape is the NumPy broadcast of `input` and `slope`.
+pub fn infer_prelu_shape(input_shape: &[u32], slope_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(input_shape, slope_shape)
+}
+
+/// Infer output shape for clamp operation
+///
+/// Clamp constrains values between a minimum and maximum element-wise.
+/// Output shape equals input shape.
+pub fn infer_clamp_shape(input_shape: &[u32]) -> Vec<u32> {
+    input_shape.to_vec()
+}
+
+/// Infer output shape for gemm (general matrix multiplication) operation
+///
+/// GEMM computes: alpha * A' * B' + beta * C
+/// where A' and B' are optionally transposed versions of A and B
+///
+/// For 2D matrices:
+/// - If a_transpose: A has shape [K, M], else [M, K]
+/// - If b_transpose: B has shape [N, K], else [K, N]
+/// - Output has shape [M, N]
+pub fn infer_gemm_shape(
+    a_shape: &[u32],
+    b_shape: &[u32],
+    a_transpose: bool,
+    b_transpose: bool,
+) -> Result<Vec<u32>, GraphError> {
+    // Gemm only supports 2D matrices
+    if a_shape.len() != 2 || b_shape.len() != 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "GEMM requires 2D matrices, got shapes {:?} and {:?}",
+                a_shape, b_shape
+            ),
+        });
+    }
+
+    // Get dimensions after optional transposition
+    let (m, k_a) = if a_transpose {
+        (a_shape[1], a_shape[0])
+    } else {
+        (a_shape[0], a_shape[1])
+    };
+
+    let (k_b, n) = if b_transpose {
+        (b_shape[1], b_shape[0])
+    } else {
+        (b_shape[0], b_shape[1])
+    };
+
+    // Check that inner dimensions match
+    if k_a != k_b {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "GEMM inner dimensions must match: A{}[M={}, K={}] x B{}[K={}, N={}]",
+                if a_transpose { "^T" } else { "" },
+                m,
+                k_a,
+                if b_transpose { "^T" } else { "" },
+                k_b,
+                n
+            ),
+        });
+    }
+
+    Ok(vec![m, n])
+}
+
+/// Infer GEMM output shape while preserving dynamic dimensions.
+///
+/// Leading dimensions (all but the last two of each input) are broadcast like
+/// [`infer_matmul_shape_dimensions`]. The trailing two dimensions of `A` and `B` follow
+/// WebNN / ONNX GEMM transpose rules (same as [`infer_gemm_shape`]).
+pub fn infer_gemm_shape_dimensions(
+    shape_a: &[Dimension],
+    shape_b: &[Dimension],
+    a_transpose: bool,
+    b_transpose: bool,
+) -> Result<Vec<Dimension>, GraphError> {
+    if shape_a.len() < 2 || shape_b.len() < 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "GEMM requires tensors of rank >= 2, got shapes {:?} and {:?}",
+                shape_a, shape_b
+            ),
+        });
+    }
+
+    let a_r0 = shape_a[shape_a.len() - 2].clone();
+    let a_r1 = shape_a[shape_a.len() - 1].clone();
+    let (m_dim, k_a_dim) = if a_transpose {
+        (a_r1, a_r0)
+    } else {
+        (a_r0, a_r1)
+    };
+
+    let b_r0 = shape_b[shape_b.len() - 2].clone();
+    let b_r1 = shape_b[shape_b.len() - 1].clone();
+    let (k_b_dim, n_dim) = if b_transpose {
+        (b_r1, b_r0)
+    } else {
+        (b_r0, b_r1)
+    };
+
+    if let (Dimension::Static(ka), Dimension::Static(kb)) = (&k_a_dim, &k_b_dim)
+        && ka != kb
+    {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "GEMM inner dimensions must match: A{}[M, K={}] x B{}[K={}, N]",
+                if a_transpose { "^T" } else { "" },
+                ka,
+                if b_transpose { "^T" } else { "" },
+                kb,
+            ),
+        });
+    }
+
+    let batch_a = &shape_a[..shape_a.len() - 2];
+    let batch_b = &shape_b[..shape_b.len() - 2];
+    let mut batch_dims = broadcast_shapes_dimensions(batch_a, batch_b)?;
+    batch_dims.push(m_dim);
+    batch_dims.push(n_dim);
+    Ok(batch_dims)
+}
+
+/// Infer output shapes for split operation
+/// Splits input along given axis into multiple outputs
+///
+/// Arguments:
+/// - input_shape: Shape of the input tensor
+/// - splits: Either number of splits (even) or array of split sizes
+/// - axis: Axis to split along (must be valid index)
+///
+/// Returns: Vec of output shapes (one per split)
+pub fn infer_split_shape(
+    input_shape: &[u32],
+    splits: &serde_json::Value,
+    axis: u32,
+) -> Result<Vec<Vec<u32>>, GraphError> {
+    let axis = axis as usize;
+
+    if axis >= input_shape.len() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Split axis {} out of bounds for input shape {:?} (rank {})",
+                axis,
+                input_shape,
+                input_shape.len()
+            ),
+        });
+    }
+
+    let axis_size = input_shape[axis];
+
+    // Parse splits - either number or array
+    let split_sizes: Vec<u32> = if let Some(num_splits) = splits.as_u64() {
+        // Even split: divide axis_size by num_splits
+        let num_splits = num_splits as u32;
+        if !axis_size.is_multiple_of(num_splits) {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Split axis size {} not evenly divisible by {} splits",
+                    axis_size, num_splits
+                ),
+            });
+        }
+        let split_size = axis_size / num_splits;
+        vec![split_size; num_splits as usize]
+    } else if let Some(sizes_array) = splits.as_array() {
+        // Explicit split sizes
+        let sizes: Result<Vec<u32>, _> = sizes_array
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| GraphError::ShapeInferenceFailed {
+                        reason: format!("Split sizes must be integers, got {:?}", v),
+                    })
+                    .map(|n| n as u32)
+            })
+            .collect();
+        sizes?
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Splits must be number or array, got {:?}", splits),
+        });
+    };
+
+    // Validate total size
+    let total: u32 = split_sizes.iter().sum();
+    if total != axis_size {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Split sizes {:?} sum to {}, but axis size is {}",
+                split_sizes, total, axis_size
+            ),
+        });
+    }
+
+    // Create output shapes
+    let mut output_shapes = Vec::with_capacity(split_sizes.len());
+    for &size in &split_sizes {
+        let mut output_shape = input_shape.to_vec();
+        output_shape[axis] = size;
+        output_shapes.push(output_shape);
+    }
+
+    Ok(output_shapes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Dimension, DynamicDimension};
+    use crate::operator_options::{MLConv2dOptions, MLConvTranspose2dOptions, MLPool2dOptions};
+
+    fn d(name: &str, max_size: u32) -> Dimension {
+        Dimension::Dynamic(DynamicDimension {
+            name: name.to_string(),
+            max_size,
+        })
+    }
+
+    #[test]
+    fn test_broadcast_same_shape() {
+        assert_eq!(broadcast_shapes(&[2, 3], &[2, 3]).unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn test_broadcast_with_ones() {
+        assert_eq!(broadcast_shapes(&[2, 3], &[1, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(broadcast_shapes(&[1, 3], &[2, 3]).unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn test_broadcast_different_ranks() {
+        assert_eq!(
+            broadcast_shapes(&[2, 3, 4], &[3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            broadcast_shapes(&[3, 4], &[2, 3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_broadcast_scalar() {
+        assert_eq!(broadcast_shapes(&[2, 3], &[1]).unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn test_broadcast_incompatible() {
+        assert!(broadcast_shapes(&[2, 3], &[2, 4]).is_err());
+        assert!(broadcast_shapes(&[2, 3, 4], &[2, 5, 4]).is_err());
+    }
+
+    #[test]
+    fn test_broadcast_dimensions_preserves_dynamic() {
+        let out = broadcast_shapes_dimensions(
+            &[d("batch", 16), Dimension::Static(64)],
+            &[Dimension::Static(1), Dimension::Static(64)],
+        )
+        .unwrap();
+        assert_eq!(out, vec![d("batch", 16), Dimension::Static(64)]);
+    }
+
+    #[test]
+    fn test_matmul_2d() {
+        assert_eq!(infer_matmul_shape(&[2, 3], &[3, 4]).unwrap(), vec![2, 4]);
+    }
+
+    #[test]
+    fn test_matmul_batched() {
+        assert_eq!(
+            infer_matmul_shape(&[5, 2, 3], &[5, 3, 4]).unwrap(),
+            vec![5, 2, 4]
+        );
+    }
+
+    #[test]
+    fn test_matmul_incompatible() {
+        assert!(infer_matmul_shape(&[2, 3], &[4, 5]).is_err());
+        assert!(infer_matmul_shape(&[2], &[3, 4]).is_err());
+    }
+
+    #[test]
+    fn test_validate_reshape_valid() {
+        validate_reshape(&[2, 3], &[6]).unwrap();
+        validate_reshape(&[2, 3, 4], &[6, 4]).unwrap();
+        validate_reshape(&[6], &[2, 3]).unwrap();
+    }
+
+    #[test]
+    fn test_validate_reshape_invalid() {
+        assert!(validate_reshape(&[2, 3], &[5]).is_err());
+        assert!(validate_reshape(&[2, 3, 4], &[5, 5]).is_err());
+    }
+
+    #[test]
+    fn test_conv2d_nchw_basic() {
+        // Input: [1, 3, 32, 32], Filter: [64, 3, 3, 3]
+        // Stride: [1, 1], Dilation: [1, 1], Pads: [1, 1, 1, 1]
+        // Expected output: [1, 64, 32, 32]
+        let options = MLConv2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![1, 1, 1, 1],
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        let output = infer_conv2d_shape(&[1, 3, 32, 32], &[64, 3, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 64, 32, 32]);
+    }
+
+    #[test]
+    fn test_conv2d_nhwc_basic() {
+        // Input: [1, 32, 32, 3], Filter: [64, 3, 3, 3]
+        // Stride: [1, 1], Dilation: [1, 1], Pads: [1, 1, 1, 1]
+        // Expected output: [1, 32, 32, 64]
+        let options = MLConv2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![1, 1, 1, 1],
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nhwc,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        let output = infer_conv2d_shape(&[1, 32, 32, 3], &[64, 3, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 32, 64]);
+    }
+
+    #[test]
+    fn test_conv2d_with_stride() {
+        // Input: [1, 3, 28, 28], Filter: [32, 3, 5, 5]
+        // Stride: [2, 2], Dilation: [1, 1], Pads: [0, 0, 0, 0]
+        // Output: [1, 32, 12, 12]
+        let options = MLConv2dOptions {
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        let output = infer_conv2d_shape(&[1, 3, 28, 28], &[32, 3, 5, 5], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 12, 12]);
+    }
+
+    #[test]
+    fn test_conv2d_with_dilation() {
+        // Input: [1, 3, 32, 32], Filter: [64, 3, 3, 3]
+        // Stride: [1, 1], Dilation: [2, 2], Pads: [2, 2, 2, 2]
+        // Effective kernel: 5x5, Output: [1, 64, 32, 32]
+        let options = MLConv2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![2, 2],
+            padding: vec![2, 2, 2, 2],
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        let output = infer_conv2d_shape(&[1, 3, 32, 32], &[64, 3, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 64, 32, 32]);
+    }
+
+    #[test]
+    fn test_conv2d_depthwise() {
+        // Depthwise convolution: groups = in_channels
+        // Input: [1, 32, 28, 28], Filter: [32, 1, 3, 3]
+        // Stride: [1, 1], Dilation: [1, 1], Pads: [1, 1, 1, 1], Groups: 32
+        let options = MLConv2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![1, 1, 1, 1],
+            groups: 32,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        let output = infer_conv2d_shape(&[1, 32, 28, 28], &[32, 1, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 28, 28]);
+    }
+
+    #[test]
+    fn test_conv2d_invalid_input_dim() {
+        let options = MLConv2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        // Input must be 4D
+        assert!(infer_conv2d_shape(&[3, 32, 32], &[64, 3, 3, 3], &options).is_err());
+    }
+
+    #[test]
+    fn test_conv2d_invalid_groups() {
+        let options = MLConv2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            groups: 2,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+            ..Default::default()
+        };
+        // Groups must divide input channels evenly
+        assert!(infer_conv2d_shape(&[1, 3, 32, 32], &[64, 1, 3, 3], &options).is_err());
+    }
+
+    // ConvTranspose2d tests
+    #[test]
+    fn test_conv_transpose2d_basic() {
+        let options = MLConvTranspose2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            output_padding: vec![0, 0],
+            output_sizes: None,
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+            ..Default::default()
+        };
+        // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
+        // Output: (14-1)*1 + 3 - 0 - 0 + 0 = 16
+        let output =
+            infer_conv_transpose2d_shape(&[1, 64, 14, 14], &[64, 32, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 16, 16]);
+    }
+
+    #[test]
+    fn test_conv_transpose2d_with_stride() {
+        let options = MLConvTranspose2dOptions {
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            output_padding: vec![0, 0],
+            output_sizes: None,
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+            ..Default::default()
+        };
+        // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
+        // Output: (14-1)*2 + 3 - 0 - 0 + 0 = 29
+        let output =
+            infer_conv_transpose2d_shape(&[1, 64, 14, 14], &[64, 32, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 29, 29]);
+    }
+
+    #[test]
+    fn test_conv_transpose2d_with_output_padding() {
+        let options = MLConvTranspose2dOptions {
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            output_padding: vec![1, 1],
+            output_sizes: None,
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+            ..Default::default()
+        };
+        // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
+        // Output: (14-1)*2 + 3 - 0 - 0 + 1 = 30
+        let output =
+            infer_conv_transpose2d_shape(&[1, 64, 14, 14], &[64, 32, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 30, 30]);
+    }
+
+    #[test]
+    fn test_conv_transpose2d_with_output_sizes() {
+        let options = MLConvTranspose2dOptions {
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![1, 1, 1, 1],
+            output_padding: vec![0, 0],
+            output_sizes: Some(vec![28, 28]),
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+            ..Default::default()
+        };
+        // When output_sizes is specified, use it directly
+        let output =
+            infer_conv_transpose2d_shape(&[1, 64, 14, 14], &[64, 32, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 32, 28, 28]);
+    }
+
+    #[test]
+    fn test_conv_transpose2d_nhwc_layout() {
+        let options = MLConvTranspose2dOptions {
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            output_padding: vec![0, 0],
+            output_sizes: None,
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nhwc,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+            ..Default::default()
+        };
+        // Input: [1, 14, 14, 64] (NHWC), Filter: [64, 32, 3, 3]
+        // Output: [1, 29, 29, 32] (NHWC)
+        let output =
+            infer_conv_transpose2d_shape(&[1, 14, 14, 64], &[64, 32, 3, 3], &options).unwrap();
+        assert_eq!(output, vec![1, 29, 29, 32]);
+    }
+
+    #[test]
+    fn test_conv_transpose2d_invalid_input_dim() {
+        let options = MLConvTranspose2dOptions {
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            output_padding: vec![0, 0],
+            output_sizes: None,
+            groups: 1,
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+            ..Default::default()
+        };
+        // Input must be 4D
+        assert!(infer_conv_transpose2d_shape(&[64, 14, 14], &[64, 32, 3, 3], &options).is_err());
+    }
+
+    // Pool2d tests
+    #[test]
+    fn test_pool2d_basic() {
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![2, 2]),
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            layout: "nchw".to_string(),
+            ..Default::default()
+        };
+        // Input: [1, 64, 32, 32], Window: [2, 2], Stride: [2, 2]
+        // Output: (32 - 2) / 2 + 1 = 16
+        let output = infer_pool2d_shape(&[1, 64, 32, 32], &options).unwrap();
+        assert_eq!(output, vec![1, 64, 16, 16]);
+    }
+
+    #[test]
+    fn test_pool2d_with_padding() {
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
+            strides: vec![1, 1],
+            dilations: vec![1, 1],
+            padding: vec![1, 1, 1, 1],
+            layout: "nchw".to_string(),
+            ..Default::default()
+        };
+        // Input: [1, 64, 32, 32], Window: [3, 3], Padding: 1
+        // Output: (32 + 1 + 1 - 3) / 1 + 1 = 32
+        let output = infer_pool2d_shape(&[1, 64, 32, 32], &options).unwrap();
+        assert_eq!(output, vec![1, 64, 32, 32]);
+    }
+
+    #[test]
+    fn test_pool2d_nhwc_layout() {
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![2, 2]),
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            layout: "nhwc".to_string(),
+            ..Default::default()
+        };
+        // Input: [1, 32, 32, 64] (NHWC)
+        // Output: [1, 16, 16, 64] (NHWC)
+        let output = infer_pool2d_shape(&[1, 32, 32, 64], &options).unwrap();
+        assert_eq!(output, vec![1, 16, 16, 64]);
+    }
+
+    #[test]
+    fn test_pool2d_with_stride() {
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            layout: "nchw".to_string(),
+            ..Default::default()
+        };
+        // Input: [1, 64, 28, 28], Window: [3, 3], Stride: [2, 2]
+        // Output: (28 - 3) / 2 + 1 = 13
+        let output = infer_pool2d_shape(&[1, 64, 28, 28], &options).unwrap();
+        assert_eq!(output, vec![1, 64, 13, 13]);
+    }
+
+    #[test]
+    fn test_pool2d_invalid_input_dim() {
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![2, 2]),
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: vec![0, 0, 0, 0],
+            layout: "nchw".to_string(),
+            ..Default::default()
+        };
+        // Input must be 4D
+        assert!(infer_pool2d_shape(&[64, 32, 32], &options).is_err());
+    }
+
+    #[test]
+    fn test_pool2d_ceil_rounding_matches_wpt() {
+        let pads = vec![1, 0, 0, 1];
+        let input = [1u32, 2, 5, 5];
+        let floor_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: pads.clone(),
+            layout: "nchw".to_string(),
+            output_shape_rounding: "floor".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_pool2d_shape(&input, &floor_opts).unwrap(),
+            vec![1, 2, 2, 2]
+        );
+        let ceil_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            padding: pads.clone(),
+            layout: "nchw".to_string(),
+            output_shape_rounding: "ceil".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            infer_pool2d_shape(&input, &ceil_opts).unwrap(),
+            vec![1, 2, 3, 3]
+        );
+    }
+
+    // Global pooling tests
+    #[test]
+    fn test_global_pool_nchw() {
+        // Input: [1, 64, 28, 28] -> Output: [1, 64, 1, 1]
+        let output = infer_global_pool_shape(&[1, 64, 28, 28], InputLayout::Nchw).unwrap();
+        assert_eq!(output, vec![1, 64, 1, 1]);
+    }
+
+    #[test]
+    fn test_global_pool_nhwc() {
+        // Input: [1, 28, 28, 64] -> Output: [1, 1, 1, 64]
+        let output = infer_global_pool_shape(&[1, 28, 28, 64], InputLayout::Nhwc).unwrap();
+        assert_eq!(output, vec![1, 1, 1, 64]);
+    }
+
+    #[test]
+    fn test_global_pool_various_sizes() {
+        // Different spatial sizes should all reduce to 1x1
+        let output = infer_global_pool_shape(&[2, 128, 7, 7], InputLayout::Nchw).unwrap();
+        assert_eq!(output, vec![2, 128, 1, 1]);
+
+        let output = infer_global_pool_shape(&[1, 512, 14, 14], InputLayout::Nchw).unwrap();
+        assert_eq!(output, vec![1, 512, 1, 1]);
+    }
+
+    #[test]
+    fn test_global_pool_invalid_input_dim() {
+        // Input must be 4D
+        assert!(infer_global_pool_shape(&[64, 32, 32], InputLayout::Nchw).is_err());
+        assert!(infer_global_pool_shape(&[1, 64, 32, 32, 32], InputLayout::Nchw).is_err());
+    }
+
+    // Normalization tests
+    #[test]
+    fn test_batch_normalization_shape() {
+        // Batch normalization preserves input shape
+        let output = infer_batch_normalization_shape(&[1, 64, 28, 28]).unwrap();
+        assert_eq!(output, vec![1, 64, 28, 28]);
+
+        let output = infer_batch_normalization_shape(&[8, 128, 14, 14]).unwrap();
+        assert_eq!(output, vec![8, 128, 14, 14]);
+    }
+
+    #[test]
+    fn test_instance_normalization_shape() {
+        // Instance normalization preserves input shape
+        let output = infer_instance_normalization_shape(&[1, 64, 28, 28]).unwrap();
+        assert_eq!(output, vec![1, 64, 28, 28]);
+
+        let output = infer_instance_normalization_shape(&[4, 32, 56, 56]).unwrap();
+        assert_eq!(output, vec![4, 32, 56, 56]);
+    }
+
+    #[test]
+    fn test_layer_normalization_shape() {
+        // Layer normalization preserves input shape
+        let output = infer_layer_normalization_shape(&[1, 64, 28, 28]).unwrap();
+        assert_eq!(output, vec![1, 64, 28, 28]);
+
+        // Works with any dimensional input
+        let output = infer_layer_normalization_shape(&[8, 512]).unwrap();
+        assert_eq!(output, vec![8, 512]);
+
+        let output = infer_layer_normalization_shape(&[2, 10, 768]).unwrap();
+        assert_eq!(output, vec![2, 10, 768]);
+    }
+
+    // Reduction operation tests
+    #[test]
+    fn test_reduce_single_axis() {
+        let options = ReduceOptions {
+            axes: vec![1],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4] reduce axis 1 -> [2, 4]
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![2, 4]);
+    }
+
+    #[test]
+    fn test_reduce_single_axis_keep_dims() {
+        let options = ReduceOptions {
+            axes: vec![1],
+            keep_dimensions: true,
+        };
+        // [2, 3, 4] reduce axis 1 keep_dims -> [2, 1, 4]
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![2, 1, 4]);
+    }
+
+    #[test]
+    fn test_reduce_multiple_axes() {
+        let options = ReduceOptions {
+            axes: vec![1, 2],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4, 5] reduce axes [1,2] -> [2, 5]
+        let output = infer_reduce_shape(&[2, 3, 4, 5], &options).unwrap();
+        assert_eq!(output, vec![2, 5]);
+    }
+
+    #[test]
+    fn test_reduce_multiple_axes_keep_dims() {
+        let options = ReduceOptions {
+            axes: vec![1, 2],
+            keep_dimensions: true,
+        };
+        // [2, 3, 4, 5] reduce axes [1,2] keep_dims -> [2, 1, 1, 5]
+        let output = infer_reduce_shape(&[2, 3, 4, 5], &options).unwrap();
+        assert_eq!(output, vec![2, 1, 1, 5]);
+    }
+
+    #[test]
+    fn test_reduce_all_axes() {
+        let options = ReduceOptions {
+            axes: vec![0, 1, 2],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4] reduce all axes -> [] (scalar)
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn test_reduce_all_axes_keep_dims() {
+        let options = ReduceOptions {
+            axes: vec![0, 1, 2],
+            keep_dimensions: true,
+        };
+        // [2, 3, 4] reduce all axes keep_dims -> [1, 1, 1]
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn test_reduce_empty_axes() {
+        let options = ReduceOptions {
+            axes: vec![],
+            keep_dimensions: false,
+        };
+        // Explicit empty axes: reduce over no dimensions -> same shape as input
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_reduce_last_axis() {
+        let options = ReduceOptions {
+            axes: vec![2],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4] reduce axis 2 -> [2, 3]
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![2, 3]);
+    }
+
+    #[test]
+    fn test_reduce_first_axis() {
+        let options = ReduceOptions {
+            axes: vec![0],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4] reduce axis 0 -> [3, 4]
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![3, 4]);
+    }
+
+    #[test]
+    fn test_reduce_invalid_axis() {
+        let options = ReduceOptions {
+            axes: vec![3],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4] has only axes 0,1,2; axis 3 is out of bounds
+        assert!(infer_reduce_shape(&[2, 3, 4], &options).is_err());
+    }
+
+    #[test]
+    fn test_reduce_duplicate_axes() {
+        let options = ReduceOptions {
+            axes: vec![1, 1],
+            keep_dimensions: false,
+        };
+        // Duplicate axes should error
+        assert!(infer_reduce_shape(&[2, 3, 4], &options).is_err());
+    }
+
+    #[test]
+    fn test_reduce_non_contiguous_axes() {
+        let options = ReduceOptions {
+            axes: vec![0, 2],
+            keep_dimensions: false,
+        };
+        // [2, 3, 4, 5] reduce axes [0, 2] -> [3, 5]
+        let output = infer_reduce_shape(&[2, 3, 4, 5], &options).unwrap();
+        assert_eq!(output, vec![3, 5]);
+    }
+
+    #[test]
+    fn test_reduce_non_contiguous_axes_keep_dims() {
+        let options = ReduceOptions {
+            axes: vec![0, 2],
+            keep_dimensions: true,
+        };
+        // [2, 3, 4, 5] reduce axes [0, 2] keep_dims -> [1, 3, 1, 5]
+        let output = infer_reduce_shape(&[2, 3, 4, 5], &options).unwrap();
+        assert_eq!(output, vec![1, 3, 1, 5]);
+    }
+
+    // Quantization operation tests
+    #[test]
+    fn test_dequantize_linear_shape() {
+        // dequantizeLinear preserves input shape
+        let output = infer_dequantize_linear_shape(&[1, 3, 224, 224]).unwrap();
+        assert_eq!(output, vec![1, 3, 224, 224]);
+
+        let output = infer_dequantize_linear_shape(&[8, 128]).unwrap();
+        assert_eq!(output, vec![8, 128]);
+
+        // Works with any dimensional input
+        let output = infer_dequantize_linear_shape(&[10]).unwrap();
+        assert_eq!(output, vec![10]);
+    }
+
+    #[test]
+    fn test_quantize_linear_shape() {
+        // quantizeLinear preserves input shape
+        let output = infer_quantize_linear_shape(&[1, 3, 224, 224]).unwrap();
+        assert_eq!(output, vec![1, 3, 224, 224]);
+
+        let output = infer_quantize_linear_shape(&[8, 128]).unwrap();
+        assert_eq!(output, vec![8, 128]);
+
+        // Works with any dimensional input
+        let output = infer_quantize_linear_shape(&[10]).unwrap();
+        assert_eq!(output, vec![10]);
+    }
+
+    // Transpose tests
+    #[test]
+    fn test_transpose_default_permutation() {
+        // Default: reverse dimensions
+        assert_eq!(infer_transpose_shape(&[4, 6], None).unwrap(), vec![6, 4]);
+        assert_eq!(
+            infer_transpose_shape(&[2, 3, 4], None).unwrap(),
+            vec![4, 3, 2]
+        );
+    }
+
+    #[test]
+    fn test_transpose_custom_permutation() {
+        // 2D with explicit permutation
+        assert_eq!(
+            infer_transpose_shape(&[4, 6], Some(&[1, 0])).unwrap(),
+            vec![6, 4]
+        );
+
+        // 3D with custom permutation
+        assert_eq!(
+            infer_transpose_shape(&[2, 3, 4], Some(&[2, 0, 1])).unwrap(),
+            vec![4, 2, 3]
+        );
+    }
+
+    #[test]
+    fn test_transpose_invalid_permutation() {
+        // Wrong length
+        assert!(infer_transpose_shape(&[2, 3, 4], Some(&[0, 1])).is_err());
+
+        // Out of bounds axis
+        assert!(infer_transpose_shape(&[2, 3], Some(&[0, 3])).is_err());
+
+        // Duplicate axis
+        assert!(infer_transpose_shape(&[2, 3], Some(&[0, 0])).is_err());
+    }
+
+    // Concat tests
+    #[test]
+    fn test_concat_basic() {
+        let shapes = vec![vec![2, 3], vec![2, 3]];
+        assert_eq!(infer_concat_shape(&shapes, 0).unwrap(), vec![4, 3]);
+
+        let shapes = vec![vec![2, 3], vec![2, 3]];
+        assert_eq!(infer_concat_shape(&shapes, 1).unwrap(), vec![2, 6]);
+    }
+
+    #[test]
+    fn test_concat_multiple_inputs() {
+        let shapes = vec![vec![1, 3], vec![2, 3], vec![3, 3]];
+        assert_eq!(infer_concat_shape(&shapes, 0).unwrap(), vec![6, 3]);
+    }
+
+    #[test]
+    fn test_concat_3d() {
+        let shapes = vec![vec![2, 3, 4], vec![2, 3, 4]];
+        assert_eq!(infer_concat_shape(&shapes, 2).unwrap(), vec![2, 3, 8]);
+    }
+
+    #[test]
+    fn test_concat_invalid() {
+        // Empty inputs
+        assert!(infer_concat_shape(&[], 0).is_err());
+
+        // Mismatched ranks
+        let shapes = vec![vec![2, 3], vec![2, 3, 4]];
+        assert!(infer_concat_shape(&shapes, 0).is_err());
+
+        // Mismatched non-concat dimensions
+        let shapes = vec![vec![2, 3], vec![2, 4]];
+        assert!(infer_concat_shape(&shapes, 0).is_err());
+
+        // Axis out of bounds
+        let shapes = vec![vec![2, 3]];
+        assert!(infer_concat_shape(&shapes, 2).is_err());
+    }
+
+    // Slice tests
+    #[test]
+    fn test_slice_basic() {
+        // 1D slice
+        assert_eq!(
+            infer_slice_shape(&[24], &[12], &[12], None).unwrap(),
+            vec![12]
+        );
+
+        // 2D slice
+        assert_eq!(
+            infer_slice_shape(&[4, 6], &[2, 2], &[2, 4], None).unwrap(),
+            vec![2, 4]
+        );
+
+        // 3D slice
+        assert_eq!(
+            infer_slice_shape(&[4, 3, 2], &[1, 1, 1], &[3, 2, 1], None).unwrap(),
+            vec![3, 2, 1]
+        );
+
+        // 2D slice with strides
+        assert_eq!(
+            infer_slice_shape(&[2, 12], &[0, 2], &[2, 10], Some(&[1, 4])).unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn test_slice_invalid() {
+        // starts length mismatch
+        assert!(infer_slice_shape(&[4, 6], &[2], &[2, 4], None).is_err());
+
+        // sizes length mismatch
+        assert!(infer_slice_shape(&[4, 6], &[2, 2], &[2], None).is_err());
+
+        // start out of bounds
+        assert!(infer_slice_shape(&[4, 6], &[5, 2], &[1, 4], None).is_err());
+
+        // end out of bounds
+        assert!(infer_slice_shape(&[4, 6], &[2, 2], &[3, 4], None).is_err());
+    }
+
+    // Expand tests
+    #[test]
+    fn test_expand_basic() {
+        // Expand 1D to larger 1D
+        assert_eq!(infer_expand_shape(&[1], &[24]).unwrap(), vec![24]);
+
+        // Expand to higher dimensions
+        assert_eq!(infer_expand_shape(&[1], &[4, 6]).unwrap(), vec![4, 6]);
+
+        // Expand some dimensions
+        assert_eq!(infer_expand_shape(&[1, 6], &[4, 6]).unwrap(), vec![4, 6]);
+    }
+
+    #[test]
+    fn test_expand_scalar() {
+        // 0D (scalar) to various shapes
+        assert_eq!(infer_expand_shape(&[], &[24]).unwrap(), vec![24]);
+        assert_eq!(infer_expand_shape(&[], &[4, 6]).unwrap(), vec![4, 6]);
+    }
+
+    #[test]
+    fn test_expand_invalid() {
+        // Output rank < input rank
+        assert!(infer_expand_shape(&[2, 3], &[6]).is_err());
+
+        // Non-1 dimension can't be expanded
+        assert!(infer_expand_shape(&[2, 3], &[4, 3]).is_err());
+    }
+
+    #[test]
+    fn test_expand_shape_dimensions_propagates_dynamic_from_static_max_placeholder() {
+        let output = infer_expand_shape_dimensions(
+            &[d("batch", 16), Dimension::Static(1), Dimension::Static(64)],
+            &[
+                Dimension::Static(16),
+                Dimension::Static(32),
+                Dimension::Static(64),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            vec![d("batch", 16), Dimension::Static(32), Dimension::Static(64)]
+        );
+    }
+
+    #[test]
+    fn test_expand_shape_dimensions_prefers_named_dynamic_when_target_is_unnamed() {
+        let output = infer_expand_shape_dimensions(
+            &[d("seq", 128), Dimension::Static(1)],
+            &[
+                Dimension::Dynamic(DynamicDimension {
+                    name: String::new(),
+                    max_size: 128,
+                }),
+                Dimension::Static(32),
+            ],
+        )
+        .unwrap();
+        assert_eq!(output[0], d("seq", 128));
+        assert_eq!(output[1], Dimension::Static(32));
+    }
+
+    // Gather tests
+    #[test]
+    fn test_gather_basic() {
+        // 1D input, 1D indices
+        assert_eq!(infer_gather_shape(&[24], &[8], 0).unwrap(), vec![8]);
+
+        // 2D input, 1D indices, axis=0
+        assert_eq!(infer_gather_shape(&[12, 2], &[8], 0).unwrap(), vec![8, 2]);
+
+        // 3D input, 2D indices, axis=1
+        assert_eq!(
+            infer_gather_shape(&[3, 4, 2], &[2, 2], 1).unwrap(),
+            vec![3, 2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn test_gather_scalar_indices() {
+        // Scalar indices (0D)
+        assert_eq!(
+            infer_gather_shape(&[24], &[], 0).unwrap(),
+            Vec::<u32>::new()
+        );
+    }
+
+    #[test]
+    fn test_gather_invalid() {
+        // Axis out of bounds
+        assert!(infer_gather_shape(&[24], &[8], 1).is_err());
+    }
+
+    // Split tests
+    #[test]
+    fn test_split_by_count() {
+        // Split 1D into 3 equal parts
+        let shapes = infer_split_shapes(&[24], &SplitSpec::Count(3), 0).unwrap();
+        assert_eq!(shapes, vec![vec![8], vec![8], vec![8]]);
+
+        // Split 2D along axis 0
+        let shapes = infer_split_shapes(&[8, 3], &SplitSpec::Count(2), 0).unwrap();
+        assert_eq!(shapes, vec![vec![4, 3], vec![4, 3]]);
+    }
+
+    #[test]
+    fn test_split_by_sizes() {
+        // Split with custom sizes
+        let shapes = infer_split_shapes(&[24], &SplitSpec::Sizes(vec![8, 8, 8]), 0).unwrap();
+        assert_eq!(shapes, vec![vec![8], vec![8], vec![8]]);
+
+        // Unequal split sizes
+        let shapes = infer_split_shapes(&[12], &SplitSpec::Sizes(vec![3, 3, 3, 3]), 0).unwrap();
+        assert_eq!(shapes, vec![vec![3], vec![3], vec![3], vec![3]]);
+    }
+
+    #[test]
+    fn test_split_invalid() {
+        // Count doesn't divide evenly
+        assert!(infer_split_shapes(&[24], &SplitSpec::Count(5), 0).is_err());
+
+        // Sizes don't sum to axis size
+        assert!(infer_split_shapes(&[24], &SplitSpec::Sizes(vec![10, 10]), 0).is_err());
+
+        // Axis out of bounds
+        assert!(infer_split_shapes(&[24], &SplitSpec::Count(3), 1).is_err());
+
+        // Zero count
+        assert!(infer_split_shapes(&[24], &SplitSpec::Count(0), 0).is_err());
+    }
+
+    // Where tests
+    #[test]
+    fn test_where_basic() {
+        // Same shapes
+        assert_eq!(
+            infer_where_shape(&[2, 3], &[2, 3], &[2, 3]).unwrap(),
+            vec![2, 3]
+        );
+
+        // Broadcasting
+        assert_eq!(
+            infer_where_shape(&[2, 3], &[1, 3], &[2, 1]).unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn test_where_broadcast_complex() {
+        // All inputs broadcast to common shape
+        assert_eq!(
+            infer_where_shape(&[1, 3], &[2, 1], &[2, 3]).unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn test_where_invalid() {
+        // Incompatible shapes
+        assert!(infer_where_shape(&[2, 3], &[2, 4], &[2, 3]).is_err());
+    }
+
+    // Pad tests
+    #[test]
+    fn test_pad_basic() {
+        // 1D padding [begin, end]
+        assert_eq!(infer_pad_shape(&[9], &[1, 1]).unwrap(), vec![11]);
+
+        // 2D padding [begin_0, begin_1, end_0, end_1]
+        assert_eq!(infer_pad_shape(&[3, 3], &[1, 1, 1, 1]).unwrap(), vec![5, 5]);
+
+        // 4D padding
+        assert_eq!(
+            infer_pad_shape(&[1, 3, 3, 1], &[0, 2, 2, 0, 0, 2, 2, 0]).unwrap(),
+            vec![1, 7, 7, 1]
+        );
+    }
+
+    #[test]
+    fn test_pad_no_padding() {
+        // Zero padding
+        assert_eq!(infer_pad_shape(&[3, 3], &[0, 0, 0, 0]).unwrap(), vec![3, 3]);
+    }
+
+    #[test]
+    fn test_pad_invalid() {
+        // Wrong padding length
+        assert!(infer_pad_shape(&[3, 3], &[1, 1, 1]).is_err());
+    }
+
+    // Gelu tests
+    #[test]
+    fn test_gelu() {
+        // Element-wise: output shape = input shape
+        assert_eq!(infer_gelu_shape(&[2, 3]), vec![2, 3]);
+        assert_eq!(infer_gelu_shape(&[4, 5, 6]), vec![4, 5, 6]);
+        assert_eq!(infer_gelu_shape(&[1]), vec![1]);
+    }
+
+    // Squeeze tests
+    #[test]
+    fn test_squeeze_all_ones() {
+        // Squeeze all dimensions of size 1
+        assert_eq!(
+            infer_squeeze_shape(&[1, 3, 1, 4, 1], None).unwrap(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn test_squeeze_specific_axes() {
+        // Squeeze specific axes
+        assert_eq!(
+            infer_squeeze_shape(&[1, 3, 1, 4], Some(&[0, 2])).unwrap(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn test_squeeze_no_ones() {
+        // No dimensions of size 1
+        assert_eq!(
+            infer_squeeze_shape(&[2, 3, 4], None).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_squeeze_invalid() {
+        // Axis has size > 1
+        assert!(infer_squeeze_shape(&[2, 3, 4], Some(&[1])).is_err());
+
+        // Axis out of bounds
+        assert!(infer_squeeze_shape(&[1, 3, 1], Some(&[5])).is_err());
+    }
+
+    // Unsqueeze tests
+    #[test]
+    fn test_unsqueeze_single_axis() {
+        // Add dimension at front
+        assert_eq!(infer_unsqueeze_shape(&[3, 4], &[0]).unwrap(), vec![1, 3, 4]);
+
+        // Add dimension in middle
+        assert_eq!(infer_unsqueeze_shape(&[3, 4], &[1]).unwrap(), vec![3, 1, 4]);
+
+        // Add dimension at end
+        assert_eq!(infer_unsqueeze_shape(&[3, 4], &[2]).unwrap(), vec![3, 4, 1]);
+    }
+
+    #[test]
+    fn test_unsqueeze_multiple_axes() {
+        // Add multiple dimensions
+        assert_eq!(
+            infer_unsqueeze_shape(&[3, 4], &[0, 2]).unwrap(),
+            vec![1, 3, 1, 4]
+        );
+
+        assert_eq!(
+            infer_unsqueeze_shape(&[2], &[0, 2, 3]).unwrap(),
+            vec![1, 2, 1, 1]
+        );
+    }
+
+    #[test]
+    fn test_unsqueeze_invalid() {
+        // Axis out of bounds
+        assert!(infer_unsqueeze_shape(&[3, 4], &[5]).is_err());
+
+        // Duplicate axes
+        assert!(infer_unsqueeze_shape(&[3, 4], &[0, 0]).is_err());
+    }
+
+    // ArgMax/ArgMin tests
+    #[test]
+    fn test_arg_reduce_no_keep() {
+        // Remove axis 0
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 0, false).unwrap(),
+            vec![3, 4]
+        );
+
+        // Remove axis 1
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 1, false).unwrap(),
+            vec![2, 4]
+        );
+
+        // Remove axis 2
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 2, false).unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn test_arg_reduce_keep_dims() {
+        // Keep axis 0 with size 1
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 0, true).unwrap(),
+            vec![1, 3, 4]
+        );
+
+        // Keep axis 1 with size 1
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 1, true).unwrap(),
+            vec![2, 1, 4]
+        );
+    }
+
+    #[test]
+    fn test_arg_reduce_1d() {
+        // 1D tensor without keep
+        assert_eq!(
+            infer_arg_reduce_shape(&[10], 0, false).unwrap(),
+            Vec::<u32>::new()
+        );
+
+        // 1D tensor with keep
+        assert_eq!(infer_arg_reduce_shape(&[10], 0, true).unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn test_arg_reduce_invalid() {
+        // Axis out of bounds
+        assert!(infer_arg_reduce_shape(&[2, 3, 4], 3, false).is_err());
+        assert!(infer_arg_reduce_shape(&[2, 3, 4], 5, true).is_err());
+    }
+
+    // Cast tests
+    #[test]
+    fn test_cast() {
+        // Cast preserves shape
+        assert_eq!(infer_cast_shape(&[2, 3]), vec![2, 3]);
+        assert_eq!(infer_cast_shape(&[4, 5, 6, 7]), vec![4, 5, 6, 7]);
+        assert_eq!(infer_cast_shape(&[1]), vec![1]);
+    }
+
+    // ScatterElements tests
+    #[test]
+    fn test_scatter_elements_basic() {
+        // 1D scatter
+        assert_eq!(
+            infer_scatter_elements_shape(&[4], &[4], &[4], 0).unwrap(),
+            vec![4]
+        );
+
+        // 2D scatter along axis 0
+        assert_eq!(
+            infer_scatter_elements_shape(&[3, 4], &[2, 4], &[2, 4], 0).unwrap(),
+            vec![3, 4]
+        );
+
+        // 2D scatter along axis 1
+        assert_eq!(
+            infer_scatter_elements_shape(&[3, 4], &[3, 2], &[3, 2], 1).unwrap(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn test_scatter_elements_invalid() {
+        // Indices and updates shape mismatch
+        assert!(infer_scatter_elements_shape(&[3, 4], &[2, 4], &[3, 4], 0).is_err());
+
+        // Rank mismatch
+        assert!(infer_scatter_elements_shape(&[3, 4], &[2], &[2], 0).is_err());
+
+        // Axis out of bounds
+        assert!(infer_scatter_elements_shape(&[3, 4], &[2, 4], &[2, 4], 2).is_err());
+    }
+
+    #[test]
+    fn test_resample2d_shape() {
+        let input = vec![
+            Dimension::Static(1),
+            Dimension::Static(3),
+            Dimension::Static(224),
+            Dimension::Static(224),
+        ];
+        let out = infer_resample2d_shape(&input, [2, 3], Some(&[112, 112]), &[]).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                Dimension::Static(1),
+                Dimension::Static(3),
+                Dimension::Static(112),
+                Dimension::Static(112),
+            ]
+        );
+
+        let out = infer_resample2d_shape(&input, [2, 3], None, &[0.5, 2.0]).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                Dimension::Static(1),
+                Dimension::Static(3),
+                Dimension::Static(112),
+                Dimension::Static(448),
+            ]
+        );
+
+        let out = infer_resample2d_shape(&input, [2, 3], None, &[]).unwrap();
+        assert_eq!(out, input);
+    }
+
+    // ScatterND tests
+    #[test]
+    fn test_scatter_nd_basic() {
+        // Basic 2D case: indices shape [5, 2], input [2, 3, 4]
+        // k=2, so updates shape should be [5] + [4] = [5, 4]
+        assert_eq!(
+            infer_scatter_nd_shape(&[2, 3, 4], &[5, 2], &[5, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+
+        // k=1 case: indices shape [3, 1], input [4, 5]
+        // updates shape should be [3] + [5] = [3, 5]
+        assert_eq!(
+            infer_scatter_nd_shape(&[4, 5], &[3, 1], &[3, 5]).unwrap(),
+            vec![4, 5]
+        );
+    }
+
+    #[test]
+    fn test_scatter_nd_full_rank() {
+        // k equals input rank: indices shape [5, 3], input [2, 3, 4]
+        // updates shape should be [5] + [] = [5]
+        assert_eq!(
+            infer_scatter_nd_shape(&[2, 3, 4], &[5, 3], &[5]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_scatter_nd_invalid() {
+        // k > input rank
+        assert!(infer_scatter_nd_shape(&[2, 3], &[5, 4], &[5]).is_err());
+
+        // Updates shape mismatch
+        assert!(infer_scatter_nd_shape(&[2, 3, 4], &[5, 2], &[5, 5]).is_err());
+
+        // Indices rank < 1
+        assert!(infer_scatter_nd_shape(&[2, 3], &[], &[]).is_err());
+    }
+
+    // Tile tests
+    #[test]
+    fn test_tile_basic() {
+        // 1D tile
+        assert_eq!(infer_tile_shape(&[4], &[2]).unwrap(), vec![8]);
+
+        // 2D tile
+        assert_eq!(infer_tile_shape(&[2, 3], &[2, 3]).unwrap(), vec![4, 9]);
+
+        // No repetition (all 1s)
+        assert_eq!(
+            infer_tile_shape(&[2, 3, 4], &[1, 1, 1]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_tile_different_repetitions() {
+        // Different repetitions per dimension
+        assert_eq!(infer_tile_shape(&[2, 3], &[3, 1]).unwrap(), vec![6, 3]);
+        assert_eq!(
+            infer_tile_shape(&[1, 2, 3], &[2, 3, 1]).unwrap(),
+            vec![2, 6, 3]
+        );
+    }
+
+    #[test]
+    fn test_tile_invalid() {
+        // Repetitions length mismatch
+        assert!(infer_tile_shape(&[2, 3], &[2]).is_err());
+        assert!(infer_tile_shape(&[2, 3], &[2, 3, 1]).is_err());
+    }
+
+    #[test]
+    fn test_tile_scalar_empty_repetitions() {
+        assert_eq!(infer_tile_shape(&[], &[]).unwrap(), Vec::<u32>::new());
+        assert!(infer_tile_shape(&[1], &[]).is_err());
+    }
+
+    // Triangular tests
+    #[test]
+    fn test_triangular_basic() {
+        // 2D triangular
+        assert_eq!(infer_triangular_shape(&[3, 3]).unwrap(), vec![3, 3]);
+        assert_eq!(infer_triangular_shape(&[4, 5]).unwrap(), vec![4, 5]);
+
+        // 3D triangular (applies to last 2 dims)
+        assert_eq!(infer_triangular_shape(&[2, 3, 3]).unwrap(), vec![2, 3, 3]);
+    }
+
+    #[test]
+    fn test_triangular_higher_rank() {
+        // 4D and 5D tensors
+        assert_eq!(
+            infer_triangular_shape(&[2, 3, 4, 5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+        assert_eq!(
+            infer_triangular_shape(&[1, 2, 3, 4, 5]).unwrap(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn test_triangular_invalid() {
+        // Rank < 2
+        assert!(infer_triangular_shape(&[5]).is_err());
+        assert!(infer_triangular_shape(&[]).is_err());
+    }
+
+    // Tests for specialized activation functions
+
+    #[test]
+    fn test_hardsigmoid_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_hardsigmoid_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_hardsigmoid_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_hardsigmoid_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_hardswish_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_hardswish_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_hardswish_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_hardswish_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_softplus_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_softplus_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_softplus_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_softplus_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_softsign_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_softsign_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_softsign_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_softsign_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_elu_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_elu_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(infer_elu_shape(&[1, 2, 3, 4]).unwrap(), vec![1, 2, 3, 4]);
+        assert_eq!(infer_elu_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_leakyrelu_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_leakyrelu_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_leakyrelu_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_leakyrelu_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_prelu_same_shape() {
+        // Exact same shape
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[2, 3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_prelu_broadcast_ones() {
+        // Slope has 1s that can be broadcast
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[1, 3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[1, 1, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4, 5], &[1, 1, 1, 5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn test_prelu_broadcast_fewer_dims() {
+        // Slope has fewer dimensions (prepend with 1s)
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4, 5], &[5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4, 5], &[4, 5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_prelu_broadcast_scalar() {
+        // Scalar slope (shape [1])
+        assert_eq!(infer_prelu_shape(&[2, 3, 4], &[1]).unwrap(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_prelu_invalid_rank() {
+        assert!(infer_prelu_shape(&[2, 3], &[1, 2, 3, 4]).is_err());
+        assert_eq!(infer_prelu_shape(&[5], &[2, 5]).unwrap(), vec![2, 5]);
+    }
+
+    #[test]
+    fn test_prelu_invalid_dimension() {
+        // Dimension mismatch (not 1 and not equal)
+        assert!(infer_prelu_shape(&[2, 3, 4], &[2, 5, 4]).is_err());
+        assert!(infer_prelu_shape(&[2, 3, 4], &[3, 3, 4]).is_err());
+    }
+
+    #[test]
+    fn test_clamp_shape() {
+        // Clamp preserves input shape
+        assert_eq!(infer_clamp_shape(&[2, 3, 4]), vec![2, 3, 4]);
+        assert_eq!(infer_clamp_shape(&[1, 224, 224, 3]), vec![1, 224, 224, 3]);
+        assert_eq!(infer_clamp_shape(&[10]), vec![10]);
+    }
+
+    #[test]
+    fn test_gemm_2d() {
+        // Basic 2D gemm: [M, K] x [K, N] -> [M, N]
+        assert_eq!(
+            infer_gemm_shape(&[3, 4], &[4, 5], false, false).unwrap(),
+            vec![3, 5]
+        );
+
+        // With transposition
+        assert_eq!(
+            infer_gemm_shape(&[4, 3], &[4, 5], true, false).unwrap(),
+            vec![3, 5]
+        );
+        assert_eq!(
+            infer_gemm_shape(&[3, 4], &[5, 4], false, true).unwrap(),
+            vec![3, 5]
+        );
+        assert_eq!(
+            infer_gemm_shape(&[4, 3], &[5, 4], true, true).unwrap(),
+            vec![3, 5]
+        );
+    }
+
+    #[test]
+    fn test_gemm_invalid() {
+        // Incompatible dimensions
+        assert!(infer_gemm_shape(&[3, 4], &[5, 6], false, false).is_err());
+        assert!(infer_gemm_shape(&[3, 4], &[5, 6], true, false).is_err());
+
+        // Non-2D inputs
+        assert!(infer_gemm_shape(&[3], &[3, 4], false, false).is_err());
+        assert!(infer_gemm_shape(&[3, 4], &[4], false, false).is_err());
+    }
+
+    #[test]
+    fn test_gemm_dimensions_2d_b_transpose() {
+        let a = vec![Dimension::Static(1), Dimension::Static(256)];
+        let b = vec![Dimension::Static(3072), Dimension::Static(256)];
+        assert_eq!(
+            infer_gemm_shape_dimensions(&a, &b, false, true).unwrap(),
+            vec![Dimension::Static(1), Dimension::Static(3072)]
+        );
+    }
+
+    #[test]
+    fn test_gemm_dimensions_batched_b_transpose() {
+        let a = vec![
+            Dimension::Static(1),
+            Dimension::Static(64),
+            Dimension::Static(128),
+        ];
+        let b = vec![Dimension::Static(3072), Dimension::Static(128)];
+        assert_eq!(
+            infer_gemm_shape_dimensions(&a, &b, false, true).unwrap(),
+            vec![
+                Dimension::Static(1),
+                Dimension::Static(64),
+                Dimension::Static(3072),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gemm_dimensions_inner_mismatch() {
+        let a = vec![Dimension::Static(2), Dimension::Static(3)];
+        let b = vec![Dimension::Static(4), Dimension::Static(5)];
+        assert!(infer_gemm_shape_dimensions(&a, &b, false, false).is_err());
+    }
+
+    // Split tests
+    #[test]
+    fn test_split_even() {
+        // Split [24] into 3 parts along axis 0
+        let splits = serde_json::json!(3);
+        let outputs = infer_split_shape(&[24], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![8]);
+        assert_eq!(outputs[1], vec![8]);
+        assert_eq!(outputs[2], vec![8]);
+
+        // Split [12, 1, 1, 2] into 3 parts along axis 0
+        let outputs = infer_split_shape(&[12, 1, 1, 2], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![4, 1, 1, 2]);
+        assert_eq!(outputs[1], vec![4, 1, 1, 2]);
+        assert_eq!(outputs[2], vec![4, 1, 1, 2]);
+    }
+
+    #[test]
+    fn test_split_array() {
+        // Split [24] with explicit sizes [8, 8, 8]
+        let splits = serde_json::json!([8, 8, 8]);
+        let outputs = infer_split_shape(&[24], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![8]);
+        assert_eq!(outputs[1], vec![8]);
+        assert_eq!(outputs[2], vec![8]);
+
+        // Split [12, 1, 1, 2] with sizes [3, 3, 3, 3]
+        let splits = serde_json::json!([3, 3, 3, 3]);
+        let outputs = infer_split_shape(&[12, 1, 1, 2], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 4);
+        assert_eq!(outputs[0], vec![3, 1, 1, 2]);
+        assert_eq!(outputs[1], vec![3, 1, 1, 2]);
+        assert_eq!(outputs[2], vec![3, 1, 1, 2]);
+        assert_eq!(outputs[3], vec![3, 1, 1, 2]);
+    }
+
+    #[test]
+    fn test_split_different_axis() {
+        // Split [2, 3, 12, 4] along axis 2
+        let splits = serde_json::json!(3);
+        let outputs = infer_split_shape(&[2, 3, 12, 4], &splits, 2).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![2, 3, 4, 4]);
+        assert_eq!(outputs[1], vec![2, 3, 4, 4]);
+        assert_eq!(outputs[2], vec![2, 3, 4, 4]);
+    }
+
+    #[test]
+    fn test_split_uneven_sizes() {
+        // Split [10] with sizes [2, 3, 5]
+        let splits = serde_json::json!([2, 3, 5]);
+        let outputs = infer_split_shape(&[10], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![2]);
+        assert_eq!(outputs[1], vec![3]);
+        assert_eq!(outputs[2], vec![5]);
+    }
+
+    #[test]
+    fn test_split_invalid_even() {
+        // Cannot split 24 evenly into 5 parts
+        let splits = serde_json::json!(5);
+        assert!(infer_split_shape(&[24], &splits, 0).is_err());
+    }
+
+    #[test]
+    fn test_split_invalid_sum() {
+        // Sizes don't sum to axis size
+        let splits = serde_json::json!([8, 8, 9]); // sum is 25, not 24
+        assert!(infer_split_shape(&[24], &splits, 0).is_err());
+    }
+
+    #[test]
+    fn test_split_invalid_axis() {
+        // Axis out of bounds
+        let splits = serde_json::json!(3);
+        assert!(infer_split_shape(&[24], &splits, 1).is_err());
+        assert!(infer_split_shape(&[12, 1, 1, 2], &splits, 5).is_err());
+    }
+}

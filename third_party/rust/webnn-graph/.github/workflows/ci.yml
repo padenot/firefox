@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, quantize ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: MSRV (${{ matrix.os }}, minimal=${{ matrix.minimal }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        minimal: [true, false]
+    env:
+      CARGO_FLAGS: ${{ matrix.minimal && '--no-default-features' || '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protoc (Linux)
+        if: ${{ runner.os == 'Linux' && !matrix.minimal }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: ${{ runner.os == 'macOS' && !matrix.minimal }}
+        run: brew install protobuf
+
+      - name: Install protoc (Windows)
+        if: ${{ runner.os == 'Windows' && !matrix.minimal }}
+        run: choco install protoc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-${{ matrix.minimal }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.minimal }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.minimal }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.minimal }}-cargo-git-
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.minimal }}-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.minimal }}-target-
+
+      # Cache the ResNet-50 ONNX model separately so it survives Cargo.lock churn
+      # and is not evicted as collateral damage when the target/ cache is invalidated.
+      # Static key — bump the suffix only if the upstream model URL changes.
+      - name: Cache ResNet-50 ONNX model
+        uses: actions/cache@v4
+        with:
+          path: target/test-data
+          key: resnet50-onnx-opset16-v1
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Run clippy
+        run: make lint
+
+      - name: Run tests
+        run: make test
+
+      - name: Build release
+        run: make release
+
+  stable:
+    name: Current stable
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ubuntu-stable-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-stable-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ubuntu-stable-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-stable-cargo-git-
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ubuntu-stable-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-stable-target-
+
+      - name: Cache ResNet-50 ONNX model
+        uses: actions/cache@v4
+        with:
+          path: target/test-data
+          key: resnet50-onnx-opset16-v1
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Run clippy
+        run: make lint
+
+      - name: Run tests
+        run: make test
+
+      - name: Build release
+        run: make release

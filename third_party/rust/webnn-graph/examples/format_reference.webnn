@@ -1,0 +1,20 @@
+# Maintained syntax example for docs and parser/serializer round-trip coverage.
+webnn_graph "format_reference" v2 @quantized {
+  inputs {
+    input: f32[dyn("batch", 8), 4];
+  }
+
+  consts {
+    bias: f32[] @scalar(0.5);
+    inline_mask: u8[4] @bytes([1, 1, 0, 0]);
+    external_weight: f32[4, 4] @weights("encoder.weight");
+  }
+
+  nodes {
+    sum = add(input, bias, metadata={kind: "reference", axes: [1], enabled: true});
+    [left, right] = split(sum, splits=[2, 2], axis=1);
+    result = concat(left, right, axis=1);
+  }
+
+  outputs { result; }
+}

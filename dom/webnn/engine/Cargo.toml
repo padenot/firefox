@@ -1,0 +1,13 @@
+[package]
+name = "webnn_engine"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[dependencies]
+mozilla-central-workspace-hack = { version = "0.1", features = ["webnn_engine"], optional = true }
+rustnn = { git = "https://github.com/padenot/rustnn", rev = "2bb2bec3f0652b922f594d2a737fc4ae03b24f50", default-features = false, features = ["capi", "coreml-runtime"] }
+
+[lib]
+path = "lib.rs"
+crate-type = ["staticlib"]

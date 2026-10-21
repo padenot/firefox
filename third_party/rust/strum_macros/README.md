@@ -1,7 +1,6 @@
 # Strum
 
-[![Build Status](https://travis-ci.com/Peternator7/strum.svg?branch=master)](https://travis-ci.com/Peternator7/strum)
-[![Build status](https://ci.appveyor.com/api/projects/status/ji4f6n2m5lvu11xt?svg=true)](https://ci.appveyor.com/project/Peternator7/strum)
+[![Rust](https://github.com/Peternator7/strum/actions/workflows/ci.yml/badge.svg)](https://github.com/Peternator7/strum/actions/workflows/ci.yml)
 [![Latest Version](https://img.shields.io/crates/v/strum.svg)](https://crates.io/crates/strum)
 [![Rust Documentation](https://docs.rs/strum/badge.svg)](https://docs.rs/strum)
 ![Crates.io](https://img.shields.io/crates/l/strum)
@@ -11,7 +10,7 @@ Strum is a set of macros and traits for working with enums and strings easier in
 
 # Compatibility
 
-Strum is currently compatible with versions of rustc >= 1.66.1. Pull Requests that improve compatibility with older
+Strum is currently compatible with versions of rustc >= 1.71.1. Pull Requests that improve compatibility with older
 versions are welcome. The project goal is to support a rust version for at least 2 years after release 
 and even longer is preferred since this project changes slowly.
 
@@ -22,11 +21,11 @@ Cargo.toml. Strum_macros contains the macros needed to derive all the traits in 
 
 ```toml
 [dependencies]
-strum = "0.27"
-strum_macros = "0.27"
+strum = "0.28"
+strum_macros = "0.28"
 
 # You can also use the "derive" feature, and import the macros directly from "strum"
-# strum = { version = "0.27", features = ["derive"] }
+# strum = { version = "0.28", features = ["derive"] }
 ```
 
 # Strum Macros
@@ -47,7 +46,6 @@ Strum has implemented the following macros:
 | [EnumCount] | Add a constant `usize` equal to the number of variants. |
 | [VariantArray] | Adds an associated `VARIANTS` constant which is an array of all enum discriminants |
 | [VariantNames] | Adds an associated `VARIANTS` constant which is an array of discriminant names |
-| [EnumTable] | *Experimental*, creates a new type that stores an item of a specified type for each variant of the enum. |
 
 # Contributing
 
@@ -85,4 +83,3 @@ Strumming is also a very whimsical motion, much like writing Rust code.
 [FromRepr]: https://docs.rs/strum_macros/latest/strum_macros/derive.FromRepr.html
 [VariantArray]: https://docs.rs/strum_macros/latest/strum_macros/derive.VariantArray.html
 [VariantNames]: https://docs.rs/strum_macros/latest/strum_macros/derive.VariantNames.html
-[EnumTable]: https://docs.rs/strum_macros/latest/strum_macros/derive.EnumTable.html

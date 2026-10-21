@@ -13,6 +13,10 @@
 #  include "parakeet_capi.h"
 #endif
 
+#ifdef XP_MACOSX
+#  include "mozilla/webnn/rustnn.h"
+#endif
+
 struct PRLibrary;
 
 namespace mozilla::llama {
@@ -47,6 +51,37 @@ namespace mozilla::llama {
     X(void, parakeet_capi_free_string, (char* s))
 #else
 #  define MOZINFERENCE_PARKEET_FUNCTION_LIST(X)
+#endif
+
+#ifdef XP_MACOSX
+// rustnn C API, used by WebNN. Format: X(name)
+#  define MOZINFERENCE_WEBNN_FUNCTION_LIST(X) \
+    X(rustnn_last_error_message)              \
+    X(rustnn_operand_descriptor_create)       \
+    X(rustnn_operand_descriptor_destroy)      \
+    X(rustnn_tensor_descriptor_create)        \
+    X(rustnn_tensor_descriptor_destroy)       \
+    X(rustnn_context_options_default)         \
+    X(rustnn_context_create)                  \
+    X(rustnn_context_destroy)                 \
+    X(rustnn_context_create_tensor)           \
+    X(rustnn_tensor_destroy)                  \
+    X(rustnn_context_write_tensor)            \
+    X(rustnn_context_read_tensor)             \
+    X(rustnn_graph_builder_create)            \
+    X(rustnn_graph_builder_destroy)           \
+    X(rustnn_operand_destroy)                 \
+    X(rustnn_graph_builder_input)             \
+    X(rustnn_graph_builder_constant)          \
+    X(rustnn_graph_builder_add)               \
+    X(rustnn_graph_builder_matmul)            \
+    X(rustnn_graph_builder_relu)              \
+    X(rustnn_graph_builder_build)             \
+    X(rustnn_graph_destroy)                   \
+    X(rustnn_context_dispatch)                \
+    X(rustnn_set_temp_directory)
+#else
+#  define MOZINFERENCE_WEBNN_FUNCTION_LIST(X)
 #endif
 
 // Format: X(return_type, name, params)
@@ -147,6 +182,10 @@ struct LlamaLibWrapper {
 #define DECLARE_FUNCTION_PTR(ret, name, params) ret(*name) params;
   MOZINFERENCE_FUNCTION_LIST(DECLARE_FUNCTION_PTR)
 #undef DECLARE_FUNCTION_PTR
+
+#define DECLARE_WEBNN_FUNCTION_PTR(name) decltype(&::name) name;
+  MOZINFERENCE_WEBNN_FUNCTION_LIST(DECLARE_WEBNN_FUNCTION_PTR)
+#undef DECLARE_WEBNN_FUNCTION_PTR
 };
 
 class LlamaRuntimeLinker {

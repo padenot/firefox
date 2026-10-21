@@ -113,6 +113,9 @@ LlamaLibWrapper::LinkResult LlamaLibWrapper::Link() {
   }
 
   MOZINFERENCE_FUNCTION_LIST(BIND_FUNCTION)
+#define BIND_WEBNN_FUNCTION(name) BIND_FUNCTION(_, name, _)
+  MOZINFERENCE_WEBNN_FUNCTION_LIST(BIND_WEBNN_FUNCTION)
+#undef BIND_WEBNN_FUNCTION
 
 #undef BIND_FUNCTION
 
@@ -129,6 +132,9 @@ void LlamaLibWrapper::Unlink() {
   // Clear all function pointers using X-macros
 #define CLEAR_FUNCTION(ret, name, params) name = nullptr;
   MOZINFERENCE_FUNCTION_LIST(CLEAR_FUNCTION)
+#define CLEAR_WEBNN_FUNCTION(name) name = nullptr;
+  MOZINFERENCE_WEBNN_FUNCTION_LIST(CLEAR_WEBNN_FUNCTION)
+#undef CLEAR_WEBNN_FUNCTION
 #undef CLEAR_FUNCTION
 }
 

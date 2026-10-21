@@ -1,0 +1,202 @@
+use std::hash::Hasher;
+use std::io::Read;
+use std::process::Command;
+use std::{env, fs};
+use std::{fs::File, path::Path};
+
+use seahash::SeaHasher;
+
+#[cfg(feature = "litert-runtime")]
+fn run_flatc(schema: &str, out_dir: &str) -> Result<(), String> {
+    let status = Command::new("flatc")
+        .args(["--rust", "-o", out_dir, schema])
+        .status()
+        .map_err(|e| format!("failed to run flatc: {e}"))?;
+    if !status.success() {
+        return Err("flatc exited with error".into());
+    }
+
+    // Keep warnings in generated bindings from obscuring warnings in handwritten code.
+    // flatc does not currently emit Rust 2024-compatible unsafe blocks, among other
+    // lints, so scope the allowance to the generated schema rather than the crate.
+    let generated_path = Path::new(out_dir).join("schema_generated.rs");
+    let generated = fs::read_to_string(&generated_path)
+        .map_err(|e| format!("failed to read generated FlatBuffers schema: {e}"))?;
+    let wrapped = format!(
+        "#[allow(warnings)]\nmod generated_flatc_schema {{\n{generated}\n}}\n\
+         pub use generated_flatc_schema::*;\n"
+    );
+    fs::write(generated_path, wrapped)
+        .map_err(|e| format!("failed to wrap generated FlatBuffers schema: {e}"))?;
+
+    Ok(())
+}
+
+#[cfg(feature = "litert-runtime")]
+fn build_tflite_schema() {
+    let out_dir = env::var("OUT_DIR").unwrap();
+    run_flatc("protos/tflite/schema.fbs", &out_dir)
+        .expect("Running flatc failed. Make sure flatc is installed and in PATH");
+    println!("cargo:rerun-if-changed=protos/tflite/schema.fbs");
+}
+
+#[cfg(feature = "coreml-runtime")]
+fn build_coreml_shim() {
+    // Build scripts run on the host: select by the Cargo target, not the host's
+    // cfg. In particular, watchOS cannot compile source models with this API.
+    if !matches!(
+        env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("macos" | "ios")
+    ) {
+        return;
+    }
+
+    // On supported Apple targets, compile the Objective-C++ exception
+    // firewall (see src/executors/coreml_shim.mm). It catches Objective-C and
+    // C++ exceptions raised by CoreML before they can unwind across the
+    // `extern "C"` objc_msgSend boundary and abort the process.
+
+    let shim = "src/executors/coreml_shim.mm";
+    println!("cargo:rerun-if-changed={shim}");
+    cc::Build::new()
+        .file(shim)
+        .flag("-fobjc-arc")
+        .compile("rustnn_coreml_shim");
+    // The shim's `@catch (...)` pulls in the C++ runtime (__cxa_begin_catch,
+    // std::terminate); Rust links with -nodefaultlibs, so request libc++.
+    println!("cargo:rustc-link-lib=dylib=c++");
+}
+
+fn create_source_hash(source_files: &[&str]) {
+    let mut hasher = SeaHasher::new();
+    let mut buffer = Vec::new();
+
+    for file_path in source_files {
+        // Tell Cargo to rerun if ANY of these files change
+        println!("cargo:rerun-if-changed={}", file_path);
+
+        // Only hash the file if it actually exists (prevents crashing if a file is optional)
+        if Path::new(file_path).exists() {
+            let mut file = File::open(file_path).unwrap();
+            buffer.clear(); // Reuse the same buffer to save allocations
+            file.read_to_end(&mut buffer).unwrap();
+
+            // Feed this file's bytes into the running hash state
+            hasher.write(&buffer);
+        }
+    }
+
+    // 2. Finalize the combined hash
+    let total_hash = hasher.finish();
+    let hash_string = format!("{:016x}", total_hash);
+
+    // 3. Write the combined hash out
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let dest_path = Path::new(&out_dir).join("source_hash.txt");
+    fs::write(dest_path, hash_string).unwrap();
+}
+
+fn embed_wpt_corpus() -> Result<(), Box<dyn std::error::Error>> {
+    // Embed the corpus when explicitly requested.
+    // Used for wasm32 tests and OHOS cross-build for CANN.
+    if env::var_os("CARGO_FEATURE_WPT_EMBED_CORPUS").is_none() {
+        return Ok(());
+    }
+
+    println!("cargo:rerun-if-env-changed=WPT_DIR");
+    println!("cargo:rerun-if-changed=scripts/wpt_bridge/dump_corpus.mjs");
+
+    let wpt_dir = env::var("WPT_DIR").unwrap_or_else(|_| ".cache/wpt".to_string());
+    let output = Command::new("node")
+        .args([
+            "scripts/wpt_bridge/dump_corpus.mjs",
+            "--wpt-dir",
+            wpt_dir.as_str(),
+        ])
+        .output()
+        .map_err(|error| format!("failed to run the WPT Node bridge: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "WPT Node bridge failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+
+    let output_path = Path::new(&env::var("OUT_DIR")?).join("webnn-wpt-corpus.json");
+    fs::write(output_path, output.stdout)?;
+    Ok(())
+}
+
+/// Make the prebuilt LiteRT libraries findable: rpath on Unix, DLLs beside the binaries on Windows.
+fn forward_litert_lib_dir() {
+    let Ok(dir) = env::var("DEP_LITERT_LIB_DIR") else {
+        return;
+    };
+    println!("cargo:rerun-if-env-changed=DEP_LITERT_LIB_DIR");
+
+    match env::var("CARGO_CFG_TARGET_FAMILY").as_deref() {
+        Ok("unix") => println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}"),
+        Ok("windows") => copy_litert_dlls(Path::new(&dir)),
+        _ => {}
+    }
+}
+
+/// Copy the prebuilt DLLs beside the executables, where the Windows loader looks.
+fn copy_litert_dlls(dir: &Path) {
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let profile_dir = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .to_path_buf();
+
+    let entries = fs::read_dir(dir).expect("failed to read DEP_LITERT_LIB_DIR");
+    for entry in entries.flatten() {
+        let source = entry.path();
+        if source.extension().and_then(|e| e.to_str()) != Some("dll") {
+            continue;
+        }
+        for dest_dir in [
+            profile_dir.clone(),
+            profile_dir.join("deps"),
+            profile_dir.join("examples"),
+        ] {
+            fs::create_dir_all(&dest_dir).unwrap();
+            let dest = dest_dir.join(entry.file_name());
+            fs::copy(&source, &dest).unwrap_or_else(|error| {
+                panic!(
+                    "failed to copy {} to {}: {error}",
+                    source.display(),
+                    dest.display()
+                )
+            });
+        }
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "coreml-runtime")]
+    build_coreml_shim();
+    embed_wpt_corpus()?;
+
+    // Build TFLite flatbuffer schema - Only required for the litert-runtime.
+    #[cfg(feature = "litert-runtime")]
+    build_tflite_schema();
+
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=OUT_DIR");
+
+    // Let the binaries find the prebuilt LiteRT libraries at run time.
+    forward_litert_lib_dir();
+
+    create_source_hash(&[
+        "src/converters/trtx.rs",
+        "src/converters/trtx_gru.rs",
+        "src/converters/trtx_lstm.rs",
+        "src/converters/trtx_rnn.rs",
+        "src/backends/trtx.rs",
+    ]);
+    Ok(())
+}

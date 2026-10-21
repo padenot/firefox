@@ -1,0 +1,17 @@
+# TODO
+
+Current status and known gaps:  docs/development/implementation-status.md
+Operator support per backend:   docs/development/backend-operator-support.md (generated)
+Conformance per operation:      https://rustnn.github.io/rustnn/wpt-conformance/
+Issues and feature requests:    https://github.com/rustnn/rustnn/issues
+
+Open items visible in the code (search for `todo!()`):
+
+- MLContext: create_from_gpu_device, lost, create_constant_tensor, destroy, op_support_limits
+- MLGraphBuilder: constant_from_tensor, constant_from_value
+- MLTensor: destroy, destroyed
+- Async API: the methods marked //async in src/mlcontext.rs and src/mlgraphbuilder.rs are synchronous
+- Browser WebNN backend (wasm32): generated bindings only, no MLContext backend
+- Option structs hold operand indices (OperandIndex) instead of MLOperand values
+
+The previous TODO list from the Python bindings era is archived in docs/archive/todo-2025-12.txt.

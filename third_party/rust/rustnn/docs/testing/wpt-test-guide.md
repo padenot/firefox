@@ -1,0 +1,360 @@
+# WPT Test Guide
+
+The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.com/web-platform-tests/wpt/tree/master/webnn/conformance_tests) against rustnn's WebNN API (`MLGraphBuilder` + `MLContext::dispatch`). Tests are loaded live from `.https.any.js` files via a Node.js bridge — there is no checked-in JSON dump of the corpus.
+
+**Entry point:** `tests/run_wpt_conformance.rs`  
+**Harness modules:** `tests/wpt_conformance/`
+
+## Prerequisites
+
+- **Node.js** on `PATH` (used by `scripts/wpt_bridge/dump_corpus.mjs`)
+- **WPT corpus** in `.cache/wpt` (fetched automatically on first run, or manually via `make fetch-wpt`)
+- **ONNX Runtime** for the default `onnx` backend (`make onnxruntime-download` is a dependency of `make test-wpt`; set `ORT_DYLIB_PATH` when running cargo directly)
+- **TensorRT-RTX** (optional) for the `trtx` backend: `trtx-runtime` feature and an NVIDIA GPU
+- **LiteRT** (optional) for the `litert` backend: `litert-runtime` feature and `flatc` at build time; `make test-wpt-litert` sets the library path
+- **CoreML** (optional, macOS) for the `coreml` backend: `coreml-runtime` feature
+
+Unavailable backends are skipped at startup with a log message.
+
+## Quick start
+
+```bash
+# Fetch WPT corpus (optional — first run auto-fetches if missing)
+make fetch-wpt
+
+# Full suite on ONNX CPU (well under a minute in a release build)
+make test-wpt
+
+# Filter by operation name
+make test-wpt-op OP=relu
+
+# Full suite on TensorRT (skips if GPU unavailable)
+make test-wpt-trtx
+
+# LiteRT, and CoreML on macOS
+make test-wpt-litert
+make test-wpt-coreml
+
+# Compare the opt-in CoreML storage paths with the default baseline
+WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
+WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
+```
+
+Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.
+
+## How it works
+
+```
+WPT .https.any.js files
+        │
+        ▼
+  dump_corpus.mjs (Node bridge)
+        │
+        ▼
+  WptCorpus JSON  ──►  MLGraphBuilder  ──►  MLContext::dispatch
+        │                                              │
+        ▼                                              ▼
+  tolerance check  ◄──────────────────────  actual outputs
+        │
+        ▼
+  pass / fail (libtest)
+```
+
+1. **Load corpus** — One Node.js invocation parses all conformance `.https.any.js` files and returns JSON (`WptCorpus`).
+2. **Build graph** — `wpt_execute_graph.rs` replays each case through `MLGraphBuilder` method calls.
+3. **Execute** — `MLContext::dispatch` runs the graph on the selected backend.
+4. **Validate** — `tolerance.rs` compares actual vs expected outputs (ULP, ATOL, or RTOL depending on operation and per-case overrides).
+
+Trial names follow the pattern `{backend}::{operation}::{sanitized_test_name}`, for example:
+
+```
+onnx::relu::relu_float32_2D_tensor
+trtx::clamp::clamp_uint64_1D_tensor_with_bigint_max
+```
+
+## Make targets
+
+| Target | Description |
+|--------|-------------|
+| `make fetch-wpt` | Download/update WPT corpus into `.cache/wpt` |
+| `make test-wpt` | Full suite, ONNX CPU backend |
+| `make test-wpt-trtx` | Full suite, TensorRT backend |
+| `make test-wpt-cann` | Full suite on the CANN/HiAI NPU (cross-compiled for OHOS, run over `hdc`) |
+| `make test-wpt-litert` | Full suite, LiteRT backend |
+| `make test-wpt-coreml` | Full suite, CoreML backend (macOS); `make test-wpt-coreml-report` also writes the JSON report |
+| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`); `WPT_BACKEND=<backend>` selects the backend |
+| `make test-wpt-report` | Full run with JSON/HTML reports even on failures; `WPT_BACKEND=onnx|trtx|litert|coreml` picks the backend |
+| `make wpt-sync-onnx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-trtx`, `wpt-sync-cann` | Regenerate PASS snapshots and expected-failure lists against the pinned corpus |
+| `make test-wpt-tolerance` | Backend-independent tolerance regressions |
+| `make test-wpt-tolerance-parity` | Compare strict finite ULP metrics with the fetched upstream JavaScript helpers |
+
+Equivalent `cargo` invocations:
+
+```bash
+# ONNX CPU
+cargo test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
+
+# TensorRT only
+WPT_BACKEND=trtx cargo test --test run_wpt_conformance \
+  --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
+
+# Filter trials (libtest substring match on trial name)
+cargo test --test run_wpt_conformance --features onnx-runtime -- relu --test-threads 1
+```
+
+## Backend selection
+
+Set `WPT_BACKEND` to limit which backends register trials:
+
+| Value | Backend | Notes |
+|-------|---------|-------|
+| `cann` | CANN/HiAI NPU | `MLPowerPreference::Default`, `accelerated=true`; on-device only |
+| `onnx` | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
+| `trtx` | TensorRT-RTX | `MLPowerPreference::HighPerformance`, `accelerated=true`; requires the `trtx-runtime` feature |
+| `litert` | LiteRT | requires the `litert-runtime` feature |
+| `coreml` | CoreML | macOS, requires the `coreml-runtime` feature |
+
+Aliases: `ort`, `cpu`, `onnx-cpu`, `ort-cpu` (onnx); `tensorrt`, `trt` (trtx); `tflite` (litert); `core-ml`, `mlprogram` (coreml).
+
+When `WPT_BACKEND` is unset, all **available** backends register trials. Unavailable backends (e.g. TRTX without a GPU) are skipped with a log message — they do not count as skips in the summary.
+
+CoreML defaults to its CPU policy. Set `WPT_COREML_DEVICE=cpu|gpu|npu` to
+request another policy, without asserting where CoreML actually schedules work.
+Use `TEST_FILTER` for a focused operation run and separate report files when
+comparing policies:
+
+```bash
+WPT_COREML_DEVICE=npu WPT_REPORT_JSON=reports/gelu-coreml-npu.json \
+  make test-wpt-coreml TEST_FILTER=coreml::gelu
+```
+
+`WPT_COREML_TENSOR_MODE` is independent of the requested policy. Combine them
+to exercise persistent storage or output backings without resetting storage
+options when the harness selects a device:
+
+```bash
+WPT_COREML_DEVICE=gpu WPT_COREML_TENSOR_MODE=backings \
+  make test-wpt-coreml TEST_FILTER=coreml::cast
+```
+
+Add `WPT_STRICT_TOLERANCE=1` to use the upstream case's tolerance without local
+ULP minima, absolute-error floors, or CANN's FP16 allowance. This opt-in mode
+preserves the historical default while exposing numerical conformance gaps.
+A missing or malformed source tolerance fails explicitly rather than selecting
+a local default. Strict mode accepts upstream ULP and ATOL, not the local RTOL
+extension. Keep strict and compatibility results separate when reporting passes.
+The compatibility ATOL/RTOL and ULP comparators retain their existing behavior;
+the stronger nonfinite gate and full-width ULP budgets apply only to strict mode.
+Callbacks that require intermediate operands are reevaluated with shapes and
+types from the Rust builder, using Node.js and the fetched source file. No
+tolerance formula is reimplemented. An upstream callback that still returns
+an undefined or nonfinite budget remains a test failure.
+The strict finite-value comparator follows the upstream helpers: raw half-bit
+distance except signed zero, the helper's FP16 halfway rounding, and unrounded
+JavaScript-number expected values for ATOL. Its audit uses the same comparator
+and applied budget. Nonfinite values use classification rules instead of the
+upstream bit-distance helper: NaN matches NaN regardless of payload, and
+infinities must match in sign. A large budget cannot hide a class mismatch.
+ULP classification uses the expected value after conversion to the output
+dtype; ATOL retains the original source number, including at overflow boundaries.
+Strict FP16 runtime inputs and constants also use
+the upstream halfway-rounding helper; compatibility packing is unchanged.
+The JavaScript fixture bridge preserves negative zero in tensor data and floating-point
+options rather than losing its sign during JSON serialization. This source fidelity is
+separate from the ULP comparator, which continues to treat signed zeros as equal.
+Both dump paths use the same normalizer; `scripts/wpt_bridge/numeric-fields.json` defines
+the tensor-data and floating-option fields shared with Rust option parsing. Integer WebIDL
+fields retain their zero-conversion semantics, and string labels are unchanged.
+The test-only JSON dependency enables round-trip binary64 parsing so finite source
+numbers also retain their original JavaScript precision. Production JSON parsing is unchanged.
+
+`make test-wpt-tolerance` runs the comparator regressions without a backend.
+Fetch the corpus with `make fetch-wpt`, then, with Node.js available, run
+`make test-wpt-tolerance-parity` to compare finite ULP cases directly with the
+upstream JavaScript helpers across every finite FP16 encoding, opposite signs,
+zeros and adjacent halfway values, plus FP32 and ATOL boundary cases. Set
+`WPT_TOLERANCE_PARITY_JSON=/path/to/parity.json` to save the vectors and checked
+distances for replay through the browser's upstream `testharness.js`/`utils.js`.
+The full ONNX and CoreML Make targets run this parity check after a successful
+WPT run, using the same fetched corpus. The reporting target used by CI runs
+parity after fetching the corpus and before executing the backend trials.
+
+## On-device (CANN/HiAI)
+
+The CANN backend runs on a Huawei Ascend NPU. The corpus is embedded into the
+cross-compiled test binary at build time and shipped with the binary.
+
+```bash
+export OHOS_SDK_NATIVE=/path/to/OpenHarmony/<version>/sdk/native
+export CANN_DDK=/path/to/CANN-Kit-next/ddk/
+make test-wpt-cann
+```
+
+`make test-wpt-cann`:
+
+1. cross-compiles `run_wpt_conformance` for `aarch64-unknown-linux-ohos`
+   (`--features cann-runtime,wpt-embed-corpus`),
+2. pushes the test binary and the `libhiai*.so` DDK libraries to
+   `/data/local/tmp/cann-wpt`,
+3. runs the trials single-threaded with `WPT_BACKEND=cann`, and
+4. retrieves the JSON report to `reports/wpt-cann-conformance.json`.
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WPT_DIR` | `.cache/wpt` | Path to WPT checkout |
+| `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert`, `coreml`, or `cann` |
+| `WPT_COREML_TENSOR_MODE` | `baseline` | CoreML-only storage mode: `baseline`, `persistent` (native inputs, copied outputs), or `backings` (also propose fixed-output backings); the corpus and tolerances are unchanged |
+| `WPT_COREML_DEVICE` | `cpu` | Requested CoreML policy: `cpu`, `gpu`, or `npu`; not measured execution placement |
+| `WPT_STRICT_TOLERANCE` | (off) | Set to `1` for upstream source budgets and strict finite-value comparison; otherwise local compatibility allowances remain enabled |
+| `WPT_REPORT_JSON` | (none; `reports/wpt-conformance.json` when `CI` is set) | Write structured pass/fail JSON report |
+| `WPT_REPORT_HTML` | (derived from JSON path) | HTML report path; set to empty string to disable |
+| `WPT_AUDIT` | (off) | Enable per-pass error metrics collection (see [Audit mode](#audit-mode)) |
+| `WPT_AUDIT_JSON` | `reports/wpt-trtx-audit.json` | Output path for audit JSON |
+| `WPT_STRICT_REVISION` | (off) | When set to `1`, a mismatch between the checkout and `WPT_REVISION` is a hard failure instead of a warning |
+
+## Tolerance
+
+Validation logic is in `tests/wpt_conformance/tolerance.rs`, aligned with pywebnn's `wpt_assert.py`.
+
+- **ULP** — default for most float operations; per-operation defaults in `default_tolerances()` (e.g. `relu` = 0, `sigmoid` = 34, `conv2d` = rtol 1e-3).
+- **ATOL** — used for some float16 trig operations.
+- **RTOL** — used for conv2d/conv_transpose2d when no per-case ULP override is present.
+- **Integer** — exact match by default; per-case tolerance from WPT JSON when specified.
+
+In default compatibility mode, the applied ULP tolerance is
+`max(wpt_value, merged_ulp_minimum(operation, graph_operators))`, with the local
+absolute floor described below. Strict mode uses the source budget unchanged.
+
+On failure, the harness prints inputs, expected/actual slices, and n-dimensional tensor dumps for triage.
+
+## Audit mode
+
+Green tests are not always numerically tight. Enable audit mode to record **max ULP**, **max absolute error**, and **max relative error** for every passing test, and flag cases that only pass because of wide tolerance.
+
+```bash
+# Run with audit (example: TensorRT backend)
+WPT_BACKEND=trtx WPT_AUDIT=1 \
+  cargo test --test run_wpt_conformance \
+  --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
+
+# Summarize the audit JSON
+python scripts/analyze_wpt_audit.py reports/wpt-trtx-audit.json
+```
+
+At the end of the run:
+
+```
+[WPT audit] <passed> passed, <flagged> flagged -> reports/wpt-trtx-audit.json
+```
+
+### Audit JSON fields
+
+Each entry in `cases[]`:
+
+| Field | Description |
+|-------|-------------|
+| `testName` | WPT test case name |
+| `fileName` | Source `.https.any.js` file |
+| `operation` | Primary operation under test |
+| `toleranceKind` | `Ulp`, `Atol`, or `Rtol` |
+| `toleranceValue` | Applied tolerance |
+| `tightUlpMinimum` | Historical local audit reference across graph operators, not an upstream budget |
+| `maxUlp` | Peak ULP distance vs reference (float outputs) |
+| `maxAbs` | Peak absolute error |
+| `maxRtol` | Peak relative error |
+| `maxIntDiff` | Peak integer difference (integer outputs) |
+| `integerTolerance` | Applied integer budget, reported separately when float compatibility allowances differ |
+| `nonfiniteMismatches` | Floating-point classification mismatches (must be zero for a valid pass) |
+| `slackRatio` | Largest applicable error/budget fraction across floating-point and integer outputs |
+| `flagged` | `true` if the case warrants review |
+| `flagReasons` | Why it was flagged |
+
+### Flag reasons
+
+| Reason | Meaning |
+|--------|---------|
+| `max_ulp N exceeds local audit reference M` | Actual error exceeds a local per-operation audit reference, not an upstream WPT budget |
+| `wide ULP tolerance N` | Applied tolerance ≥ 1000 ULP (policy flag; result may still be exact) |
+| `uses X% of tolerance budget` | `slackRatio ≥ 0.5` — close to the edge |
+
+**Note:** The default compatibility mode adds an absolute floor to WPT ULP cases
+(`|actual − expected| ≤ 2e-6` for float32, `≤ 1e-2` for float16). These are local
+RustNN allowances, not upstream WPT tolerances. A case can exceed its ULP budget
+and still pass. Check `maxUlp > toleranceValue` in the audit JSON or use
+`WPT_STRICT_TOLERANCE=1` to disable these allowances.
+
+## Structured reports
+
+The JSON report's `options.strictTolerance` labels the comparison mode, and
+`options.coremlRequestedDevice` records the requested CoreML policy. Audit JSON
+records the same information as `strict_tolerance` and
+`coreml_requested_device`. Neither field demonstrates GPU/NPU execution;
+placement needs separate runtime evidence. Keep policy and comparison mode in
+any published summary rather than combining these runs into one pass rate.
+
+`make test-wpt-report` (or `WPT_REPORT_JSON=...`) writes a JSON conformance report compatible with `scripts/wpt_bridge/render_conformance_html.mjs`. HTML is generated automatically unless `WPT_REPORT_HTML=""`.
+
+Report schema: per-file summaries, per-case status (`pass`/`fail`/`skip`), duration, and error messages.
+
+## Module layout
+
+| Module | Role |
+|--------|------|
+| `run_wpt_conformance.rs` | libtest entry point, trial registration |
+| `wpt_js_loader.rs` | Node bridge, corpus loading, trial naming |
+| `wpt_execute_graph.rs` | Graph build + dispatch via WebNN API |
+| `wpt_backend.rs` | Backend selection (`WptBackend`, `WPT_BACKEND`) |
+| `wpt_context_pool.rs` | Optional per-thread `MLContext` reuse |
+| `wpt_config.rs` | Compile-time options (`REUSE_ML_CONTEXT`) |
+| `tolerance.rs` | ULP/ATOL/RTOL validation |
+| `expected_failures.rs` | Loads `{backend}_expected_failures.txt` allowlists |
+| `wpt_audit.rs` | Per-pass error metrics (`WPT_AUDIT`) |
+| `wpt_report.rs` | Structured JSON/HTML reports (`WPT_REPORT_JSON`) |
+| `wpt_types.rs` | Corpus JSON types |
+| `wpt_tensor.rs` | Tensor packing and dtype conversion |
+
+## Failure tracking
+
+Every backend records conformance the same way: a test passes by completing, and fails
+unless it is listed as a known failure.
+
+- **Passing** → the trial completes and its results match the WPT expected data.
+- **Failing** → listed in `tests/wpt_conformance/{backend}_expected_failures.txt`
+  (one `{backend}::{operation}::{name}` per line). The trial still runs, but its failure is
+  non-fatal.
+
+Because the lists are the only recorded baseline, a listed trial that starts passing is not
+flagged: refresh the lists with the sync targets below, which regenerate them from a run
+(`scripts/update_expected_failures.sh` blanks the list first, so every failure surfaces).
+
+The WPT corpus is pinned by the `WPT_REVISION` file (a commit SHA checked out by
+`make fetch-wpt`), so CI is reproducible. At startup the harness compares the
+checkout's `HEAD` against `WPT_REVISION` and prints a warning on a mismatch (or
+when the revision cannot be determined). Set `WPT_STRICT_REVISION=1` to turn that
+warning into a hard failure. Regenerate against the pinned corpus with:
+
+```bash
+make wpt-sync-onnx     # ONNX expected-failures
+make wpt-sync-litert   # LiteRT expected-failures
+make wpt-sync-coreml   # macOS: coreml expected-failures
+make wpt-sync-trtx     # TensorRT expected-failures (requires an NVIDIA GPU)
+make wpt-sync-cann     # CANN expected-failures (requires a device)
+```
+
+A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a PR.
+
+## Troubleshooting
+
+**`Node.js is required for WPT conformance tests`** — Install Node.js and ensure it is on `PATH`.
+
+**`no WPT conformance cases loaded`** — Run `make fetch-wpt` or set `WPT_DIR` to a valid WPT checkout.
+
+**TRTX backend skipped** — TensorRT is not available (no GPU, missing drivers, or `trtx-runtime` feature not enabled). Only `onnx` trials will run.
+
+**`No WPT backends available`** (exit code 2) — a backend feature is compiled in but none of its runtimes could be created; check `ORT_DYLIB_PATH` or the TensorRT library. A build without any backend feature (plain `cargo test`) prints a notice and exits successfully instead, so the harness does not break the default test run.
+
+**Parse warnings (`file_errors`)** — Some WPT files may fail to parse; warnings are logged but do not fail the run.
+
+**Slow TRTX runs** — TensorRT engine compilation per trial makes a full debug-build run take tens of minutes. Use `make test-wpt-op OP=<op>` to iterate on a single operation.

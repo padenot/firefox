@@ -29,6 +29,7 @@ DIRS += [
     "cache",
     "canvas",
     "webgpu",
+    "webnn",
     "chrome-webidl",
     "clients",
     "closewatcher",

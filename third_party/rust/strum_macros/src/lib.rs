@@ -34,15 +34,15 @@ fn debug_print_generated(ast: &DeriveInput, toks: &TokenStream) {
 
 /// Converts strings to enum variants based on their name.
 ///
-/// auto-derives `std::str::FromStr` on the enum (for Rust 1.34 and above, `std::convert::TryFrom<&str>`
-/// will be derived as well). Each variant of the enum will match on it's own name.
-/// This can be overridden using `serialize="DifferentName"` or `to_string="DifferentName"`
+/// auto-derives `std::str::FromStr` on the enum. Each variant of the enum will match on its own
+/// name. This can be overridden using `serialize="DifferentName"` or `to_string="DifferentName"`
 /// on the attribute as shown below.
-/// Multiple deserializations can be added to the same variant. If the variant contains additional data,
-/// they will be set to their default values upon deserialization.
+/// Multiple deserializations can be added to the same variant. If the variant contains additional
+/// data, they will be set to their default values upon deserialization.
 ///
-/// The `default` attribute can be applied to a tuple variant with a single data parameter. When a match isn't
-/// found, the given variant will be returned and the input string will be captured in the parameter.
+/// The `default` attribute can be applied to a tuple variant with a single data parameter. When a
+/// match isn't found, the given variant will be returned and the input string will be captured in
+/// the parameter.
 ///
 /// Note that the implementation of `FromStr` by default only matches on the name of the
 /// variant. There is an option to match on different case conversions through the
@@ -51,14 +51,26 @@ fn debug_print_generated(ast: &DeriveInput, toks: &TokenStream) {
 /// See the [Additional Attributes](https://docs.rs/strum/latest/strum/additional_attributes/index.html)
 /// Section for more information on using this feature.
 ///
-/// If you have a large enum, you may want to consider using the `use_phf` attribute here. It leverages
-/// perfect hash functions to parse much quicker than a standard `match`. (MSRV 1.46)
+/// If you have a large enum, you may want to consider using the `use_phf` attribute here.
+/// PHF (Perfect Hash Functions) use a hash lookup instead of a linear search that may perform faster
+/// for large enums. Note: as with all optimizations, you should test this for your specific usecase
+/// rather than just assume it will be faster. With SIMD + pipelining, linear string search (aka memcmp)
+/// can be very fast for enums with a surprisingly large number of enum variants.
 ///
-/// The default error type is `strum::ParseError`. This can be overriden by applying both the
-/// `parse_err_ty` and `parse_err_fn` attributes at the type level.  `parse_error_fn` should be a
-/// function that accepts an `&str` and returns the type `parse_error_ty`. See
-/// [this test case](https://github.com/Peternator7/strum/blob/9db3c4dc9b6f585aeb9f5f15f9cc18b6cf4fd780/strum_tests/tests/from_str.rs#L233)
-/// for an example.
+/// # Infallible Parsing
+///
+/// If the enum has a `#[strum(default)]` variant and no `parse_err_ty` is set, parsing is
+/// infallible: `From<&str>` is derived instead of `TryFrom<&str>`, which allows calling
+/// `MyEnum::from("string")` directly.
+///
+/// # Custom Error Types
+///
+/// The default error type is `strum::ParseError`. This can be overridden by applying both the
+/// `parse_err_ty` and `parse_err_fn` attributes at the type level. `parse_err_fn` should be a
+/// function that accepts an `&str` and returns the type `parse_err_ty`. See [this test
+/// case](https://github.com/Peternator7/strum/blob/9db3c4dc9b6f585aeb9f5f15f9cc18b6cf4fd780/strum_tests/tests/from_str.rs#L233)
+/// for an example. When `parse_err_ty` is set, `TryFrom<&str>` is always derived, even if the
+/// enum has a `#[strum(default)]` variant.
 ///
 /// # Example how to use `EnumString`
 /// ```
@@ -180,6 +192,18 @@ pub fn from_string(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 ///
 /// assert_eq!("/redred", ColorWithPrefix::Red.as_ref());
 /// assert_eq!("/Green", ColorWithPrefix::Green.as_ref());
+///
+/// // With suffix on all variants
+/// #[derive(AsRefStr, Debug)]
+/// #[strum(suffix = ".rs")]
+/// enum ColorWithSuffix {
+///     #[strum(serialize = "redred")]
+///     Red,
+///     Green,
+/// }
+///
+/// assert_eq!("redred.rs", ColorWithSuffix::Red.as_ref());
+/// assert_eq!("Green.rs", ColorWithSuffix::Green.as_ref());
 /// ```
 #[proc_macro_derive(AsRefStr, attributes(strum))]
 pub fn as_ref_str(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -381,7 +405,9 @@ pub fn to_string(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// 3. The name of the variant will be used if there are no `serialize` or `to_string` attributes.
 /// 4. If the enum has a `strum(prefix = "some_value_")`, every variant will have that prefix prepended
 ///    to the serialization.
-/// 5. Enums with fields support string interpolation.
+/// 5. If the enum has a `strum(suffix = "_another_value")`, every variant will have that suffix appended
+///    to the serialization.
+/// 6. Enums with fields support string interpolation.
 ///    Note this means the variant will not "round trip" if you then deserialize the string.
 ///
 ///    ```rust
@@ -658,15 +684,10 @@ pub fn enum_table(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 ///     Three = 3,
 /// }
 ///
-/// # #[rustversion::since(1.46)]
 /// const fn number_from_repr(d: u8) -> Option<Number> {
 ///     Number::from_repr(d)
 /// }
 ///
-/// # #[rustversion::before(1.46)]
-/// # fn number_from_repr(d: u8) -> Option<Number> {
-/// #     Number::from_repr(d)
-/// # }
 /// assert_eq!(None, number_from_repr(0));
 /// assert_eq!(Some(Number::One), number_from_repr(1));
 /// assert_eq!(None, number_from_repr(2));
@@ -812,7 +833,6 @@ pub fn enum_messages(input: proc_macro::TokenStream) -> proc_macro::TokenStream 
 /// );
 /// assert_eq!("My color is Red. It\'s RGB is 255,0,0", &display);
 /// ```
-
 #[proc_macro_derive(EnumProperty, attributes(strum))]
 pub fn enum_properties(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(input as DeriveInput);
@@ -832,8 +852,9 @@ pub fn enum_properties(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 /// `MyEnumDiscriminants`.
 ///
 /// By default, the generated enum has the following derives: `Clone, Copy, Debug, PartialEq, Eq`.
-/// You can add additional derives using the `#[strum_discriminants(derive(AdditionalDerive))]`
-/// attribute.
+/// If your enum derives `Default` and has a `#[default]` variant, that will also be copied onto
+/// the discriminant enum. You can add additional derives using the
+/// `#[strum_discriminants(derive(AdditionalDerive))]` attribute.
 ///
 /// Note, the variant attributes passed to the discriminant enum are filtered to avoid compilation
 /// errors due to the derives mismatches, thus only `#[doc]`, `#[cfg]`, `#[allow]`, and `#[deny]`
@@ -853,6 +874,7 @@ pub fn enum_properties(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 /// # #[allow(dead_code)]
 /// #[derive(Debug, EnumDiscriminants)]
 /// #[strum_discriminants(derive(EnumString, EnumMessage))]
+/// #[strum_discriminants(doc = "This is the docstring on the generated type.")]
 /// enum MyEnum {
 ///     #[strum_discriminants(strum(message = "Variant zero"))]
 ///     Variant0(NonDefault),

@@ -1,0 +1,919 @@
+//! Import source graphs and their external weights into [`GraphInfo`].
+//!
+#![doc = include_str!("../docs/reference/graph-files.md")]
+
+use regex::Regex;
+use std::fs;
+use std::path::Path;
+use std::sync::OnceLock;
+
+use webnn_graph::external_weights::WeightResolveError;
+
+use crate::error::GraphError;
+use crate::graph::GraphInfo;
+use crate::webnn_json;
+
+/// Sanitize WebNN text format identifiers by replacing dots and colons with underscores.
+///
+/// This function preprocesses WebNN text format to ensure all identifiers follow
+/// valid Rust naming conventions (alphanumeric + underscores only). It handles:
+/// - Variable declarations: `embeddings.LayerNorm.bias:` -> `embeddings_LayerNorm_bias:`
+/// - Operand references: `%embeddings.LayerNorm.bias` -> `%embeddings_LayerNorm_bias`
+/// - Namespace separators: `onnx::MatMul_0` -> `onnx__MatMul_0`
+///
+/// This allows models exported from tools like onnx2webnn to be loaded without
+/// manual identifier sanitization.
+pub fn sanitize_webnn_identifiers(text: &str) -> String {
+    static PATTERNS: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
+
+    let (decl_re, operand_re, bare_id_re) = PATTERNS.get_or_init(|| {
+        (
+            // Match identifier declarations: `name.with.dots:` -> `name_with_dots:`
+            Regex::new(r"([a-zA-Z_][a-zA-Z0-9_.]*\.[a-zA-Z0-9_.]+):").unwrap(),
+            // Match operand references: `%name.with.dots` -> `%name_with_dots`
+            Regex::new(r"%([a-zA-Z_][a-zA-Z0-9_.]*)").unwrap(),
+            // Match bare identifiers in operations (but not in strings or declarations)
+            // Matches identifiers that contain dots in contexts like function arguments
+            Regex::new(r"([,(=])\s*([a-zA-Z_][a-zA-Z0-9_.]*\.[a-zA-Z0-9_.]+)(\s*[,)])").unwrap(),
+        )
+    });
+
+    let mut result = text.to_string();
+
+    // First, replace :: with __ (namespace separators like onnx::MatMul)
+    result = result.replace("::", "__");
+
+    // Replace dots in identifier declarations
+    result = decl_re
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("{}:", caps[1].replace('.', "_"))
+        })
+        .to_string();
+
+    // Replace dots in operand references
+    result = operand_re
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("%{}", caps[1].replace('.', "_"))
+        })
+        .to_string();
+
+    // Replace dots in bare identifiers (operation arguments)
+    result = bare_id_re
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("{}{}{}", &caps[1], caps[2].replace('.', "_"), &caps[3])
+        })
+        .to_string();
+
+    result
+}
+
+fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
+    match err {
+        WeightResolveError::ReadFile { path, source } => GraphError::io(path, source),
+        WeightResolveError::ManifestJson { path, source } => GraphError::ConversionFailed {
+            format: "manifest-weights".to_string(),
+            reason: format!("`{}`: {source}", path.display()),
+        },
+        WeightResolveError::Safetensors(msg) => GraphError::ConversionFailed {
+            format: "safetensors".to_string(),
+            reason: msg,
+        },
+        WeightResolveError::Manifest(msg) => GraphError::ConversionFailed {
+            format: "manifest-weights".to_string(),
+            reason: msg,
+        },
+        WeightResolveError::Missing(msg) => GraphError::ConversionFailed {
+            format: "weights".to_string(),
+            reason: msg,
+        },
+    }
+}
+
+/// Load a graph from a webnn-graph file (.webnn text or .json)
+///
+/// Supports two formats:
+/// - `.webnn` - Text DSL parsed into the shared `GraphJson` representation
+/// - `.json` - Direct JSON format (webnn-graph-json)
+///
+/// External constants are resolved once through [`webnn_graph::resolve_external_weights`], which
+/// handles both ordinary and packed-4-bit SafeTensors tensors as well as manifest-backed weights.
+/// The graph recorder validates operations and infers shapes. The returned graph owns the resolved
+/// weights; loading neither compiles a backend graph nor compares numerical outputs. Use
+/// [`crate::mlcontext::MLContext::rustnn_build_graph`] to compile it for execution.
+#[tracing::instrument(
+    name = "load_graph",
+    skip_all,
+    err,
+    level = "info",
+    fields(
+        path = %path.as_ref().display(),
+        format = %graph_format(path.as_ref()),
+    )
+)]
+pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphError> {
+    let path_ref = path.as_ref();
+    let contents = fs::read_to_string(path_ref).map_err(|err| GraphError::io(path_ref, err))?;
+
+    // Determine format based on file extension
+    let mut graph_json = if let Some(ext) = path_ref.extension() {
+        match ext.to_str() {
+            Some("webnn") => {
+                // Sanitize identifiers (replace dots with underscores)
+                let sanitized = sanitize_webnn_identifiers(&contents);
+                // Parse .webnn text format
+                webnn_graph::parser::parse_wg_text(&sanitized).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "webnn-text".to_string(),
+                        reason: format!("Failed to parse .webnn file: {}", e),
+                    }
+                })?
+            }
+            Some("json") => {
+                // Parse JSON format
+                serde_json::from_str(&contents)?
+            }
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "unknown".to_string(),
+                    reason: format!("Unsupported file extension: {:?}. Use .webnn or .json", ext),
+                });
+            }
+        }
+    } else {
+        return Err(GraphError::ConversionFailed {
+            format: "unknown".to_string(),
+            reason: "No file extension found. Use .webnn or .json".to_string(),
+        });
+    };
+
+    webnn_graph::external_weights::resolve_external_weights(&mut graph_json, path_ref, None, None)
+        .map_err(map_weight_resolve_error)?;
+
+    let graph = webnn_json::from_graph_json_owned(graph_json)?;
+    tracing::info!(
+        operands = graph.operands.len(),
+        operations = graph.operations.len()
+    );
+    Ok(graph)
+}
+
+/// The format `load_graph_from_path` parses a path as, from its extension.
+fn graph_format(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("webnn") => "webnn",
+        Some("json") => "json",
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use safetensors::tensor::TensorView;
+    use safetensors::{Dtype, serialize};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_safetensors_f32(
+        path: &std::path::Path,
+        tensor_name: &str,
+        shape: Vec<usize>,
+        data: &[u8],
+    ) {
+        let view = TensorView::new(Dtype::F32, shape, data).unwrap();
+        let bytes = serialize(vec![(tensor_name.to_string(), view)], None).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn test_sanitize_namespace_separators() {
+        let input = "onnx::MatMul_0";
+        let output = sanitize_webnn_identifiers(input);
+        assert_eq!(output, "onnx__MatMul_0");
+    }
+
+    #[test]
+    fn test_sanitize_identifier_declarations() {
+        let input = "embeddings.LayerNorm.bias:";
+        let output = sanitize_webnn_identifiers(input);
+        assert_eq!(output, "embeddings_LayerNorm_bias:");
+    }
+
+    #[test]
+    fn test_keep_weight_references_unchanged() {
+        let input = r#"@weights("embeddings.LayerNorm.bias")"#;
+        let output = sanitize_webnn_identifiers(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_sanitize_operand_references() {
+        let input = "%embeddings.LayerNorm.bias";
+        let output = sanitize_webnn_identifiers(input);
+        assert_eq!(output, "%embeddings_LayerNorm_bias");
+    }
+
+    #[test]
+    fn test_sanitize_bare_identifiers() {
+        // The regex pattern matches identifiers in specific contexts (after comma, equals, etc.)
+        // This test shows what currently gets matched
+        let input = "add(x.weight, y.bias)";
+        let output = sanitize_webnn_identifiers(input);
+        // Currently only matches after comma with whitespace: ", y.bias"
+        assert!(output.contains("x_weight"));
+        // The pattern doesn't catch all cases, but that's acceptable for the sanitizer
+    }
+
+    #[test]
+    fn test_sanitize_complex_example() {
+        let input = r#"
+        onnx::input.tensor:
+            %result = matmul(%onnx::input.tensor, @weights("model.weight.0"))
+        "#;
+        let output = sanitize_webnn_identifiers(input);
+
+        assert!(output.contains("onnx__input_tensor:"));
+        assert!(output.contains("%result = matmul(%onnx__input_tensor"));
+        assert!(output.contains(r#"@weights("model.weight.0")"#));
+    }
+
+    #[test]
+    fn test_sanitize_preserves_strings() {
+        // Dots inside quoted strings should be preserved in some contexts
+        let input = r#"const x: f32 = 1.5"#;
+        let output = sanitize_webnn_identifiers(input);
+        // Numeric literals should be preserved
+        assert!(output.contains("1.5"));
+    }
+
+    #[test]
+    fn test_load_json_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let json_path = temp_dir.path().join("test_graph.json");
+
+        // Create a minimal valid webnn-graph-json format
+        let json_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": {
+                    "dataType": "float32",
+                    "shape": [1, 3, 224, 224]
+                }
+            },
+            "consts": {},
+            "nodes": [
+                {
+                    "id": "relu_0",
+                    "op": "relu",
+                    "inputs": ["x"],
+                    "options": {},
+                    "outputs": ["y"]
+                }
+            ],
+            "outputs": {
+                "y": "y"
+            }
+        }"#;
+
+        fs::write(&json_path, json_content).unwrap();
+
+        // Load the graph
+        let graph = load_graph_from_path(&json_path).expect("Failed to load JSON graph");
+        assert!(graph.operands.len() >= 2); // At least input and output
+        assert_eq!(graph.input_operands.len(), 1);
+        assert_eq!(graph.output_operands.len(), 1);
+    }
+
+    #[test]
+    fn test_load_file_without_extension() {
+        let temp_dir = TempDir::new().unwrap();
+        let no_ext_path = temp_dir.path().join("test_graph");
+
+        fs::write(&no_ext_path, "{}").unwrap();
+
+        let result = load_graph_from_path(&no_ext_path);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match err {
+            GraphError::ConversionFailed { reason, .. } => {
+                assert!(reason.contains("No file extension"));
+            }
+            _ => panic!("Expected ConversionFailed error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_load_file_with_unsupported_extension() {
+        let temp_dir = TempDir::new().unwrap();
+        let bad_ext_path = temp_dir.path().join("test_graph.txt");
+
+        fs::write(&bad_ext_path, "{}").unwrap();
+
+        let result = load_graph_from_path(&bad_ext_path);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match err {
+            GraphError::ConversionFailed { reason, .. } => {
+                assert!(reason.contains("Unsupported file extension"));
+            }
+            _ => panic!("Expected ConversionFailed error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = load_graph_from_path("/nonexistent/path/to/graph.json");
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match err {
+            GraphError::Io { .. } => {
+                // Expected IO error
+            }
+            _ => panic!("Expected Io error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_load_invalid_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let json_path = temp_dir.path().join("invalid.json");
+
+        fs::write(&json_path, "{ invalid json ").unwrap();
+
+        let result = load_graph_from_path(&json_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_webnn_text_format() {
+        let temp_dir = TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("test.webnn");
+
+        // Create a simple WebNN text format file
+        let webnn_content = r#"
+        graph test (
+            %input: f32[1,3,224,224]
+        ) -> (
+            %output: f32[1,1000]
+        ) {
+            %output = relu(%input)
+        }
+        "#;
+
+        fs::write(&webnn_path, webnn_content).unwrap();
+
+        // Load the graph
+        let result = load_graph_from_path(&webnn_path);
+
+        // This should either succeed or fail with a specific parsing error
+        // (depending on whether the simple format is fully supported)
+        match result {
+            Ok(graph) => {
+                assert!(graph.operands.len() >= 2); // At least input and output
+            }
+            Err(GraphError::ConversionFailed { format, reason }) => {
+                assert_eq!(format, "webnn-text");
+                // Parsing error is acceptable for this test
+                assert!(reason.contains("parse"));
+            }
+            Err(e) => {
+                // Other errors are acceptable for complex webnn parsing
+                eprintln!("WebNN parsing error (acceptable): {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sanitize_multiple_patterns_in_one_line() {
+        let input = "onnx::node.name: %output = add(%input.x, @weights(\"weight.bias\"))";
+        let output = sanitize_webnn_identifiers(input);
+
+        assert!(output.contains("onnx__node_name:"));
+        assert!(output.contains("%output = add(%input_x"));
+        assert!(output.contains(r#"@weights("weight.bias")"#));
+    }
+
+    #[test]
+    fn test_sanitize_preserves_alphanumeric_underscores() {
+        let input = "valid_identifier_123: %x = relu(%input_0)";
+        let output = sanitize_webnn_identifiers(input);
+        // Should remain unchanged
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_load_with_manifest_and_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("model.manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+
+        // Create a minimal graph JSON with weight reference
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": {
+                    "dataType": "float32",
+                    "shape": [2]
+                }
+            },
+            "consts": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "weight" }
+                }
+            },
+            "nodes": [
+                {
+                    "id": "add_0",
+                    "op": "add",
+                    "inputs": ["x", "weight"],
+                    "options": {},
+                    "outputs": ["y"]
+                }
+            ],
+            "outputs": {
+                "y": "y"
+            }
+        }"#;
+
+        // Create manifest with tensor metadata
+        let manifest_content = r#"{
+            "format": "webnn-weights-manifest",
+            "version": 1,
+            "endianness": "little",
+            "tensors": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "byteOffset": 0,
+                    "byteLength": 8
+                }
+            }
+        }"#;
+
+        // Create weights file with 2 float32 values (8 bytes total)
+        let weights_data: Vec<u8> = vec![
+            0x00, 0x00, 0x80, 0x3f, // 1.0f
+            0x00, 0x00, 0x00, 0x40, // 2.0f
+        ];
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, manifest_content).unwrap();
+        fs::write(&weights_path, &weights_data).unwrap();
+
+        // Load the graph - weights should be inlined automatically
+        // The weight constant should have inline bytes instead of a reference
+        let graph = load_graph_from_path(&graph_path).expect("Failed to load graph");
+        assert!(!graph.constant_operand_ids_to_handles.is_empty());
+    }
+
+    #[test]
+    fn test_load_with_sanitized_weight_names() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+
+        // Graph uses sanitized name (underscores)
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": {
+                    "dataType": "float32",
+                    "shape": [2]
+                }
+            },
+            "consts": {
+                "model_weight_0": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "model_weight_0" }
+                }
+            },
+            "nodes": [
+                {
+                    "id": "add_0",
+                    "op": "add",
+                    "inputs": ["x", "model_weight_0"],
+                    "options": {},
+                    "outputs": ["y"]
+                }
+            ],
+            "outputs": {
+                "y": "y"
+            }
+        }"#;
+
+        // Manifest uses original dotted name
+        let manifest_content = r#"{
+            "format": "webnn-weights-manifest",
+            "version": 1,
+            "tensors": {
+                "model.weight.0": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "byteOffset": 0,
+                    "byteLength": 8
+                }
+            }
+        }"#;
+
+        let weights_data: Vec<u8> = vec![0u8; 8];
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, manifest_content).unwrap();
+        fs::write(&weights_path, &weights_data).unwrap();
+
+        // Should successfully match sanitized name to dotted manifest name
+        load_graph_from_path(&graph_path).expect("Failed to load graph");
+    }
+
+    #[test]
+    fn test_load_without_manifest_falls_back() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+
+        // No external weight refs; no sidecar files required
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": {
+                    "dataType": "float32",
+                    "shape": [2]
+                }
+            },
+            "consts": {},
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": {
+                "y": "y"
+            }
+        }"#;
+
+        fs::write(&graph_path, graph_content).unwrap();
+
+        // Should succeed even without manifest/weights
+        let result = load_graph_from_path(&graph_path);
+        result.unwrap();
+    }
+
+    #[test]
+    fn test_load_with_invalid_manifest_falls_back() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {},
+            "consts": {},
+            "nodes": [],
+            "outputs": {}
+        }"#;
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, "{ invalid json }").unwrap();
+        fs::write(&weights_path, [0u8; 8]).unwrap();
+
+        // Should succeed by falling back to non-inlined weights
+        let result = load_graph_from_path(&graph_path);
+        result.unwrap();
+    }
+
+    #[test]
+    fn test_load_with_weights_out_of_bounds() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": {
+                    "dataType": "float32",
+                    "shape": [2]
+                }
+            },
+            "consts": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "weight" }
+                }
+            },
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": {
+                "y": "y"
+            }
+        }"#;
+
+        // Manifest specifies byte range beyond weights file size
+        let manifest_content = r#"{
+            "format": "webnn-weights-manifest",
+            "version": 1,
+            "tensors": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "byteOffset": 0,
+                    "byteLength": 100
+                }
+            }
+        }"#;
+
+        let weights_data: Vec<u8> = vec![0u8; 8]; // Only 8 bytes
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, manifest_content).unwrap();
+        fs::write(&weights_path, &weights_data).unwrap();
+
+        // Should succeed but skip the out-of-bounds weight inlining
+        let result = load_graph_from_path(&graph_path);
+        assert!(
+            matches!(result, Err(GraphError::ConversionFailed { ref format, .. }) if format == "manifest-weights"),
+            "expected manifest-weights error, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_load_external_weights_missing_sidecars_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": { "dataType": "float32", "shape": [2] }
+            },
+            "consts": {
+                "w": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "w" }
+                }
+            },
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
+        }"#;
+        fs::write(&graph_path, graph_content).unwrap();
+        let result = load_graph_from_path(&graph_path);
+        assert!(
+            matches!(result, Err(GraphError::ConversionFailed { ref format, .. }) if format == "weights"),
+            "expected weights error, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_load_with_safetensors() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let st_path = temp_dir.path().join("model.safetensors");
+
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": { "dataType": "float32", "shape": [2] }
+            },
+            "consts": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "weight" }
+                }
+            },
+            "nodes": [
+                {
+                    "id": "add_0",
+                    "op": "add",
+                    "inputs": ["x", "weight"],
+                    "options": {},
+                    "outputs": ["y"]
+                }
+            ],
+            "outputs": { "y": "y" }
+        }"#;
+
+        let tensor_bytes: Vec<u8> = vec![0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40];
+        fs::write(&graph_path, graph_content).unwrap();
+        write_safetensors_f32(&st_path, "weight", vec![2], &tensor_bytes);
+
+        let graph = load_graph_from_path(&graph_path).expect("load");
+        assert!(!graph.constant_operand_ids_to_handles.is_empty());
+    }
+
+    #[test]
+    fn test_load_safetensors_sanitized_tensor_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let st_path = temp_dir.path().join("model.safetensors");
+
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": { "dataType": "float32", "shape": [2] }
+            },
+            "consts": {
+                "onnx__weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "onnx__weight" }
+                }
+            },
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
+        }"#;
+
+        let tensor_bytes: Vec<u8> = vec![0u8; 8];
+        fs::write(&graph_path, graph_content).unwrap();
+        write_safetensors_f32(&st_path, "onnx::weight", vec![2], &tensor_bytes);
+
+        load_graph_from_path(&graph_path).expect("load");
+    }
+
+    #[test]
+    fn test_safetensors_preferred_over_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+        let st_path = temp_dir.path().join("model.safetensors");
+
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": { "dataType": "float32", "shape": [2] }
+            },
+            "consts": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "weight" }
+                }
+            },
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
+        }"#;
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, "{ not valid manifest json").unwrap();
+        fs::write(&weights_path, [0u8; 8]).unwrap();
+        write_safetensors_f32(
+            &st_path,
+            "weight",
+            vec![2],
+            &[0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40],
+        );
+
+        load_graph_from_path(&graph_path).expect("safetensors should win");
+    }
+
+    #[test]
+    fn test_load_with_invalid_manifest_errors_when_weights_required() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": { "dataType": "float32", "shape": [2] }
+            },
+            "consts": {
+                "weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "weight" }
+                }
+            },
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
+        }"#;
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, "{ invalid json }").unwrap();
+        fs::write(&weights_path, [0u8; 8]).unwrap();
+
+        let result = load_graph_from_path(&graph_path);
+        assert!(
+            matches!(result, Err(GraphError::ConversionFailed { ref format, .. }) if format == "manifest-weights"),
+            "expected manifest parse error, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_load_with_namespace_separator_in_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        let graph_path = temp_dir.path().join("model.json");
+        let manifest_path = temp_dir.path().join("manifest.json");
+        let weights_path = temp_dir.path().join("model.weights");
+
+        // Graph uses sanitized namespace separator
+        let graph_content = r#"{
+            "format": "webnn-graph-json",
+            "version": 1,
+            "inputs": {
+                "x": {
+                    "dataType": "float32",
+                    "shape": [2]
+                }
+            },
+            "consts": {
+                "onnx__weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "init": { "kind": "weights", "ref": "onnx__weight" }
+                }
+            },
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": {
+                "y": "y"
+            }
+        }"#;
+
+        // Manifest uses original namespace separator
+        let manifest_content = r#"{
+            "format": "webnn-weights-manifest",
+            "version": 1,
+            "tensors": {
+                "onnx::weight": {
+                    "dataType": "float32",
+                    "shape": [2],
+                    "byteOffset": 0,
+                    "byteLength": 8
+                }
+            }
+        }"#;
+
+        let weights_data: Vec<u8> = vec![0u8; 8];
+
+        fs::write(&graph_path, graph_content).unwrap();
+        fs::write(&manifest_path, manifest_content).unwrap();
+        fs::write(&weights_path, &weights_data).unwrap();
+
+        // Should match namespace separator (:: -> __)
+        let result = load_graph_from_path(&graph_path);
+        result.unwrap();
+    }
+}

@@ -1,4 +1,3 @@
-use proc_macro2::TokenStream;
 use syn::{
     parenthesized,
     parse::{Parse, ParseStream},
@@ -19,6 +18,7 @@ pub mod kw {
     custom_keyword!(const_into_str);
     custom_keyword!(use_phf);
     custom_keyword!(prefix);
+    custom_keyword!(suffix);
     custom_keyword!(parse_err_ty);
     custom_keyword!(parse_err_fn);
 
@@ -26,6 +26,7 @@ pub mod kw {
     custom_keyword!(derive);
     custom_keyword!(name);
     custom_keyword!(vis);
+    custom_keyword!(doc);
 
     // variant metadata
     custom_keyword!(message);
@@ -54,6 +55,10 @@ pub enum EnumMeta {
     Prefix {
         kw: kw::prefix,
         prefix: LitStr,
+    },
+    Suffix {
+        kw: kw::suffix,
+        suffix: LitStr,
     },
     ParseErrTy {
         kw: kw::parse_err_ty,
@@ -93,6 +98,11 @@ impl Parse for EnumMeta {
             input.parse::<Token![=]>()?;
             let prefix = input.parse()?;
             Ok(EnumMeta::Prefix { kw, prefix })
+        } else if lookahead.peek(kw::suffix) {
+            let kw = input.parse::<kw::suffix>()?;
+            input.parse::<Token![=]>()?;
+            let suffix = input.parse()?;
+            Ok(EnumMeta::Suffix { kw, suffix })
         } else if lookahead.peek(kw::parse_err_ty) {
             let kw = input.parse::<kw::parse_err_ty>()?;
             input.parse::<Token![=]>()?;
@@ -115,7 +125,7 @@ pub enum EnumDiscriminantsMeta {
     Derive { _kw: kw::derive, paths: Vec<Path> },
     Name { kw: kw::name, name: Ident },
     Vis { kw: kw::vis, vis: Visibility },
-    Other { path: Path, nested: TokenStream },
+    Other { passthrough_meta: Meta },
 }
 
 impl Parse for EnumDiscriminantsMeta {
@@ -142,11 +152,8 @@ impl Parse for EnumDiscriminantsMeta {
             let vis = content.parse()?;
             Ok(EnumDiscriminantsMeta::Vis { kw, vis })
         } else {
-            let path = input.parse()?;
-            let content;
-            parenthesized!(content in input);
-            let nested = content.parse()?;
-            Ok(EnumDiscriminantsMeta::Other { path, nested })
+            let passthrough_meta = input.parse()?;
+            Ok(EnumDiscriminantsMeta::Other { passthrough_meta })
         }
     }
 }

@@ -1,0 +1,390 @@
+//! Converters from [`GraphInfo`] to backend-specific model formats.
+//!
+//! Each backend in [`crate::backends`] converts the graph with the matching converter when
+//! a graph is built: ONNX protobuf (`OnnxConverter`), CoreML MLProgram
+//! ([`CoremlMlProgramConverter`]), a native TensorRT network (`TrtxConverter`), a TFLite
+//! flatbuffer (`LiteRtConverter`) or a CANN offline model (`CannConverter`). The
+//! [`ConverterRegistry`] exposes the same converters by format name for the CLI and for the
+//! legacy pipeline that pairs them with [`crate::executors`].
+//!
+#![doc = include_str!("../../docs/development/converters.md")]
+
+use std::collections::HashMap;
+
+use crate::error::GraphError;
+use crate::graph::GraphInfo;
+
+mod coreml_mlprogram;
+#[cfg(feature = "litert-runtime")]
+pub mod litert;
+#[cfg(feature = "onnx")]
+pub mod onnx;
+#[cfg(any(
+    feature = "onnx",
+    feature = "trtx-runtime-mock",
+    feature = "trtx-runtime"
+))]
+mod pool2d_shared;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+mod trtx;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+mod trtx_gru;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+mod trtx_lstm;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+mod trtx_rnn;
+/// Replays a graph through the browser WebNN API (`wasm32` only).
+#[cfg(feature = "webnn-runtime")]
+#[allow(missing_docs)]
+pub mod webnn;
+mod weight_file_builder;
+
+pub use coreml_mlprogram::CoremlMlProgramConverter;
+#[cfg(feature = "litert-runtime")]
+pub use litert::LiteRtConverter;
+#[cfg(feature = "onnx")]
+pub use onnx::OnnxConverter;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+pub use trtx::TrtxConverter;
+pub(crate) use weight_file_builder::WeightFileBuilder;
+
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub mod cann;
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub use cann::CannConverter;
+
+/// Filename (relative to the `.onnx` file directory) for ONNX external initializer data produced by the ONNX converter.
+///
+/// When [`ConvertedGraph::weights_data`] is `Some`, write those bytes next to the model using this exact name so
+/// `external_data` `location` entries resolve correctly for ONNX Runtime and other tools.
+pub const ONNX_EXTERNAL_WEIGHTS_FILENAME: &str = "rustnn_external_weights.data";
+
+/// Get operand name for an operand ID, or generate a default name
+///
+/// This is a shared helper used by all converters to ensure consistent
+/// operand naming across different backend formats.
+pub(crate) fn operand_name(graph: &GraphInfo, id: u32) -> String {
+    graph
+        .operand(id)
+        .and_then(|op| op.name.clone())
+        .unwrap_or_else(|| format!("operand_{}", id))
+}
+
+/// Output of a [`GraphConverter`]: the serialized model plus an optional weights sidecar.
+#[derive(Debug, Clone)]
+pub struct ConvertedGraph {
+    /// Format name, for example `"onnx"` or `"coreml"`.
+    pub format: &'static str,
+    /// MIME type of `data`.
+    pub content_type: &'static str,
+    /// The serialized model.
+    pub data: Vec<u8>,
+    /// Optional weight file data for formats that require external weights (e.g., CoreML Float16)
+    pub weights_data: Option<Vec<u8>>,
+}
+
+/// Lowers a [`GraphInfo`] to one backend format.
+pub trait GraphConverter {
+    /// Format name used as the registry key (lower case).
+    fn format(&self) -> &'static str;
+    /// Convert the whole graph; fails on operations or data types the format cannot express.
+    fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError>;
+}
+
+/// Converters by format name; used by the CLI `--convert` option and the legacy pipeline.
+pub struct ConverterRegistry {
+    converters: HashMap<&'static str, Box<dyn GraphConverter + Send + Sync>>,
+}
+
+impl ConverterRegistry {
+    /// Registry with every converter compiled into this build.
+    pub fn with_defaults() -> Self {
+        let mut registry = Self {
+            converters: HashMap::new(),
+        };
+        #[cfg(feature = "onnx")]
+        registry.register(Box::new(OnnxConverter));
+        registry.register(Box::new(CoremlMlProgramConverter));
+        #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+        registry.register(Box::new(TrtxConverter::new()));
+        #[cfg(feature = "litert-runtime")]
+        registry.register(Box::new(LiteRtConverter::new()));
+        #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+        registry.register(Box::new(CannConverter));
+        registry
+    }
+
+    /// Add or replace the converter for its format name.
+    pub fn register(&mut self, converter: Box<dyn GraphConverter + Send + Sync>) {
+        self.converters.insert(converter.format(), converter);
+    }
+
+    /// Sorted format names.
+    pub fn available_formats(&self) -> Vec<&'static str> {
+        let mut keys: Vec<_> = self.converters.keys().copied().collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// Convert `graph` with the converter registered for `format` (case-insensitive).
+    pub fn convert(&self, format: &str, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        let key = format.to_ascii_lowercase();
+        let Some(converter) = self.converters.get(key.as_str()) else {
+            return Err(GraphError::UnknownConverter {
+                requested: format.to_string(),
+                available: self.available_formats(),
+            });
+        };
+        converter.convert(graph)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConverterRegistry, GraphConverter};
+    use crate::error::GraphError;
+    use crate::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind};
+
+    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
+        crate::graph::to_dimension_vector(shape)
+    }
+
+    struct DummyConverter;
+
+    impl GraphConverter for DummyConverter {
+        fn format(&self) -> &'static str {
+            "dummy"
+        }
+
+        fn convert(&self, _graph: &GraphInfo) -> Result<super::ConvertedGraph, GraphError> {
+            Ok(super::ConvertedGraph {
+                format: "dummy",
+                content_type: "application/octet-stream",
+                data: vec![1, 2, 3],
+                weights_data: None,
+            })
+        }
+    }
+
+    #[test]
+    fn converts_via_registry() {
+        let mut registry = ConverterRegistry {
+            converters: Default::default(),
+        };
+        registry.register(Box::new(DummyConverter));
+
+        let graph = GraphInfo {
+            operands: vec![Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[]),
+                    pending_permutation: vec![],
+                },
+                name: Some("x".to_string()),
+            }],
+            input_operands: vec![0],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        let converted = registry.convert("dummy", &graph).unwrap();
+        assert_eq!(converted.format, "dummy");
+        assert_eq!(converted.data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_with_defaults_registers_converters() {
+        let registry = ConverterRegistry::with_defaults();
+        let formats = registry.available_formats();
+
+        #[cfg(feature = "onnx")]
+        assert!(formats.contains(&"onnx"));
+        assert!(formats.contains(&"coreml"));
+    }
+
+    #[test]
+    fn test_available_formats_sorted() {
+        let registry = ConverterRegistry::with_defaults();
+        let formats = registry.available_formats();
+
+        // Verify formats are sorted
+        let mut sorted_formats = formats.clone();
+        sorted_formats.sort_unstable();
+        assert_eq!(formats, sorted_formats);
+    }
+
+    #[test]
+    fn test_convert_unknown_format_returns_error() {
+        let registry = ConverterRegistry::with_defaults();
+        let graph = GraphInfo {
+            operands: vec![],
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        let result = registry.convert("unknown_format", &graph);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            GraphError::UnknownConverter {
+                requested,
+                available,
+            } => {
+                assert_eq!(requested, "unknown_format");
+                assert!(!available.is_empty());
+            }
+            _ => panic!("Expected UnknownConverter error"),
+        }
+    }
+
+    #[test]
+    fn test_convert_case_insensitive() {
+        let mut registry = ConverterRegistry {
+            converters: Default::default(),
+        };
+        registry.register(Box::new(DummyConverter));
+
+        let graph = GraphInfo {
+            operands: vec![],
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        // Should work with different cases
+        registry.convert("dummy", &graph).unwrap();
+        registry.convert("DUMMY", &graph).unwrap();
+        registry.convert("Dummy", &graph).unwrap();
+    }
+
+    #[test]
+    fn test_operand_name_with_named_operand() {
+        let graph = GraphInfo {
+            operands: vec![Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[1, 2]),
+                    pending_permutation: vec![],
+                },
+                name: Some("input_tensor".to_string()),
+            }],
+            input_operands: vec![0],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        let name = super::operand_name(&graph, 0);
+        assert_eq!(name, "input_tensor");
+    }
+
+    #[test]
+    fn test_operand_name_with_unnamed_operand() {
+        let graph = GraphInfo {
+            operands: vec![Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[1, 2]),
+                    pending_permutation: vec![],
+                },
+                name: None,
+            }],
+            input_operands: vec![0],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        let name = super::operand_name(&graph, 0);
+        assert_eq!(name, "operand_0");
+    }
+
+    #[test]
+    fn test_operand_name_invalid_id() {
+        let graph = GraphInfo {
+            operands: vec![],
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        let name = super::operand_name(&graph, 999);
+        assert_eq!(name, "operand_999");
+    }
+
+    struct DummyConverterWithWeights;
+
+    impl GraphConverter for DummyConverterWithWeights {
+        fn format(&self) -> &'static str {
+            "dummy_with_weights"
+        }
+
+        fn convert(&self, _graph: &GraphInfo) -> Result<super::ConvertedGraph, GraphError> {
+            Ok(super::ConvertedGraph {
+                format: "dummy_with_weights",
+                content_type: "application/octet-stream",
+                data: vec![1, 2, 3],
+                weights_data: Some(vec![4, 5, 6, 7, 8]),
+            })
+        }
+    }
+
+    #[test]
+    fn test_converted_graph_with_weights() {
+        let mut registry = ConverterRegistry {
+            converters: Default::default(),
+        };
+        registry.register(Box::new(DummyConverterWithWeights));
+
+        let graph = GraphInfo {
+            operands: vec![],
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+
+        let converted = registry.convert("dummy_with_weights", &graph).unwrap();
+        assert_eq!(converted.format, "dummy_with_weights");
+        assert_eq!(converted.data, vec![1, 2, 3]);
+        assert_eq!(converted.weights_data, Some(vec![4, 5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn test_converted_graph_clone() {
+        let original = super::ConvertedGraph {
+            format: "test",
+            content_type: "application/octet-stream",
+            data: vec![1, 2, 3],
+            weights_data: Some(vec![4, 5]),
+        };
+
+        let cloned = original.clone();
+        assert_eq!(cloned.format, original.format);
+        assert_eq!(cloned.content_type, original.content_type);
+        assert_eq!(cloned.data, original.data);
+        assert_eq!(cloned.weights_data, original.weights_data);
+    }
+}

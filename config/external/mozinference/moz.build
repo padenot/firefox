@@ -11,3 +11,12 @@ SHARED_LIBRARY_NAME = "mozinference"
 
 # Export only the symbols we need for dynamic linking
 SYMBOLS_FILE = "mozinference.symbols"
+
+if CONFIG["OS_ARCH"] == "Darwin":
+    USE_LIBS += ["webnn_engine"]
+    OS_LIBS += [
+        "-framework CoreML",
+        "-framework Foundation",
+        "c++",
+        "objc",
+    ]
