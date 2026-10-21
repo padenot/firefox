@@ -5,6 +5,7 @@
 
 #include "mozilla/dom/MLGraphBuilder.h"
 
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/dom/MLContext.h"
 #include "mozilla/dom/MLGraph.h"
 #include "mozilla/dom/MLTensor.h"
@@ -314,7 +315,10 @@ already_AddRefed<Promise> MLGraphBuilder::Build(
                             std::move(outputs)),
       std::move(mConstants),
       [promise, context, graphId, inputInfo = std::move(inputInfo),
-       outputInfo = std::move(outputInfo)](const nsCString& aError) mutable {
+       outputInfo = std::move(outputInfo),
+       start = TimeStamp::Now()](const nsCString& aError) mutable {
+        PROFILER_MARKER_TEXT("WebNN:build()", ML_SETUP,
+                             MarkerTiming::IntervalUntilNowFrom(start), aError);
         if (!aError.IsEmpty()) {
           promise->MaybeRejectWithOperationError(aError);
           return;

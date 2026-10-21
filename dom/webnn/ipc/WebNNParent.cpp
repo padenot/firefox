@@ -6,6 +6,7 @@
 #include "mozilla/webnn/WebNNParent.h"
 
 #include "mozilla/Logging.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/webnn/WebNNIPCUtils.h"
 #include "mozilla/webnn/WebNNUtils.h"
 
@@ -220,6 +221,7 @@ mozilla::ipc::IPCResult WebNNParent::RecvCreateContext(
     return IPC_OK();
   }
 
+  AUTO_PROFILER_MARKER_TEXT("WebNN:CreateContext", ML_SETUP, {}, ""_ns);
   WebnnContext* context = nullptr;
   if (Lib()->webnn_context_create(ToFfi(aOptions.powerPreference()),
                                   aOptions.accelerated(),
@@ -280,6 +282,8 @@ mozilla::ipc::IPCResult WebNNParent::RecvWriteTensor(const uint32_t& aTensorId,
   if (!tensor->mWritable || aData.Size() != tensor->mByteLength) {
     return IPC_FAIL(this, "Invalid tensor write");
   }
+  AUTO_PROFILER_MARKER_TEXT("WebNN:WriteTensor", ML_INFERENCE, {},
+                            nsPrintfCString("%zu bytes", aData.Size()));
   if (Lib()->webnn_context_write_tensor(mContext.get(), tensor->mTensor.get(),
                                         aData.Data(),
                                         aData.Size()) != WebnnStatus_Success) {
@@ -302,6 +306,8 @@ mozilla::ipc::IPCResult WebNNParent::RecvReadTensor(
     return IPC_FAIL(this, "Tensor is not readable");
   }
 
+  AUTO_PROFILER_MARKER_TEXT("WebNN:ReadTensor", ML_INFERENCE, {},
+                            nsPrintfCString("%zu bytes", tensor->mByteLength));
   ipc::BigBuffer data(tensor->mByteLength);
   if (Lib()->webnn_context_read_tensor(mContext.get(), tensor->mTensor.get(),
                                        data.Data(),
@@ -329,6 +335,15 @@ mozilla::ipc::IPCResult WebNNParent::RecvBuild(
   if (mGraphs.Contains(aGraphId)) {
     return IPC_FAIL(this, "Duplicate graph id");
   }
+  size_t constantBytes = 0;
+  for (const ipc::BigBuffer& constant : aConstants) {
+    constantBytes += constant.Size();
+  }
+  AUTO_PROFILER_MARKER_TEXT(
+      "WebNN:Build", ML_SETUP, {},
+      nsPrintfCString("%zu operations, %zu constants, %zu bytes",
+                      aGraph.operations().Length(), aConstants.Length(),
+                      constantBytes));
 
   const nsTArray<WebNNOperandDesc>& descs = aGraph.operands();
   // Engine operand id of each operand, once defined.
@@ -408,6 +423,7 @@ mozilla::ipc::IPCResult WebNNParent::RecvBuild(
         WebnnNamedOperand{output.name().get(), *operands[output.operand()]});
   }
 
+  AUTO_PROFILER_MARKER_TEXT("WebNN:Compile", ML_SETUP, {}, ""_ns);
   WebnnGraph* graph = nullptr;
   if (Lib()->webnn_graph_builder_build(builder.get(), outputs.Elements(),
                                        outputs.Length(),
@@ -456,6 +472,8 @@ mozilla::ipc::IPCResult WebNNParent::RecvDispatch(
     return IPC_FAIL(this, "Unknown tensor");
   }
 
+  AUTO_PROFILER_MARKER_TEXT("WebNN:Dispatch", ML_INFERENCE, {},
+                            nsPrintfCString("graph %u", aGraphId));
   if (Lib()->webnn_context_dispatch(
           mContext.get(), graph->get(), inputs.Elements(), inputs.Length(),
           outputs.Elements(), outputs.Length()) != WebnnStatus_Success) {

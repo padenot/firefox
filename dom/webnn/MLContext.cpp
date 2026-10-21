@@ -5,6 +5,7 @@
 
 #include "mozilla/dom/MLContext.h"
 
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/dom/MLGraph.h"
 #include "mozilla/dom/MLTensor.h"
 #include "mozilla/dom/Promise.h"
@@ -54,10 +55,13 @@ void MLContext::Create(nsIGlobalObject* aGlobal,
   }
 
   RefPtr<Promise> promise = aPromise;
+  TimeStamp start = TimeStamp::Now();
   context->mActor->SendCreateContext(
       webnn::WebNNContextOptions(aOptions.mPowerPreference,
                                  aOptions.mAccelerated),
-      [promise, context](const nsCString& aError) {
+      [promise, context, start](const nsCString& aError) {
+        PROFILER_MARKER_TEXT("WebNN:createContext()", ML_SETUP,
+                             MarkerTiming::IntervalUntilNowFrom(start), aError);
         if (!aError.IsEmpty()) {
           context->OnContextLost(aError);
           promise->MaybeRejectWithNotSupportedError(aError);
@@ -161,6 +165,8 @@ void MLContext::Dispatch(
     }
   }
 
+  PROFILER_MARKER_TEXT("WebNN:dispatch()", ML_INFERENCE, {},
+                       nsPrintfCString("graph %u", aGraph.Id()));
   mActor->SendDispatch(aGraph.Id(), inputs, outputs);
 }
 
@@ -259,9 +265,14 @@ already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
   aTensor.AddPendingPromise(promise);
   nsCOMPtr<nsIGlobalObject> global = mGlobal;
   RefPtr<MLTensor> tensor = &aTensor;
+  TimeStamp start = TimeStamp::Now();
   mActor->SendReadTensor(
       aTensor.Id(),
-      [promise, global, tensor](webnn::WebNNReadTensorResult&& aResult) {
+      [promise, global, tensor, start](webnn::WebNNReadTensorResult&& aResult) {
+        PROFILER_MARKER_TEXT(
+            "WebNN:readTensor()", ML_INFERENCE,
+            MarkerTiming::IntervalUntilNowFrom(start),
+            nsPrintfCString("%zu bytes", tensor->ByteLength()));
         if (!tensor->RemovePendingPromise(promise)) {
           return;
         }
@@ -338,6 +349,8 @@ void MLContext::WriteTensor(
     aRv.ThrowTypeError("The data size does not match the tensor");
     return;
   }
+  PROFILER_MARKER_TEXT("WebNN:writeTensor()", ML_INFERENCE, {},
+                       nsPrintfCString("%zu bytes", aTensor.ByteLength()));
   mActor->SendWriteTensor(aTensor.Id(), std::move(*data));
 }
 
