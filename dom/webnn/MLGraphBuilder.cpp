@@ -179,6 +179,12 @@ already_AddRefed<MLOperand> MLGraphBuilder::Constant(
   if (!CheckState(aRv) || !CheckDescriptor(aDescriptor, aRv)) {
     return nullptr;
   }
+  if (aBuffer.IsArrayBufferView() &&
+      !webnn::IsViewTypeCompatible(aBuffer.GetAsArrayBufferView().Type(),
+                                   aDescriptor.mDataType)) {
+    aRv.ThrowTypeError("The buffer view type does not match the data type");
+    return nullptr;
+  }
   size_t byteLength =
       *webnn::ByteLength(aDescriptor.mDataType, aDescriptor.mShape);
 

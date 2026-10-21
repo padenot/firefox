@@ -6,6 +6,7 @@
 #ifndef DOM_WEBNN_WEBNNUTILS_H_
 #define DOM_WEBNN_WEBNNUTILS_H_
 
+#include "js/ScalarType.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Span.h"
@@ -63,6 +64,33 @@ inline Maybe<size_t> ByteLength(dom::MLOperandDataType aType,
     length *= dim;
   }
   return length.isValid() ? Some(length.value()) : Nothing();
+}
+
+// https://webmachinelearning.github.io/webnn/#appendices-mloperanddatatype-arraybufferview-compatibility
+// Uint8Array is always allowed, and Uint16Array emulates Float16Array.
+inline bool IsViewTypeCompatible(JS::Scalar::Type aViewType,
+                                 dom::MLOperandDataType aDataType) {
+  switch (aViewType) {
+    case JS::Scalar::Uint8:
+      return true;
+    case JS::Scalar::Float32:
+      return aDataType == dom::MLOperandDataType::Float32;
+    case JS::Scalar::Float16:
+    case JS::Scalar::Uint16:
+      return aDataType == dom::MLOperandDataType::Float16;
+    case JS::Scalar::BigInt64:
+      return aDataType == dom::MLOperandDataType::Int64;
+    case JS::Scalar::BigUint64:
+      return aDataType == dom::MLOperandDataType::Uint64;
+    case JS::Scalar::Int32:
+      return aDataType == dom::MLOperandDataType::Int32;
+    case JS::Scalar::Uint32:
+      return aDataType == dom::MLOperandDataType::Uint32;
+    case JS::Scalar::Int8:
+      return aDataType == dom::MLOperandDataType::Int8;
+    default:
+      return false;
+  }
 }
 
 }  // namespace mozilla::webnn

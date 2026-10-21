@@ -310,6 +310,12 @@ void MLContext::WriteTensor(
     aRv.ThrowTypeError("The tensor is not writable");
     return;
   }
+  if (aInputData.IsArrayBufferView() &&
+      !webnn::IsViewTypeCompatible(aInputData.GetAsArrayBufferView().Type(),
+                                   aTensor.DataType())) {
+    aRv.ThrowTypeError("The buffer view type does not match the data type");
+    return;
+  }
 
   Maybe<mozilla::ipc::BigBuffer> data;
   ProcessTypedArraysFixed(aInputData, [&](const Span<uint8_t>& aData) {
