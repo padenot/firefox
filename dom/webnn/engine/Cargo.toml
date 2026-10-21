@@ -7,7 +7,7 @@ license = "MPL-2.0"
 [dependencies]
 mozbuild = "0.1"
 mozilla-central-workspace-hack = { version = "0.1", features = ["webnn_engine"], optional = true }
-rustnn = { git = "https://github.com/padenot/rustnn", rev = "2bb2bec3f0652b922f594d2a737fc4ae03b24f50", default-features = false, features = ["coreml-runtime"] }
+rustnn = { git = "https://github.com/padenot/rustnn", rev = "07119a32083b2bb3df70b964962e9a4c6e82a24a", default-features = false, features = ["coreml-runtime"] }
 serde_json = "1"
 
 [lib]

@@ -7581,7 +7581,7 @@ dependencies = [
 [[package]]
 name = "rustnn"
 version = "0.6.0"
-source = "git+https://github.com/padenot/rustnn?rev=2bb2bec3f0652b922f594d2a737fc4ae03b24f50#2bb2bec3f0652b922f594d2a737fc4ae03b24f50"
+source = "git+https://github.com/padenot/rustnn?rev=07119a32083b2bb3df70b964962e9a4c6e82a24a#07119a32083b2bb3df70b964962e9a4c6e82a24a"
 dependencies = [
  "base64 0.23.1",
  "block",
