@@ -50,7 +50,9 @@ void nsStyleChangeList::AppendChange(nsIFrame* aFrame, nsIContent* aContent,
     // after adding a reconstruct. This is ok though, since
     // ProcessRestyledFrames will handle that case via mDestroyedFrames.
 #ifdef DEBUG
-    for (size_t i = 0; i < Length(); ++i) {
+    // This check is quadratic: skip it on large change lists, which can take
+    // minutes in debug builds.
+    for (size_t i = 0; i < Length() && Length() < 1000; ++i) {
       MOZ_ASSERT(aContent != (*this)[i].mContent ||
                      !((*this)[i].mHint & nsChangeHint_ReconstructFrame),
                  "Should not append a non-ReconstructFrame hint after \
