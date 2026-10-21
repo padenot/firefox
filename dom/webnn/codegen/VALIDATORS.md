@@ -51,10 +51,10 @@ Dictionary members are `m` + the IDL name with its first letter uppercased:
 
 `MLNumber` is `unrestricted double`: our bindings have no bigint.
 
-Validators that are not written yet are NotSupportedError stubs in
-`dom/webnn/validation/Unimplemented.cpp`. To implement one, add it to another
-file in `dom/webnn/validation/` (and to `UNIFIED_SOURCES` in
-`dom/webnn/moz.build`), then delete its stub. Shared helpers, such as
+Validators live in `dom/webnn/validation/`, one file per group of operators,
+listed in `UNIFIED_SOURCES` in `dom/webnn/moz.build`. After adding operators to
+`WebNN.webidl`, `./mach python dom/webnn/codegen/webnn_codegen.py --stubs
+<op>...` prints NotSupportedError stubs to start from. Shared helpers, such as
 `BidirectionallyBroadcastShapes` and `CreateOperandDescriptor`, live in
 `dom/webnn/validation/ValidationUtils.h`. Throw with `ThrowOpTypeError`, which
 puts the operator's label in the message.

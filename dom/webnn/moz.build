@@ -58,12 +58,14 @@ UNIFIED_SOURCES += [
     "validation/Activations.cpp",
     "validation/Convolution.cpp",
     "validation/Elementwise.cpp",
+    "validation/Indexing.cpp",
     "validation/Matmul.cpp",
     "validation/Normalization.cpp",
     "validation/Quantization.cpp",
+    "validation/Recurrent.cpp",
     "validation/Reductions.cpp",
     "validation/Resample.cpp",
-    "validation/Unimplemented.cpp",
+    "validation/Shape.cpp",
     "validation/ValidationUtils.cpp",
 ]
 
