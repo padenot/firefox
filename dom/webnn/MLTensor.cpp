@@ -6,11 +6,12 @@
 #include "mozilla/dom/MLTensor.h"
 
 #include "mozilla/dom/MLContext.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/webnn/WebNNChild.h"
 
 namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(MLTensor, mContext)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(MLTensor, mContext, mPendingPromises)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(MLTensor)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(MLTensor)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(MLTensor)
@@ -45,9 +46,20 @@ void MLTensor::Destroy() {
     return;
   }
   mDestroyed = true;
+  for (Promise* promise : std::exchange(mPendingPromises, {})) {
+    promise->MaybeRejectWithInvalidStateError("The tensor is destroyed");
+  }
   if (webnn::WebNNChild* actor = mContext ? mContext->Actor() : nullptr) {
     actor->SendDestroyTensor(mId);
   }
+}
+
+void MLTensor::AddPendingPromise(Promise* aPromise) {
+  mPendingPromises.AppendElement(aPromise);
+}
+
+bool MLTensor::RemovePendingPromise(Promise* aPromise) {
+  return mPendingPromises.RemoveElement(aPromise);
 }
 
 }  // namespace mozilla::dom

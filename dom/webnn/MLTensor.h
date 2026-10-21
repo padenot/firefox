@@ -13,6 +13,7 @@
 namespace mozilla::dom {
 
 class MLContext;
+class Promise;
 
 class MLTensor final : public nsISupports, public nsWrapperCache {
  public:
@@ -40,6 +41,11 @@ class MLTensor final : public nsISupports, public nsWrapperCache {
   const nsTArray<uint32_t>& Shape() const { return mShape; }
   bool IsDestroyed() const { return mDestroyed; }
 
+  // readTensor() promises, rejected by Destroy().
+  void AddPendingPromise(Promise* aPromise);
+  // Returns false if aPromise was not pending (already rejected).
+  bool RemovePendingPromise(Promise* aPromise);
+
  private:
   ~MLTensor();
 
@@ -51,6 +57,7 @@ class MLTensor final : public nsISupports, public nsWrapperCache {
   const bool mReadable;
   const bool mWritable;
   bool mDestroyed = false;
+  nsTArray<RefPtr<Promise>> mPendingPromises;
 };
 
 }  // namespace mozilla::dom

@@ -256,10 +256,15 @@ already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
     return promise.forget();
   }
 
+  aTensor.AddPendingPromise(promise);
   nsCOMPtr<nsIGlobalObject> global = mGlobal;
+  RefPtr<MLTensor> tensor = &aTensor;
   mActor->SendReadTensor(
       aTensor.Id(),
-      [promise, global](webnn::WebNNReadTensorResult&& aResult) {
+      [promise, global, tensor](webnn::WebNNReadTensorResult&& aResult) {
+        if (!tensor->RemovePendingPromise(promise)) {
+          return;
+        }
         if (aResult.type() == webnn::WebNNReadTensorResult::TnsCString) {
           promise->MaybeRejectWithUnknownError(aResult.get_nsCString());
           return;
@@ -279,8 +284,10 @@ already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
         }
         promise->MaybeResolve(buffer);
       },
-      [promise](mozilla::ipc::ResponseRejectReason) {
-        promise->MaybeRejectWithInvalidStateError("The context is lost");
+      [promise, tensor](mozilla::ipc::ResponseRejectReason) {
+        if (tensor->RemovePendingPromise(promise)) {
+          promise->MaybeRejectWithInvalidStateError("The context is lost");
+        }
       });
   return promise.forget();
 }
