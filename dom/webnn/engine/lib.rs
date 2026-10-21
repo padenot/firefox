@@ -96,15 +96,17 @@ pub struct WebnnOperandDescriptor {
 
 #[repr(C)]
 pub struct WebnnNamedOperand {
-    /// Null-terminated UTF-8.
-    pub name: *const c_char,
+    /// UTF-8, not null-terminated: names may contain null characters.
+    pub name: *const u8,
+    pub name_len: usize,
     pub operand: u32,
 }
 
 #[repr(C)]
 pub struct WebnnNamedTensor {
-    /// Null-terminated UTF-8.
-    pub name: *const c_char,
+    /// UTF-8, not null-terminated: names may contain null characters.
+    pub name: *const u8,
+    pub name_len: usize,
     pub tensor: *const WebnnTensor,
 }
 
@@ -170,6 +172,11 @@ unsafe fn input_str<'a>(value: *const c_char) -> Result<&'a str, Error> {
     unsafe { CStr::from_ptr(value) }
         .to_str()
         .map_err(|_| Error::InvalidArgument("invalid UTF-8".to_string()))
+}
+
+unsafe fn input_name<'a>(name: *const u8, len: usize) -> Result<&'a str, Error> {
+    let bytes = unsafe { input_slice(name, len)? };
+    std::str::from_utf8(bytes).map_err(|_| Error::InvalidArgument("invalid UTF-8".to_string()))
 }
 
 unsafe fn descriptor(desc: &WebnnOperandDescriptor) -> Result<MLOperandDescriptor, Error> {
@@ -308,13 +315,14 @@ pub unsafe extern "C" fn webnn_graph_builder_destroy(builder: *mut WebnnGraphBui
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn webnn_graph_builder_input(
     builder: *mut WebnnGraphBuilder,
-    name: *const c_char,
+    name: *const u8,
+    name_len: usize,
     desc: *const WebnnOperandDescriptor,
     operand: *mut u32,
 ) -> WebnnStatus {
     ffi_call(|| {
         let builder = unsafe { &mut *builder };
-        let name = unsafe { input_str(name)? };
+        let name = unsafe { input_name(name, name_len)? };
         let desc = unsafe { descriptor(&*desc)? };
         let created = builder.0.input(name, &desc)?;
         unsafe { *operand = created.rustnn_index() };
@@ -353,7 +361,7 @@ pub unsafe extern "C" fn webnn_graph_builder_build(
         let builder = unsafe { &mut *builder };
         let mut named: MLNamedOperands<'_> = BTreeMap::new();
         for output in unsafe { input_slice(outputs, outputs_len)? } {
-            let name = unsafe { input_str(output.name)? };
+            let name = unsafe { input_name(output.name, output.name_len)? };
             if named.insert(name, MLOperand::from(output.operand)).is_some() {
                 return Err(Error::InvalidArgument(format!("duplicate output name: {name}")));
             }
@@ -375,7 +383,7 @@ unsafe fn named_tensors<'a>(
 ) -> Result<MLNamedTensors<'a>, Error> {
     let mut named: MLNamedTensors<'a> = BTreeMap::new();
     for entry in unsafe { input_slice(tensors, len)? } {
-        let name = unsafe { input_str(entry.name)? };
+        let name = unsafe { input_name(entry.name, entry.name_len)? };
         if entry.tensor.is_null() {
             return Err(Error::InvalidArgument("null tensor".to_string()));
         }

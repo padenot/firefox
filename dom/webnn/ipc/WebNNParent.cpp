@@ -123,6 +123,11 @@ struct GraphBuilderDeleter {
 
 }  // namespace
 
+// Names are passed with their length, as they may contain null characters.
+static const uint8_t* NameBytes(const nsCString& aName) {
+  return reinterpret_cast<const uint8_t*>(aName.BeginReading());
+}
+
 static nsCString LastError() {
   const char* message = Lib()->webnn_last_error_message();
   return message && *message ? nsCString(message) : "Unknown error"_ns;
@@ -390,7 +395,8 @@ mozilla::ipc::IPCResult WebNNParent::RecvBuild(
       }
       WebnnOperandDescriptor descriptor = ToFfi(descs[output]);
       status = Lib()->webnn_graph_builder_input(
-          builder.get(), input.name().get(), &descriptor, &id);
+          builder.get(), NameBytes(input.name()), input.name().Length(),
+          &descriptor, &id);
     } else {
       const WebNNConstantOp& constant = op.get_WebNNConstantOp();
       output = constant.output();
@@ -419,8 +425,9 @@ mozilla::ipc::IPCResult WebNNParent::RecvBuild(
     if (output.operand() >= operands.Length() || !operands[output.operand()]) {
       return IPC_FAIL(this, "Invalid graph output");
     }
-    outputs.AppendElement(
-        WebnnNamedOperand{output.name().get(), *operands[output.operand()]});
+    outputs.AppendElement(WebnnNamedOperand{NameBytes(output.name()),
+                                            output.name().Length(),
+                                            *operands[output.operand()]});
   }
 
   AUTO_PROFILER_MARKER_TEXT("WebNN:Compile", ML_SETUP, {}, ""_ns);
@@ -461,8 +468,9 @@ mozilla::ipc::IPCResult WebNNParent::RecvDispatch(
       if (!tensor) {
         return false;
       }
-      aOut.AppendElement(
-          WebnnNamedTensor{named.name().get(), tensor->mTensor.get()});
+      aOut.AppendElement(WebnnNamedTensor{NameBytes(named.name()),
+                                          named.name().Length(),
+                                          tensor->mTensor.get()});
     }
     return true;
   };
