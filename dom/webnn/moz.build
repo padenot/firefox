@@ -10,7 +10,25 @@ with Files("**"):
 if CONFIG["OS_ARCH"] == "Darwin":
     DIRS += ["engine"]
 
+# The operator plumbing is generated from WebNN.webidl, see codegen/.
+# ipc/WebNNOperations.ipdlh is generated too, but checked in.
+codegen = "codegen/webnn_codegen.py"
+webidl = ["/dom/webidl/WebNN.webidl"]
+generated = {
+    "MLGraphBuilderOps.h": "graph_builder_header",
+    "MLGraphBuilderOps.cpp": "graph_builder_cpp",
+    "WebNNIPCUtils.h": "ipc_enum_traits",
+    "WebNNValidation.h": "validation_header",
+}
+if CONFIG["OS_ARCH"] == "Darwin":
+    generated["WebNNParentOps.cpp"] = "parent_cpp"
+for output, function in generated.items():
+    GENERATED_FILES += [output]
+    GENERATED_FILES[output].script = codegen + ":" + function
+    GENERATED_FILES[output].inputs = webidl
+
 EXPORTS.mozilla.dom += [
+    "!MLGraphBuilderOps.h",
     "ML.h",
     "MLContext.h",
     "MLGraph.h",
@@ -20,9 +38,11 @@ EXPORTS.mozilla.dom += [
 ]
 
 EXPORTS.mozilla.webnn += [
+    "!WebNNIPCUtils.h",
+    "!WebNNValidation.h",
     "ipc/WebNNChild.h",
-    "ipc/WebNNIPCUtils.h",
     "ipc/WebNNParent.h",
+    "ipc/WebNNParentOps.h",
     "WebNNUtils.h",
 ]
 
@@ -35,10 +55,23 @@ UNIFIED_SOURCES += [
     "MLGraphBuilder.cpp",
     "MLOperand.cpp",
     "MLTensor.cpp",
+    "validation/Elementwise.cpp",
+    "validation/Matmul.cpp",
+    "validation/Unimplemented.cpp",
 ]
+
+SOURCES += [
+    "!MLGraphBuilderOps.cpp",
+]
+
+if CONFIG["OS_ARCH"] == "Darwin":
+    SOURCES += [
+        "!WebNNParentOps.cpp",
+    ]
 
 IPDL_SOURCES += [
     "ipc/PWebNN.ipdl",
+    "ipc/WebNNOperations.ipdlh",
     "ipc/WebNNTypes.ipdlh",
 ]
 

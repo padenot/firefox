@@ -14,7 +14,7 @@
 #endif
 
 #ifdef XP_MACOSX
-#  include "mozilla/webnn/rustnn.h"
+#  include "mozilla/webnn/webnn_engine_ops.h"
 #endif
 
 struct PRLibrary;
@@ -54,32 +54,24 @@ namespace mozilla::llama {
 #endif
 
 #ifdef XP_MACOSX
-// rustnn C API, used by WebNN. Format: X(name)
+// WebNN engine C API. Format: X(name)
 #  define MOZINFERENCE_WEBNN_FUNCTION_LIST(X) \
-    X(rustnn_last_error_message)              \
-    X(rustnn_operand_descriptor_create)       \
-    X(rustnn_operand_descriptor_destroy)      \
-    X(rustnn_tensor_descriptor_create)        \
-    X(rustnn_tensor_descriptor_destroy)       \
-    X(rustnn_context_options_default)         \
-    X(rustnn_context_create)                  \
-    X(rustnn_context_destroy)                 \
-    X(rustnn_context_create_tensor)           \
-    X(rustnn_tensor_destroy)                  \
-    X(rustnn_context_write_tensor)            \
-    X(rustnn_context_read_tensor)             \
-    X(rustnn_graph_builder_create)            \
-    X(rustnn_graph_builder_destroy)           \
-    X(rustnn_operand_destroy)                 \
-    X(rustnn_graph_builder_input)             \
-    X(rustnn_graph_builder_constant)          \
-    X(rustnn_graph_builder_add)               \
-    X(rustnn_graph_builder_matmul)            \
-    X(rustnn_graph_builder_relu)              \
-    X(rustnn_graph_builder_build)             \
-    X(rustnn_graph_destroy)                   \
-    X(rustnn_context_dispatch)                \
-    X(rustnn_set_temp_directory)
+    X(webnn_last_error_message)               \
+    X(webnn_set_temp_directory)               \
+    X(webnn_context_create)                   \
+    X(webnn_context_destroy)                  \
+    X(webnn_context_create_tensor)            \
+    X(webnn_tensor_destroy)                   \
+    X(webnn_context_write_tensor)             \
+    X(webnn_context_read_tensor)              \
+    X(webnn_graph_builder_create)             \
+    X(webnn_graph_builder_destroy)            \
+    X(webnn_graph_builder_input)              \
+    X(webnn_graph_builder_constant)           \
+    X(webnn_graph_builder_build)              \
+    X(webnn_graph_destroy)                    \
+    X(webnn_context_dispatch)                 \
+    WEBNN_ENGINE_OP_FUNCTION_LIST(X)
 #else
 #  define MOZINFERENCE_WEBNN_FUNCTION_LIST(X)
 #endif

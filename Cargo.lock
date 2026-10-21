@@ -2238,8 +2238,6 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85cdab6a89accf66733ad5a1693a4dcced6aeff64602b634530dd73c1f3ee9f0"
 dependencies = [
- "humantime",
- "is-terminal",
  "log",
  "regex",
  "termcolor",
@@ -3613,12 +3611,6 @@ name = "hermit-abi"
 version = "0.3.999"
 
 [[package]]
-name = "hermit-abi"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
-
-[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4163,17 +4155,6 @@ name = "ipdl_utils"
 version = "0.1.0"
 dependencies = [
  "bincode",
-]
-
-[[package]]
-name = "is-terminal"
-version = "0.4.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
-dependencies = [
- "hermit-abi 0.5.3",
- "libc",
- "windows-sys",
 ]
 
 [[package]]
@@ -6135,7 +6116,7 @@ version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4161fcb6d602d4d2081af7c3a45852d875a03dd337a6bfdd6e06407b61342a43"
 dependencies = [
- "hermit-abi 0.3.999",
+ "hermit-abi",
  "libc",
 ]
 
@@ -6773,16 +6754,6 @@ name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
-
-[[package]]
-name = "pretty_env_logger"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "865724d4dbe39d9f3dd3b52b88d859d66bcb2d6a0acfd5ea68a65fb66d4bdc1c"
-dependencies = [
- "env_logger",
- "log",
-]
 
 [[package]]
 name = "prio"
@@ -7621,7 +7592,6 @@ dependencies = [
  "half",
  "log",
  "objc",
- "pretty_env_logger",
  "prost 0.12.6",
  "prost-types",
  "regex",
@@ -9631,8 +9601,10 @@ dependencies = [
 name = "webnn_engine"
 version = "0.1.0"
 dependencies = [
+ "mozbuild",
  "mozilla-central-workspace-hack",
  "rustnn",
+ "serde_json",
 ]
 
 [[package]]

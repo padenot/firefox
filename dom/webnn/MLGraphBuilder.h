@@ -13,6 +13,7 @@
 #include "mozilla/dom/WebNNBinding.h"
 #include "mozilla/ipc/BigBuffer.h"
 #include "mozilla/webnn/WebNNTypes.h"
+#include "mozilla/webnn/WebNNValidation.h"
 #include "nsTHashSet.h"
 #include "nsWrapperCache.h"
 
@@ -50,15 +51,14 @@ class MLGraphBuilder final : public nsISupports, public nsWrapperCache {
       const Record<nsString, OwningNonNull<MLOperand>>& aOutputs,
       ErrorResult& aRv);
 
-  already_AddRefed<MLOperand> Add(MLOperand& aA, MLOperand& aB,
-                                  const MLOperatorOptions& aOptions,
-                                  ErrorResult& aRv);
-  already_AddRefed<MLOperand> Matmul(MLOperand& aA, MLOperand& aB,
-                                     const MLOperatorOptions& aOptions,
-                                     ErrorResult& aRv);
-  already_AddRefed<MLOperand> Relu(MLOperand& aInput,
-                                   const MLOperatorOptions& aOptions,
-                                   ErrorResult& aRv);
+  // IPDL operand indices.
+  static Maybe<uint32_t> OptionalIndex(
+      const Optional<OwningNonNull<MLOperand>>& aOperand);
+  static nsTArray<uint32_t> Indices(
+      const Sequence<OwningNonNull<MLOperand>>& aOperands);
+
+  // Operators, generated from WebNN.webidl.
+#include "mozilla/dom/MLGraphBuilderOps.h"
 
  private:
   explicit MLGraphBuilder(MLContext* aContext);
@@ -66,6 +66,14 @@ class MLGraphBuilder final : public nsISupports, public nsWrapperCache {
 
   bool CheckState(ErrorResult& aRv) const;
   bool CheckOperand(const MLOperand& aOperand, ErrorResult& aRv) const;
+  bool CheckOperand(const Optional<OwningNonNull<MLOperand>>& aOperand,
+                    ErrorResult& aRv) const;
+  bool CheckOperands(const Sequence<OwningNonNull<MLOperand>>& aOperands,
+                     ErrorResult& aRv) const;
+  nsTArray<RefPtr<MLOperand>> AddOutputs(
+      nsTArray<webnn::OperandDescriptor>&& aDescriptors);
+  static nsTArray<uint32_t> OutputIndices(
+      const nsTArray<RefPtr<MLOperand>>& aOperands);
   already_AddRefed<MLOperand> AddOperand(MLOperand::Kind aKind,
                                          MLOperandDataType aDataType,
                                          nsTArray<uint32_t>&& aShape);

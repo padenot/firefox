@@ -62,6 +62,49 @@ bool MLGraphBuilder::CheckOperand(const MLOperand& aOperand,
   return true;
 }
 
+bool MLGraphBuilder::CheckOperand(
+    const Optional<OwningNonNull<MLOperand>>& aOperand,
+    ErrorResult& aRv) const {
+  return !aOperand.WasPassed() || CheckOperand(aOperand.Value(), aRv);
+}
+
+bool MLGraphBuilder::CheckOperands(
+    const Sequence<OwningNonNull<MLOperand>>& aOperands,
+    ErrorResult& aRv) const {
+  for (const MLOperand& operand : aOperands) {
+    if (!CheckOperand(operand, aRv)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* static */
+Maybe<uint32_t> MLGraphBuilder::OptionalIndex(
+    const Optional<OwningNonNull<MLOperand>>& aOperand) {
+  return aOperand.WasPassed() ? Some(aOperand.Value().Index()) : Nothing();
+}
+
+/* static */
+nsTArray<uint32_t> MLGraphBuilder::Indices(
+    const Sequence<OwningNonNull<MLOperand>>& aOperands) {
+  nsTArray<uint32_t> indices(aOperands.Length());
+  for (const MLOperand& operand : aOperands) {
+    indices.AppendElement(operand.Index());
+  }
+  return indices;
+}
+
+/* static */
+nsTArray<uint32_t> MLGraphBuilder::OutputIndices(
+    const nsTArray<RefPtr<MLOperand>>& aOperands) {
+  nsTArray<uint32_t> indices(aOperands.Length());
+  for (const RefPtr<MLOperand>& operand : aOperands) {
+    indices.AppendElement(operand->Index());
+  }
+  return indices;
+}
+
 static bool CheckDescriptor(const MLOperandDescriptor& aDescriptor,
                             ErrorResult& aRv) {
   if (aDescriptor.mShape.Length() > kMaxRank) {
@@ -83,24 +126,6 @@ static bool CheckDescriptor(const MLOperandDescriptor& aDescriptor,
   return true;
 }
 
-// Bidirectional broadcasting, as in
-// https://webmachinelearning.github.io/webnn/#biblio-numpy-broadcasting-rule
-static Maybe<nsTArray<uint32_t>> BroadcastShapes(Span<const uint32_t> aA,
-                                                 Span<const uint32_t> aB) {
-  size_t rank = std::max(aA.Length(), aB.Length());
-  nsTArray<uint32_t> result;
-  result.SetLength(rank);
-  for (size_t i = 0; i < rank; i++) {
-    uint32_t a = i < aA.Length() ? aA[aA.Length() - 1 - i] : 1;
-    uint32_t b = i < aB.Length() ? aB[aB.Length() - 1 - i] : 1;
-    if (a != b && a != 1 && b != 1) {
-      return Nothing();
-    }
-    result[rank - 1 - i] = a == 1 ? b : a;
-  }
-  return Some(std::move(result));
-}
-
 already_AddRefed<MLOperand> MLGraphBuilder::AddOperand(
     MLOperand::Kind aKind, MLOperandDataType aDataType,
     nsTArray<uint32_t>&& aShape) {
@@ -108,6 +133,17 @@ already_AddRefed<MLOperand> MLGraphBuilder::AddOperand(
   mOperands.AppendElement(webnn::WebNNOperandDesc(aDataType, aShape.Clone()));
   return do_AddRef(
       new MLOperand(this, index, aKind, aDataType, std::move(aShape)));
+}
+
+nsTArray<RefPtr<MLOperand>> MLGraphBuilder::AddOutputs(
+    nsTArray<webnn::OperandDescriptor>&& aDescriptors) {
+  nsTArray<RefPtr<MLOperand>> outputs(aDescriptors.Length());
+  for (webnn::OperandDescriptor& descriptor : aDescriptors) {
+    outputs.AppendElement(AddOperand(MLOperand::Kind::Output,
+                                     descriptor.mDataType,
+                                     std::move(descriptor.mShape)));
+  }
+  return outputs;
 }
 
 already_AddRefed<MLOperand> MLGraphBuilder::AddConstant(
@@ -225,92 +261,6 @@ already_AddRefed<MLOperand> MLGraphBuilder::Constant(MLTensor& aTensor,
                                                      ErrorResult& aRv) {
   aRv.ThrowNotSupportedError("Constant tensors are not supported yet");
   return nullptr;
-}
-
-already_AddRefed<MLOperand> MLGraphBuilder::Add(
-    MLOperand& aA, MLOperand& aB, const MLOperatorOptions& aOptions,
-    ErrorResult& aRv) {
-  if (!CheckState(aRv) || !CheckOperand(aA, aRv) || !CheckOperand(aB, aRv)) {
-    return nullptr;
-  }
-  if (aA.DataType() != aB.DataType()) {
-    aRv.ThrowTypeError("add: operands must have the same data type");
-    return nullptr;
-  }
-  Maybe<nsTArray<uint32_t>> shape = BroadcastShapes(aA.Shape(), aB.Shape());
-  if (!shape) {
-    aRv.ThrowTypeError("add: shapes are not broadcastable");
-    return nullptr;
-  }
-
-  RefPtr<MLOperand> output =
-      AddOperand(MLOperand::Kind::Output, aA.DataType(), shape.extract());
-  mOperations.AppendElement(
-      webnn::WebNNAddOp(aA.Index(), aB.Index(), output->Index()));
-  return output.forget();
-}
-
-already_AddRefed<MLOperand> MLGraphBuilder::Matmul(
-    MLOperand& aA, MLOperand& aB, const MLOperatorOptions& aOptions,
-    ErrorResult& aRv) {
-  if (!CheckState(aRv) || !CheckOperand(aA, aRv) || !CheckOperand(aB, aRv)) {
-    return nullptr;
-  }
-  if (aA.DataType() != aB.DataType()) {
-    aRv.ThrowTypeError("matmul: operands must have the same data type");
-    return nullptr;
-  }
-  if (aA.DataType() != MLOperandDataType::Float32 &&
-      aA.DataType() != MLOperandDataType::Float16) {
-    aRv.ThrowTypeError("matmul: unsupported data type");
-    return nullptr;
-  }
-  const nsTArray<uint32_t>& a = aA.Shape();
-  const nsTArray<uint32_t>& b = aB.Shape();
-  if (a.Length() < 2 || b.Length() < 2) {
-    aRv.ThrowTypeError("matmul: operands must have a rank of at least 2");
-    return nullptr;
-  }
-  uint32_t m = a[a.Length() - 2];
-  uint32_t k = a[a.Length() - 1];
-  uint32_t n = b[b.Length() - 1];
-  if (k != b[b.Length() - 2]) {
-    aRv.ThrowTypeError("matmul: inner dimensions do not match");
-    return nullptr;
-  }
-  Maybe<nsTArray<uint32_t>> shape =
-      BroadcastShapes(Span(a).To(a.Length() - 2), Span(b).To(b.Length() - 2));
-  if (!shape) {
-    aRv.ThrowTypeError("matmul: batch dimensions are not broadcastable");
-    return nullptr;
-  }
-  shape->AppendElement(m);
-  shape->AppendElement(n);
-
-  RefPtr<MLOperand> output =
-      AddOperand(MLOperand::Kind::Output, aA.DataType(), shape.extract());
-  mOperations.AppendElement(
-      webnn::WebNNMatmulOp(aA.Index(), aB.Index(), output->Index()));
-  return output.forget();
-}
-
-already_AddRefed<MLOperand> MLGraphBuilder::Relu(
-    MLOperand& aInput, const MLOperatorOptions& aOptions, ErrorResult& aRv) {
-  if (!CheckState(aRv) || !CheckOperand(aInput, aRv)) {
-    return nullptr;
-  }
-  if (aInput.DataType() != MLOperandDataType::Float32 &&
-      aInput.DataType() != MLOperandDataType::Float16) {
-    aRv.ThrowTypeError("relu: unsupported data type");
-    return nullptr;
-  }
-
-  RefPtr<MLOperand> output =
-      AddOperand(MLOperand::Kind::Output, aInput.DataType(),
-                 nsTArray<uint32_t>(aInput.Shape().Clone()));
-  mOperations.AppendElement(
-      webnn::WebNNReluOp(aInput.Index(), output->Index()));
-  return output.forget();
 }
 
 already_AddRefed<Promise> MLGraphBuilder::Build(

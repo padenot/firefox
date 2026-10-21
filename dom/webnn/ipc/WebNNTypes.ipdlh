@@ -4,9 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+include WebNNOperations;
+
 [MoveOnly] using class mozilla::ipc::BigBuffer from "mozilla/ipc/BigBuffer.h";
-using mozilla::dom::MLOperandDataType from "mozilla/webnn/WebNNIPCUtils.h";
-using mozilla::dom::MLPowerPreference from "mozilla/webnn/WebNNIPCUtils.h";
 
 namespace mozilla {
 namespace webnn {
@@ -19,42 +19,6 @@ struct WebNNContextOptions {
 struct WebNNOperandDesc {
   MLOperandDataType dataType;
   uint32_t[] shape;
-};
-
-struct WebNNInputOp {
-  nsCString name;
-  uint32_t output;
-};
-
-// `constantIndex` indexes the constant buffers sent alongside the graph.
-struct WebNNConstantOp {
-  uint32_t constantIndex;
-  uint32_t output;
-};
-
-struct WebNNAddOp {
-  uint32_t a;
-  uint32_t b;
-  uint32_t output;
-};
-
-struct WebNNMatmulOp {
-  uint32_t a;
-  uint32_t b;
-  uint32_t output;
-};
-
-struct WebNNReluOp {
-  uint32_t input;
-  uint32_t output;
-};
-
-union WebNNOperation {
-  WebNNInputOp;
-  WebNNConstantOp;
-  WebNNAddOp;
-  WebNNMatmulOp;
-  WebNNReluOp;
 };
 
 struct WebNNNamedOperand {

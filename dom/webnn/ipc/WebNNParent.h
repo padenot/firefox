@@ -12,20 +12,20 @@
 #include "nsTHashMap.h"
 
 #ifdef XP_MACOSX
-#  include "mozilla/webnn/rustnn.h"
+#  include "mozilla/webnn/webnn_engine.h"
 #endif
 
 namespace mozilla::webnn {
 
 #ifdef XP_MACOSX
-struct RustnnContextDeleter {
-  void operator()(RustnnContext* aContext) const;
+struct WebnnContextDeleter {
+  void operator()(WebnnContext* aContext) const;
 };
-struct RustnnTensorDeleter {
-  void operator()(RustnnTensor* aTensor) const;
+struct WebnnTensorDeleter {
+  void operator()(WebnnTensor* aTensor) const;
 };
-struct RustnnGraphDeleter {
-  void operator()(RustnnGraph* aGraph) const;
+struct WebnnGraphDeleter {
+  void operator()(WebnnGraph* aGraph) const;
 };
 #endif
 
@@ -70,7 +70,7 @@ class WebNNParent final : public PWebNNParent {
 
 #ifdef XP_MACOSX
   struct Tensor {
-    mozilla::UniquePtr<RustnnTensor, RustnnTensorDeleter> mTensor;
+    mozilla::UniquePtr<WebnnTensor, WebnnTensorDeleter> mTensor;
     size_t mByteLength;
     bool mReadable;
     bool mWritable;
@@ -78,9 +78,9 @@ class WebNNParent final : public PWebNNParent {
 
   Tensor* GetTensor(uint32_t aTensorId);
 
-  mozilla::UniquePtr<RustnnContext, RustnnContextDeleter> mContext;
+  mozilla::UniquePtr<WebnnContext, WebnnContextDeleter> mContext;
   nsTHashMap<uint32_t, mozilla::UniquePtr<Tensor>> mTensors;
-  nsTHashMap<uint32_t, mozilla::UniquePtr<RustnnGraph, RustnnGraphDeleter>>
+  nsTHashMap<uint32_t, mozilla::UniquePtr<WebnnGraph, WebnnGraphDeleter>>
       mGraphs;
 #endif
 };

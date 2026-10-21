@@ -7,8 +7,17 @@
 RustLibrary("webnn_engine")
 
 if CONFIG["COMPILE_ENVIRONMENT"]:
-    CbindgenHeader("rustnn.h", inputs=["/third_party/rust/rustnn"])
+    CbindgenHeader("webnn_engine.h", inputs=["/dom/webnn/engine"])
+
+    GENERATED_FILES += ["webnn_engine_ops.h", "webnn_ops.rs"]
+    GENERATED_FILES[
+        "webnn_engine_ops.h"
+    ].script = "../codegen/webnn_codegen.py:ffi_header"
+    GENERATED_FILES["webnn_engine_ops.h"].inputs = ["/dom/webidl/WebNN.webidl"]
+    GENERATED_FILES["webnn_ops.rs"].script = "../codegen/webnn_codegen.py:ffi_rust"
+    GENERATED_FILES["webnn_ops.rs"].inputs = ["/dom/webidl/WebNN.webidl"]
 
     EXPORTS.mozilla.webnn += [
-        "!rustnn.h",
+        "!webnn_engine.h",
+        "!webnn_engine_ops.h",
     ]

@@ -9,6 +9,7 @@
 #include "mozilla/CheckedInt.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Span.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/WebNNBinding.h"
 #include "nsTArray.h"
 
@@ -32,10 +33,26 @@ inline size_t ElementSize(dom::MLOperandDataType aType) {
   MOZ_CRASH("Unexpected MLOperandDataType");
 }
 
+template <typename T>
+nsTArray<T> ToArray(const dom::Sequence<T>& aSequence) {
+  nsTArray<T> array;
+  array.AppendElements(aSequence.Elements(), aSequence.Length());
+  return array;
+}
+
+template <typename T>
+Maybe<nsTArray<T>> ToOptionalArray(
+    const dom::Optional<dom::Sequence<T>>& aSequence) {
+  return aSequence.WasPassed() ? Some(ToArray(aSequence.Value())) : Nothing();
+}
+
+template <typename T>
+Maybe<T> ToMaybe(const dom::Optional<T>& aValue) {
+  return aValue.WasPassed() ? Some(aValue.Value()) : Nothing();
+}
+
 inline nsTArray<uint32_t> ToShape(const dom::Sequence<uint32_t>& aShape) {
-  nsTArray<uint32_t> shape;
-  shape.AppendElements(aShape.Elements(), aShape.Length());
-  return shape;
+  return ToArray(aShape);
 }
 
 // Returns Nothing() on overflow.

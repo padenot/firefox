@@ -6,13 +6,14 @@
 #ifndef DOM_WEBNN_MLOPERAND_H_
 #define DOM_WEBNN_MLOPERAND_H_
 
-#include "mozilla/dom/WebNNBinding.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla::dom {
 
 class MLGraphBuilder;
+// Declared in WebNNBinding.h, which includes this file.
+enum class MLOperandDataType : uint8_t;
 
 class MLOperand final : public nsISupports, public nsWrapperCache {
  public:

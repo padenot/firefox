@@ -17,6 +17,7 @@
 #  include <unistd.h>
 
 #  include "mozilla/llama/LlamaRuntimeLinker.h"
+#  include "mozilla/webnn/WebNNParentOps.h"
 #endif
 
 namespace mozilla::webnn {
@@ -99,95 +100,74 @@ static llama::LlamaLibWrapper* Lib() {
   return llama::LlamaRuntimeLinker::Get();
 }
 
-void RustnnContextDeleter::operator()(RustnnContext* aContext) const {
-  Lib()->rustnn_context_destroy(aContext);
+void WebnnContextDeleter::operator()(WebnnContext* aContext) const {
+  Lib()->webnn_context_destroy(aContext);
 }
 
-void RustnnTensorDeleter::operator()(RustnnTensor* aTensor) const {
-  Lib()->rustnn_tensor_destroy(aTensor);
+void WebnnTensorDeleter::operator()(WebnnTensor* aTensor) const {
+  Lib()->webnn_tensor_destroy(aTensor);
 }
 
-void RustnnGraphDeleter::operator()(RustnnGraph* aGraph) const {
-  Lib()->rustnn_graph_destroy(aGraph);
+void WebnnGraphDeleter::operator()(WebnnGraph* aGraph) const {
+  Lib()->webnn_graph_destroy(aGraph);
 }
 
 namespace {
 
-struct OperandDescriptorDeleter {
-  void operator()(RustnnOperandDescriptor* aDescriptor) const {
-    Lib()->rustnn_operand_descriptor_destroy(aDescriptor);
-  }
-};
-
-struct TensorDescriptorDeleter {
-  void operator()(RustnnTensorDescriptor* aDescriptor) const {
-    Lib()->rustnn_tensor_descriptor_destroy(aDescriptor);
-  }
-};
-
-struct OperandDeleter {
-  void operator()(RustnnOperand* aOperand) const {
-    Lib()->rustnn_operand_destroy(aOperand);
-  }
-};
-
 struct GraphBuilderDeleter {
-  void operator()(RustnnGraphBuilder* aBuilder) const {
-    Lib()->rustnn_graph_builder_destroy(aBuilder);
+  void operator()(WebnnGraphBuilder* aBuilder) const {
+    Lib()->webnn_graph_builder_destroy(aBuilder);
   }
 };
 
 }  // namespace
 
 static nsCString LastError() {
-  const char* message = Lib()->rustnn_last_error_message();
+  const char* message = Lib()->webnn_last_error_message();
   return message && *message ? nsCString(message) : "Unknown error"_ns;
 }
 
-static RustnnDataType ToRustnn(dom::MLOperandDataType aType) {
+static WebnnDataType ToFfi(dom::MLOperandDataType aType) {
   switch (aType) {
     case dom::MLOperandDataType::Float32:
-      return RustnnDataType_Float32;
+      return WebnnDataType_Float32;
     case dom::MLOperandDataType::Float16:
-      return RustnnDataType_Float16;
+      return WebnnDataType_Float16;
     case dom::MLOperandDataType::Int32:
-      return RustnnDataType_Int32;
+      return WebnnDataType_Int32;
     case dom::MLOperandDataType::Uint32:
-      return RustnnDataType_Uint32;
+      return WebnnDataType_Uint32;
     case dom::MLOperandDataType::Int64:
-      return RustnnDataType_Int64;
+      return WebnnDataType_Int64;
     case dom::MLOperandDataType::Uint64:
-      return RustnnDataType_Uint64;
+      return WebnnDataType_Uint64;
     case dom::MLOperandDataType::Int8:
-      return RustnnDataType_Int8;
+      return WebnnDataType_Int8;
     case dom::MLOperandDataType::Uint8:
-      return RustnnDataType_Uint8;
+      return WebnnDataType_Uint8;
   }
   MOZ_CRASH("Unexpected MLOperandDataType");
 }
 
-static RustnnPowerPreference ToRustnn(dom::MLPowerPreference aPreference) {
+static WebnnPowerPreference ToFfi(dom::MLPowerPreference aPreference) {
   switch (aPreference) {
     case dom::MLPowerPreference::Default:
-      return RustnnPowerPreference_Default;
+      return WebnnPowerPreference_Default;
     case dom::MLPowerPreference::High_performance:
-      return RustnnPowerPreference_HighPerformance;
+      return WebnnPowerPreference_HighPerformance;
     case dom::MLPowerPreference::Low_power:
-      return RustnnPowerPreference_LowPower;
+      return WebnnPowerPreference_LowPower;
   }
   MOZ_CRASH("Unexpected MLPowerPreference");
 }
 
-static Maybe<size_t> ByteLength(const WebNNOperandDesc& aDesc) {
-  return webnn::ByteLength(aDesc.dataType(), aDesc.shape());
+static WebnnOperandDescriptor ToFfi(const WebNNOperandDesc& aDesc) {
+  return {ToFfi(aDesc.dataType()), aDesc.shape().Elements(),
+          aDesc.shape().Length()};
 }
 
-static nsTArray<uint64_t> Shape(const WebNNOperandDesc& aDesc) {
-  nsTArray<uint64_t> shape(aDesc.shape().Length());
-  for (uint32_t dim : aDesc.shape()) {
-    shape.AppendElement(dim);
-  }
-  return shape;
+static Maybe<size_t> ByteLength(const WebNNOperandDesc& aDesc) {
+  return webnn::ByteLength(aDesc.dataType(), aDesc.shape());
 }
 
 WebNNParent::Tensor* WebNNParent::GetTensor(uint32_t aTensorId) {
@@ -213,7 +193,7 @@ static bool EnsureTempDirectory() {
   if (mkdir(dir.get(), 0700) && errno != EEXIST) {
     return false;
   }
-  if (Lib()->rustnn_set_temp_directory(dir.get()) != RustnnStatus_Success) {
+  if (Lib()->webnn_set_temp_directory(dir.get()) != WebnnStatus_Success) {
     return false;
   }
   sDone = true;
@@ -240,13 +220,10 @@ mozilla::ipc::IPCResult WebNNParent::RecvCreateContext(
     return IPC_OK();
   }
 
-  RustnnContextOptions options = Lib()->rustnn_context_options_default();
-  options.power_preference = ToRustnn(aOptions.powerPreference());
-  options.accelerated = aOptions.accelerated();
-
-  RustnnContext* context = nullptr;
-  if (Lib()->rustnn_context_create(&options, &context) !=
-      RustnnStatus_Success) {
+  WebnnContext* context = nullptr;
+  if (Lib()->webnn_context_create(ToFfi(aOptions.powerPreference()),
+                                  aOptions.accelerated(),
+                                  &context) != WebnnStatus_Success) {
     aResolver(LastError());
     return IPC_OK();
   }
@@ -272,20 +249,11 @@ mozilla::ipc::IPCResult WebNNParent::RecvCreateTensor(
     return IPC_FAIL(this, "Tensor too large");
   }
 
-  nsTArray<uint64_t> shape = Shape(aDescriptor);
-  RustnnTensorDescriptor* rawDescriptor = nullptr;
-  if (Lib()->rustnn_tensor_descriptor_create(
-          ToRustnn(aDescriptor.dataType()), shape.Elements(), shape.Length(),
-          aReadable, aWritable, &rawDescriptor) != RustnnStatus_Success) {
-    aResolver(LastError());
-    return IPC_OK();
-  }
-  mozilla::UniquePtr<RustnnTensorDescriptor, TensorDescriptorDeleter>
-      descriptor(rawDescriptor);
-
-  RustnnTensor* tensor = nullptr;
-  if (Lib()->rustnn_context_create_tensor(mContext.get(), descriptor.get(),
-                                          &tensor) != RustnnStatus_Success) {
+  WebnnOperandDescriptor descriptor = ToFfi(aDescriptor);
+  WebnnTensor* tensor = nullptr;
+  if (Lib()->webnn_context_create_tensor(mContext.get(), &descriptor, aReadable,
+                                         aWritable,
+                                         &tensor) != WebnnStatus_Success) {
     aResolver(LastError());
     return IPC_OK();
   }
@@ -312,9 +280,9 @@ mozilla::ipc::IPCResult WebNNParent::RecvWriteTensor(const uint32_t& aTensorId,
   if (!tensor->mWritable || aData.Size() != tensor->mByteLength) {
     return IPC_FAIL(this, "Invalid tensor write");
   }
-  if (Lib()->rustnn_context_write_tensor(mContext.get(), tensor->mTensor.get(),
-                                         aData.Data(), aData.Size()) !=
-      RustnnStatus_Success) {
+  if (Lib()->webnn_context_write_tensor(mContext.get(), tensor->mTensor.get(),
+                                        aData.Data(),
+                                        aData.Size()) != WebnnStatus_Success) {
     LoseContext(LastError());
   }
   return IPC_OK();
@@ -335,9 +303,9 @@ mozilla::ipc::IPCResult WebNNParent::RecvReadTensor(
   }
 
   ipc::BigBuffer data(tensor->mByteLength);
-  if (Lib()->rustnn_context_read_tensor(mContext.get(), tensor->mTensor.get(),
-                                        data.Data(),
-                                        data.Size()) != RustnnStatus_Success) {
+  if (Lib()->webnn_context_read_tensor(mContext.get(), tensor->mTensor.get(),
+                                       data.Data(),
+                                       data.Size()) != WebnnStatus_Success) {
     aResolver(WebNNReadTensorResult(LastError()));
     return IPC_OK();
   }
@@ -363,142 +331,92 @@ mozilla::ipc::IPCResult WebNNParent::RecvBuild(
   }
 
   const nsTArray<WebNNOperandDesc>& descs = aGraph.operands();
-  nsTArray<mozilla::UniquePtr<RustnnOperand, OperandDeleter> > operands;
+  // Engine operand id of each operand, once defined.
+  nsTArray<Maybe<uint32_t> > operands;
   operands.SetLength(descs.Length());
-  auto defined = [&](uint32_t aIndex) {
-    return aIndex < operands.Length() && operands[aIndex];
-  };
   auto definable = [&](uint32_t aIndex) {
     return aIndex < operands.Length() && !operands[aIndex];
   };
 
-  RustnnGraphBuilder* rawBuilder = nullptr;
-  if (Lib()->rustnn_graph_builder_create(mContext.get(), &rawBuilder) !=
-      RustnnStatus_Success) {
+  WebnnGraphBuilder* rawBuilder = nullptr;
+  if (Lib()->webnn_graph_builder_create(mContext.get(), &rawBuilder) !=
+      WebnnStatus_Success) {
     aResolver(LastError());
     return IPC_OK();
   }
-  RustnnGraphBuilder* builder = rawBuilder;
-  mozilla::UniquePtr<RustnnGraphBuilder, GraphBuilderDeleter> builderOwner(
+  mozilla::UniquePtr<WebnnGraphBuilder, GraphBuilderDeleter> builder(
       rawBuilder);
 
   for (const WebNNOperation& op : aGraph.operations()) {
-    RustnnOperand* result = nullptr;
-    RustnnStatus status = RustnnStatus_Success;
-    uint32_t output;
-
-    switch (op.type()) {
-      case WebNNOperation::TWebNNInputOp: {
-        const WebNNInputOp& input = op.get_WebNNInputOp();
-        output = input.output();
-        if (!definable(output)) {
-          return IPC_FAIL(this, "Invalid input operand");
-        }
-        nsTArray<uint64_t> shape = Shape(descs[output]);
-        RustnnOperandDescriptor* rawDescriptor = nullptr;
-        status = Lib()->rustnn_operand_descriptor_create(
-            ToRustnn(descs[output].dataType()), shape.Elements(),
-            shape.Length(), &rawDescriptor);
-        if (status != RustnnStatus_Success) {
-          break;
-        }
-        mozilla::UniquePtr<RustnnOperandDescriptor, OperandDescriptorDeleter>
-            descriptor(rawDescriptor);
-        status = Lib()->rustnn_graph_builder_input(builder, input.name().get(),
-                                                   descriptor.get(), &result);
-        break;
+    if (op.type() != WebNNOperation::TWebNNInputOp &&
+        op.type() != WebNNOperation::TWebNNConstantOp) {
+      switch (AddOperation(Lib(), builder.get(), op, operands)) {
+        case AddOperationResult::Ok:
+          continue;
+        case AddOperationResult::EngineError:
+          aResolver(LastError());
+          return IPC_OK();
+        case AddOperationResult::OutputMismatch:
+          aResolver("Unexpected number of operator outputs"_ns);
+          return IPC_OK();
+        case AddOperationResult::Invalid:
+          return IPC_FAIL(this, "Invalid operation");
       }
-      case WebNNOperation::TWebNNConstantOp: {
-        const WebNNConstantOp& constant = op.get_WebNNConstantOp();
-        output = constant.output();
-        if (!definable(output) ||
-            constant.constantIndex() >= aConstants.Length()) {
-          return IPC_FAIL(this, "Invalid constant operand");
-        }
-        const ipc::BigBuffer& data = aConstants[constant.constantIndex()];
-        Maybe<size_t> byteLength = ByteLength(descs[output]);
-        if (!byteLength || *byteLength != data.Size()) {
-          return IPC_FAIL(this, "Invalid constant size");
-        }
-        nsTArray<uint64_t> shape = Shape(descs[output]);
-        RustnnOperandDescriptor* rawDescriptor = nullptr;
-        status = Lib()->rustnn_operand_descriptor_create(
-            ToRustnn(descs[output].dataType()), shape.Elements(),
-            shape.Length(), &rawDescriptor);
-        if (status != RustnnStatus_Success) {
-          break;
-        }
-        mozilla::UniquePtr<RustnnOperandDescriptor, OperandDescriptorDeleter>
-            descriptor(rawDescriptor);
-        status = Lib()->rustnn_graph_builder_constant(
-            builder, descriptor.get(), data.Data(), data.Size(), &result);
-        break;
-      }
-      case WebNNOperation::TWebNNAddOp: {
-        const WebNNAddOp& add = op.get_WebNNAddOp();
-        output = add.output();
-        if (!defined(add.a()) || !defined(add.b()) || !definable(output)) {
-          return IPC_FAIL(this, "Invalid add operands");
-        }
-        status = Lib()->rustnn_graph_builder_add(
-            builder, operands[add.a()].get(), operands[add.b()].get(), &result);
-        break;
-      }
-      case WebNNOperation::TWebNNMatmulOp: {
-        const WebNNMatmulOp& matmul = op.get_WebNNMatmulOp();
-        output = matmul.output();
-        if (!defined(matmul.a()) || !defined(matmul.b()) ||
-            !definable(output)) {
-          return IPC_FAIL(this, "Invalid matmul operands");
-        }
-        status = Lib()->rustnn_graph_builder_matmul(
-            builder, operands[matmul.a()].get(), operands[matmul.b()].get(),
-            &result);
-        break;
-      }
-      case WebNNOperation::TWebNNReluOp: {
-        const WebNNReluOp& relu = op.get_WebNNReluOp();
-        output = relu.output();
-        if (!defined(relu.input()) || !definable(output)) {
-          return IPC_FAIL(this, "Invalid relu operands");
-        }
-        status = Lib()->rustnn_graph_builder_relu(
-            builder, operands[relu.input()].get(), &result);
-        break;
-      }
-      default:
-        return IPC_FAIL(this, "Unknown operation");
     }
 
-    if (status != RustnnStatus_Success) {
+    uint32_t output;
+    uint32_t id;
+    WebnnStatus status;
+    if (op.type() == WebNNOperation::TWebNNInputOp) {
+      const WebNNInputOp& input = op.get_WebNNInputOp();
+      output = input.output();
+      if (!definable(output)) {
+        return IPC_FAIL(this, "Invalid input operand");
+      }
+      WebnnOperandDescriptor descriptor = ToFfi(descs[output]);
+      status = Lib()->webnn_graph_builder_input(
+          builder.get(), input.name().get(), &descriptor, &id);
+    } else {
+      const WebNNConstantOp& constant = op.get_WebNNConstantOp();
+      output = constant.output();
+      if (!definable(output) ||
+          constant.constantIndex() >= aConstants.Length()) {
+        return IPC_FAIL(this, "Invalid constant operand");
+      }
+      const ipc::BigBuffer& data = aConstants[constant.constantIndex()];
+      Maybe<size_t> byteLength = ByteLength(descs[output]);
+      if (!byteLength || *byteLength != data.Size()) {
+        return IPC_FAIL(this, "Invalid constant size");
+      }
+      WebnnOperandDescriptor descriptor = ToFfi(descs[output]);
+      status = Lib()->webnn_graph_builder_constant(
+          builder.get(), &descriptor, data.Data(), data.Size(), &id);
+    }
+    if (status != WebnnStatus_Success) {
       aResolver(LastError());
       return IPC_OK();
     }
-    operands[output].reset(result);
+    operands[output] = Some(id);
   }
 
-  nsTArray<RustnnNamedOperand> outputs(aGraph.outputs().Length());
+  nsTArray<WebnnNamedOperand> outputs(aGraph.outputs().Length());
   for (const WebNNNamedOperand& output : aGraph.outputs()) {
-    if (!defined(output.operand())) {
+    if (output.operand() >= operands.Length() || !operands[output.operand()]) {
       return IPC_FAIL(this, "Invalid graph output");
     }
-    outputs.AppendElement(RustnnNamedOperand{output.name().get(),
-                                             operands[output.operand()].get()});
+    outputs.AppendElement(
+        WebnnNamedOperand{output.name().get(), *operands[output.operand()]});
   }
 
-  RustnnGraph* graph = nullptr;
-  RustnnStatus status = Lib()->rustnn_graph_builder_build(
-      &builder, outputs.Elements(), outputs.Length(), &graph);
-  // build() consumes the builder, and nulls out the pointer it was given.
-  if (!builder) {
-    (void)builderOwner.release();
-  }
-  if (status != RustnnStatus_Success) {
+  WebnnGraph* graph = nullptr;
+  if (Lib()->webnn_graph_builder_build(builder.get(), outputs.Elements(),
+                                       outputs.Length(),
+                                       &graph) != WebnnStatus_Success) {
     aResolver(LastError());
     return IPC_OK();
   }
   mGraphs.InsertOrUpdate(
-      aGraphId, mozilla::UniquePtr<RustnnGraph, RustnnGraphDeleter>(graph));
+      aGraphId, mozilla::UniquePtr<WebnnGraph, WebnnGraphDeleter>(graph));
   aResolver(""_ns);
   return IPC_OK();
 }
@@ -521,26 +439,26 @@ mozilla::ipc::IPCResult WebNNParent::RecvDispatch(
   }
 
   auto convert = [&](const nsTArray<WebNNNamedTensor>& aNamed,
-                     nsTArray<RustnnNamedTensor>& aOut) {
+                     nsTArray<WebnnNamedTensor>& aOut) {
     for (const WebNNNamedTensor& named : aNamed) {
       Tensor* tensor = GetTensor(named.tensor());
       if (!tensor) {
         return false;
       }
       aOut.AppendElement(
-          RustnnNamedTensor{named.name().get(), tensor->mTensor.get()});
+          WebnnNamedTensor{named.name().get(), tensor->mTensor.get()});
     }
     return true;
   };
-  nsTArray<RustnnNamedTensor> inputs(aInputs.Length());
-  nsTArray<RustnnNamedTensor> outputs(aOutputs.Length());
+  nsTArray<WebnnNamedTensor> inputs(aInputs.Length());
+  nsTArray<WebnnNamedTensor> outputs(aOutputs.Length());
   if (!convert(aInputs, inputs) || !convert(aOutputs, outputs)) {
     return IPC_FAIL(this, "Unknown tensor");
   }
 
-  if (Lib()->rustnn_context_dispatch(
+  if (Lib()->webnn_context_dispatch(
           mContext.get(), graph->get(), inputs.Elements(), inputs.Length(),
-          outputs.Elements(), outputs.Length()) != RustnnStatus_Success) {
+          outputs.Elements(), outputs.Length()) != WebnnStatus_Success) {
     LoseContext(LastError());
   }
   return IPC_OK();
