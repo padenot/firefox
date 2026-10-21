@@ -77,4 +77,25 @@ bool ValidateSoftmax(const MLOperand& aInput, uint32_t aAxis,
   return true;
 }
 
+// https://webmachinelearning.github.io/webnn/#api-mlgraphbuilder-prelu
+bool ValidatePrelu(const dom::MLOperand& aInput, const dom::MLOperand& aSlope,
+                   const dom::MLOperatorOptions& aOptions,
+                   nsTArray<OperandDescriptor>& aOutputs, ErrorResult& aRv) {
+  dom::MLOperandDataType type = aInput.DataType();
+  if (!IsDataTypeIn(type, kFloatAndSignedIntTypes) ||
+      aSlope.DataType() != type) {
+    ThrowOpTypeError(aRv, aOptions.mLabel, "prelu", "unsupported data types");
+    return false;
+  }
+  Maybe<nsTArray<uint32_t>> outputShape =
+      BidirectionallyBroadcastShapes(aSlope.Shape(), aInput.Shape());
+  if (!outputShape) {
+    ThrowOpTypeError(aRv, aOptions.mLabel, "prelu",
+                     "shapes are not broadcastable");
+    return false;
+  }
+  return CreateOperandDescriptor(type, outputShape.extract(), aOptions.mLabel,
+                                 "prelu", aOutputs, aRv);
+}
+
 }  // namespace mozilla::webnn

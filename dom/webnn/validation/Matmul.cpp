@@ -50,4 +50,49 @@ bool ValidateMatmul(const dom::MLOperand& aA, const dom::MLOperand& aB,
                                  "matmul", aOutputs, aRv);
 }
 
+// https://webmachinelearning.github.io/webnn/#api-mlgraphbuilder-gemm
+bool ValidateGemm(const dom::MLOperand& aA, const dom::MLOperand& aB,
+                  const dom::MLGemmOptions& aOptions,
+                  nsTArray<OperandDescriptor>& aOutputs, ErrorResult& aRv) {
+  if (!IsDataTypeIn(aA.DataType(), kFloatTypes) ||
+      aB.DataType() != aA.DataType()) {
+    ThrowOpTypeError(aRv, aOptions.mLabel, "gemm", "unsupported data types");
+    return false;
+  }
+  if (aA.Shape().Length() != 2 || aB.Shape().Length() != 2) {
+    ThrowOpTypeError(aRv, aOptions.mLabel, "gemm",
+                     "operands must be 2-D tensors");
+    return false;
+  }
+  nsTArray<uint32_t> shapeA = aA.Shape().Clone();
+  nsTArray<uint32_t> shapeB = aB.Shape().Clone();
+  if (aOptions.mATranspose) {
+    shapeA.Reverse();
+  }
+  if (aOptions.mBTranspose) {
+    shapeB.Reverse();
+  }
+  if (shapeA[1] != shapeB[0]) {
+    ThrowOpTypeError(aRv, aOptions.mLabel, "gemm",
+                     "inner dimensions do not match");
+    return false;
+  }
+  nsTArray<uint32_t> outputShape = {shapeA[0], shapeB[1]};
+  if (aOptions.mC.WasPassed()) {
+    const dom::MLOperand& c = aOptions.mC.Value();
+    if (!IsUnidirectionallyBroadcastable(c.Shape(), outputShape)) {
+      ThrowOpTypeError(aRv, aOptions.mLabel, "gemm",
+                       "c is not broadcastable to the output shape");
+      return false;
+    }
+    if (c.DataType() != aA.DataType()) {
+      ThrowOpTypeError(aRv, aOptions.mLabel, "gemm",
+                       "c data type must match a");
+      return false;
+    }
+  }
+  return CreateOperandDescriptor(aA.DataType(), std::move(outputShape),
+                                 aOptions.mLabel, "gemm", aOutputs, aRv);
+}
+
 }  // namespace mozilla::webnn

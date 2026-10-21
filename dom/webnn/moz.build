@@ -56,9 +56,13 @@ UNIFIED_SOURCES += [
     "MLOperand.cpp",
     "MLTensor.cpp",
     "validation/Activations.cpp",
+    "validation/Convolution.cpp",
     "validation/Elementwise.cpp",
     "validation/Matmul.cpp",
+    "validation/Normalization.cpp",
+    "validation/Quantization.cpp",
     "validation/Reductions.cpp",
+    "validation/Resample.cpp",
     "validation/Unimplemented.cpp",
     "validation/ValidationUtils.cpp",
 ]
