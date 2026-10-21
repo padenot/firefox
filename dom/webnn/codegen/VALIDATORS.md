@@ -55,4 +55,6 @@ Validators that are not written yet are NotSupportedError stubs in
 `dom/webnn/validation/Unimplemented.cpp`. To implement one, add it to another
 file in `dom/webnn/validation/` (and to `UNIFIED_SOURCES` in
 `dom/webnn/moz.build`), then delete its stub. Shared helpers, such as
-`BroadcastShapes`, live in `dom/webnn/validation/ValidationUtils.h`.
+`BidirectionallyBroadcastShapes` and `CreateOperandDescriptor`, live in
+`dom/webnn/validation/ValidationUtils.h`. Throw with `ThrowOpTypeError`, which
+puts the operator's label in the message.

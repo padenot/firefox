@@ -55,9 +55,12 @@ UNIFIED_SOURCES += [
     "MLGraphBuilder.cpp",
     "MLOperand.cpp",
     "MLTensor.cpp",
+    "validation/Activations.cpp",
     "validation/Elementwise.cpp",
     "validation/Matmul.cpp",
+    "validation/Reductions.cpp",
     "validation/Unimplemented.cpp",
+    "validation/ValidationUtils.cpp",
 ]
 
 SOURCES += [

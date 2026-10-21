@@ -11,6 +11,7 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/webnn/WebNNChild.h"
 #include "mozilla/webnn/WebNNUtils.h"
+#include "validation/ValidationUtils.h"
 
 namespace mozilla::dom {
 
@@ -21,8 +22,6 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(MLGraphBuilder)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
-
-static constexpr size_t kMaxRank = 8;
 
 MLGraphBuilder::MLGraphBuilder(MLContext* aContext) : mContext(aContext) {}
 
@@ -107,20 +106,8 @@ nsTArray<uint32_t> MLGraphBuilder::OutputIndices(
 
 static bool CheckDescriptor(const MLOperandDescriptor& aDescriptor,
                             ErrorResult& aRv) {
-  if (aDescriptor.mShape.Length() > kMaxRank) {
-    aRv.ThrowTypeError("The rank is too large");
-    return false;
-  }
-  for (uint32_t dim : aDescriptor.mShape) {
-    if (!dim) {
-      aRv.ThrowTypeError("Dimensions must be positive");
-      return false;
-    }
-  }
-  Maybe<size_t> byteLength =
-      webnn::ByteLength(aDescriptor.mDataType, aDescriptor.mShape);
-  if (!byteLength || *byteLength > MLContext::kMaxTensorByteLength) {
-    aRv.ThrowTypeError("The operand is too large");
+  if (!webnn::CheckDimensions(aDescriptor.mDataType, aDescriptor.mShape)) {
+    aRv.ThrowTypeError("Invalid operand descriptor");
     return false;
   }
   return true;
