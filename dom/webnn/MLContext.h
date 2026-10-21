@@ -80,6 +80,11 @@ class MLContext final : public nsISupports, public nsWrapperCache {
   void OnContextLost(const nsACString& aMessage);
 
  private:
+  already_AddRefed<Promise> ReadTensorInternal(
+      MLTensor& aTensor,
+      const MaybeSharedArrayBufferOrMaybeSharedArrayBufferView* aOutputData,
+      ErrorResult& aRv);
+
   MLContext(nsIGlobalObject* aGlobal, bool aAccelerated, Promise* aLostPromise);
   ~MLContext();
 

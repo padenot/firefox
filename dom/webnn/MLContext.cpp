@@ -243,8 +243,40 @@ already_AddRefed<Promise> MLContext::CreateConstantTensor(
   return promise.forget();
 }
 
+namespace {
+
+// Keeps the destination of readTensor(tensor, outputData) alive until the data
+// arrives from the HWInference process.
+class ReadDestination final {
+ public:
+  NS_INLINE_DECL_REFCOUNTING(ReadDestination)
+
+  explicit ReadDestination(JSObject* aObject) : mObject(RootingCx(), aObject) {}
+
+  JS::PersistentRooted<JSObject*> mObject;
+
+ private:
+  ~ReadDestination() = default;
+};
+
+}  // namespace
+
 already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
                                                 ErrorResult& aRv) {
+  return ReadTensorInternal(aTensor, nullptr, aRv);
+}
+
+already_AddRefed<Promise> MLContext::ReadTensor(
+    MLTensor& aTensor,
+    const MaybeSharedArrayBufferOrMaybeSharedArrayBufferView& aOutputData,
+    ErrorResult& aRv) {
+  return ReadTensorInternal(aTensor, &aOutputData, aRv);
+}
+
+already_AddRefed<Promise> MLContext::ReadTensorInternal(
+    MLTensor& aTensor,
+    const MaybeSharedArrayBufferOrMaybeSharedArrayBufferView* aOutputData,
+    ErrorResult& aRv) {
   RefPtr<Promise> promise = Promise::Create(mGlobal, aRv);
   if (aRv.Failed()) {
     return nullptr;
@@ -262,13 +294,37 @@ already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
     return promise.forget();
   }
 
+  RefPtr<ReadDestination> destination;
+  if (aOutputData) {
+    if (aOutputData->IsArrayBufferView() &&
+        !webnn::IsViewTypeCompatible(aOutputData->GetAsArrayBufferView().Type(),
+                                     aTensor.DataType())) {
+      promise->MaybeRejectWithTypeError(
+          "The buffer view type does not match the data type");
+      return promise.forget();
+    }
+    size_t length = ProcessTypedArraysFixed(
+        *aOutputData,
+        [](const Span<uint8_t>& aData) { return aData.Length(); });
+    if (length != aTensor.ByteLength()) {
+      promise->MaybeRejectWithTypeError(
+          "The buffer size does not match the tensor");
+      return promise.forget();
+    }
+    destination =
+        new ReadDestination(aOutputData->IsArrayBuffer()
+                                ? aOutputData->GetAsArrayBuffer().Obj()
+                                : aOutputData->GetAsArrayBufferView().Obj());
+  }
+
   aTensor.AddPendingPromise(promise);
   nsCOMPtr<nsIGlobalObject> global = mGlobal;
   RefPtr<MLTensor> tensor = &aTensor;
   TimeStamp start = TimeStamp::Now();
   mActor->SendReadTensor(
       aTensor.Id(),
-      [promise, global, tensor, start](webnn::WebNNReadTensorResult&& aResult) {
+      [promise, global, tensor, start,
+       destination](webnn::WebNNReadTensorResult&& aResult) {
         PROFILER_MARKER_TEXT(
             "WebNN:readTensor()", ML_INFERENCE,
             MarkerTiming::IntervalUntilNowFrom(start),
@@ -286,9 +342,34 @@ already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
           return;
         }
         JSContext* cx = jsapi.cx();
+        const mozilla::ipc::BigBuffer& data = aResult.get_BigBuffer();
+
+        if (destination) {
+          JS::Rooted<JS::Value> value(cx,
+                                      JS::ObjectValue(*destination->mObject));
+          OwningMaybeSharedArrayBufferOrMaybeSharedArrayBufferView output;
+          bool copied =
+              output.Init(cx, value) &&
+              ProcessTypedArraysFixed(output, [&](const Span<uint8_t>& aDest) {
+                if (aDest.Length() != data.Size()) {
+                  return false;
+                }
+                memcpy(aDest.Elements(), data.Data(), data.Size());
+                return true;
+              });
+          if (!copied) {
+            JS_ClearPendingException(cx);
+            promise->MaybeRejectWithTypeError(
+                "The output buffer was detached or resized");
+            return;
+          }
+          promise->MaybeResolveWithUndefined();
+          return;
+        }
+
         ErrorResult rv;
         JS::Rooted<JSObject*> buffer(
-            cx, ArrayBuffer::Create(cx, aResult.get_BigBuffer().AsSpan(), rv));
+            cx, ArrayBuffer::Create(cx, data.AsSpan(), rv));
         if (rv.MaybeSetPendingException(cx)) {
           promise->MaybeRejectWithUnknownError("Could not read the tensor");
           return;
@@ -300,19 +381,6 @@ already_AddRefed<Promise> MLContext::ReadTensor(MLTensor& aTensor,
           promise->MaybeRejectWithInvalidStateError("The context is lost");
         }
       });
-  return promise.forget();
-}
-
-already_AddRefed<Promise> MLContext::ReadTensor(
-    MLTensor& aTensor,
-    const MaybeSharedArrayBufferOrMaybeSharedArrayBufferView& aOutputData,
-    ErrorResult& aRv) {
-  RefPtr<Promise> promise = Promise::Create(mGlobal, aRv);
-  if (aRv.Failed()) {
-    return nullptr;
-  }
-  promise->MaybeRejectWithNotSupportedError(
-      "Reading into a buffer is not supported yet");
   return promise.forget();
 }
 
