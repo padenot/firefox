@@ -130,8 +130,12 @@ void MLContext::Dispatch(
     aRv.ThrowInvalidStateError("The context is lost");
     return;
   }
-  if (aGraph.Context() != this || aGraph.IsDestroyed()) {
-    aRv.ThrowTypeError("Invalid graph");
+  if (aGraph.Context() != this) {
+    aRv.ThrowTypeError("The graph belongs to a different context");
+    return;
+  }
+  if (aGraph.IsDestroyed()) {
+    aRv.ThrowInvalidStateError("The graph is destroyed");
     return;
   }
 
