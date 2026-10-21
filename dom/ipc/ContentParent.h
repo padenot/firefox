@@ -1129,6 +1129,9 @@ class ContentParent final : public PContentParent,
       Endpoint<hwinference::PSpeechRecognitionParent>&& aEndpoint);
 #  endif
 
+  mozilla::ipc::IPCResult RecvCreateWebNN(
+      Endpoint<webnn::PWebNNParent>&& aEndpoint);
+
   mozilla::ipc::IPCResult RecvReleaseHWInferenceConnection();
 #endif  // !ANDROID
 

@@ -5,6 +5,7 @@
 
 #include "HWInferenceChild.h"
 #include "mozilla/hwinference/TextGenerationChild.h"
+#include "mozilla/webnn/WebNNParent.h"
 #include "mozilla/Logging.h"
 #ifdef MOZ_WEBSPEECH
 #  include "mozilla/hwinference/SpeechRecognitionParent.h"
@@ -38,6 +39,21 @@ ipc::IPCResult HWInferenceChild::RecvNewContentSpeechRecognition(
   return IPC_OK();
 }
 #endif  // MOZ_WEBSPEECH
+
+ipc::IPCResult HWInferenceChild::RecvNewContentWebNN(
+    Endpoint<webnn::PWebNNParent>&& aEndpoint,
+    const dom::ContentParentId& aContentId) {
+  LOGD("[{} - {}] Received WebNN connection request from content {}",
+       fmt::ptr(this), __func__, static_cast<uint64_t>(aContentId));
+
+  RefPtr<webnn::WebNNParent> actor = new webnn::WebNNParent(aContentId);
+  if (!aEndpoint.Bind(actor)) {
+    LOGE("[{} - {}] Failed to bind WebNNParent for content {}", fmt::ptr(this),
+         __func__, static_cast<uint64_t>(aContentId));
+    return IPC_FAIL(this, "Failed to bind WebNNParent");
+  }
+  return IPC_OK();
+}
 
 ipc::IPCResult HWInferenceChild::RecvNewTextGeneration(
     Endpoint<hwinference::PTextGenerationChild>&& aEndpoint,

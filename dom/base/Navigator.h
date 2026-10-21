@@ -43,6 +43,7 @@ class ServiceWorkerContainer;
 class CredentialsContainer;
 class Clipboard;
 class LockManager;
+class ML;
 class ModelContext;
 class NavigatorLogin;
 class HTMLMediaElement;
@@ -218,6 +219,7 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   mozilla::dom::CredentialsContainer* Credentials();
   dom::Clipboard* Clipboard();
   webgpu::Instance* Gpu();
+  dom::ML* Ml();
   dom::LockManager* Locks();
   NavigatorLogin* Login();
   dom::ModelContext* ModelContext();
@@ -318,6 +320,7 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   RefPtr<dom::AudioSession> mAudioSession;
   RefPtr<AddonManager> mAddonManager;
   RefPtr<webgpu::Instance> mWebGpu;
+  RefPtr<dom::ML> mML;
   RefPtr<Promise> mSharePromise;  // Web Share API related
   RefPtr<LockManager> mLocks;
   RefPtr<NavigatorLogin> mLogin;

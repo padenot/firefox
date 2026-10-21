@@ -26,6 +26,10 @@ class HWInferenceChild final : public PHWInferenceChild {
       const dom::ContentParentId& aContentId);
 #endif
 
+  mozilla::ipc::IPCResult RecvNewContentWebNN(
+      Endpoint<webnn::PWebNNParent>&& aEndpoint,
+      const dom::ContentParentId& aContentId);
+
   mozilla::ipc::IPCResult RecvNewTextGeneration(
       Endpoint<hwinference::PTextGenerationChild>&& aEndpoint,
       const ipc::FileDescriptor& aModel, const TextGenerationOptions& aOptions);

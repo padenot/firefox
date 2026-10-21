@@ -113,6 +113,7 @@
 #include "mozilla/EMEUtils.h"
 #include "mozilla/dom/AudioContext.h"
 #include "mozilla/dom/HTMLMediaElement.h"
+#include "mozilla/dom/ML.h"
 #include "mozilla/dom/WindowGlobalChild.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/webgpu/Instance.h"
@@ -159,6 +160,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Navigator)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAudioSession)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAddonManager)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mWebGpu)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mML)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mLocks)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mLogin)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mModelContext)
@@ -249,6 +251,8 @@ void Navigator::Invalidate() {
   mAddonManager = nullptr;
 
   mWebGpu = nullptr;
+
+  mML = nullptr;
 
   if (mLocks) {
     // Unloading a page does not immediately destruct the lock manager actor,
@@ -2351,6 +2355,13 @@ webgpu::Instance* Navigator::Gpu() {
     mWebGpu = webgpu::Instance::Create(GetWindow()->AsGlobal());
   }
   return mWebGpu;
+}
+
+dom::ML* Navigator::Ml() {
+  if (!mML) {
+    mML = new dom::ML(GetWindow()->AsGlobal());
+  }
+  return mML;
 }
 
 dom::LockManager* Navigator::Locks() {

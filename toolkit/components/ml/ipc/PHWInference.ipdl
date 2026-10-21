@@ -7,6 +7,7 @@
 include protocol PSpeechRecognition;
 #endif
 include protocol PTextGeneration;
+include protocol PWebNN;
 include protocol PUtilityProcess;
 
 include TextGenerationTypes;
@@ -84,6 +85,8 @@ protocol PHWInference
 
     // The model file is resolved and opened by the parent, the utility never
     // learns its path.
+    async NewContentWebNN(Endpoint<PWebNNParent> endpoint,
+                          ContentParentId contentId);
     async NewTextGeneration(Endpoint<PTextGenerationChild> endpoint,
                             FileDescriptor model,
                             TextGenerationOptions options);

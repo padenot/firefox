@@ -1,0 +1,84 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set sw=2 ts=8 et tw=80 ft=cpp : */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+[MoveOnly] using class mozilla::ipc::BigBuffer from "mozilla/ipc/BigBuffer.h";
+using mozilla::dom::MLOperandDataType from "mozilla/webnn/WebNNIPCUtils.h";
+using mozilla::dom::MLPowerPreference from "mozilla/webnn/WebNNIPCUtils.h";
+
+namespace mozilla {
+namespace webnn {
+
+struct WebNNContextOptions {
+  MLPowerPreference powerPreference;
+  bool accelerated;
+};
+
+struct WebNNOperandDesc {
+  MLOperandDataType dataType;
+  uint32_t[] shape;
+};
+
+struct WebNNInputOp {
+  nsCString name;
+  uint32_t output;
+};
+
+// `constantIndex` indexes the constant buffers sent alongside the graph.
+struct WebNNConstantOp {
+  uint32_t constantIndex;
+  uint32_t output;
+};
+
+struct WebNNAddOp {
+  uint32_t a;
+  uint32_t b;
+  uint32_t output;
+};
+
+struct WebNNMatmulOp {
+  uint32_t a;
+  uint32_t b;
+  uint32_t output;
+};
+
+struct WebNNReluOp {
+  uint32_t input;
+  uint32_t output;
+};
+
+union WebNNOperation {
+  WebNNInputOp;
+  WebNNConstantOp;
+  WebNNAddOp;
+  WebNNMatmulOp;
+  WebNNReluOp;
+};
+
+struct WebNNNamedOperand {
+  nsCString name;
+  uint32_t operand;
+};
+
+// Operands are referenced by their index in `operands`. Operations are in
+// topological order: every operand is produced before it is consumed.
+struct WebNNGraphDesc {
+  WebNNOperandDesc[] operands;
+  WebNNOperation[] operations;
+  WebNNNamedOperand[] outputs;
+};
+
+struct WebNNNamedTensor {
+  nsCString name;
+  uint32_t tensor;
+};
+
+union WebNNReadTensorResult {
+  BigBuffer;
+  nsCString;
+};
+
+}  // namespace webnn
+}  // namespace mozilla

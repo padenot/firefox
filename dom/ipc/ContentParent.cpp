@@ -5234,6 +5234,28 @@ mozilla::ipc::IPCResult ContentParent::RecvCreateSpeechRecognition(
 }
 #  endif  // MOZ_WEBSPEECH
 
+mozilla::ipc::IPCResult ContentParent::RecvCreateWebNN(
+    Endpoint<webnn::PWebNNParent>&& aEndpoint) {
+  if (!StaticPrefs::dom_webnn_enabled()) {
+    return IPC_FAIL(this, "WebNN is disabled");
+  }
+  if (!mHWInferenceConnections) {
+    return IPC_FAIL(this, "Must be holding a HWInference connection");
+  }
+
+  EnsureHWInferenceConnection();
+
+  // Launch failed: dropping the endpoint tears down the child's actor, which
+  // loses the context.
+  if (!mHWInferenceKeepAlive) {
+    return IPC_OK();
+  }
+
+  hwinference::HWInferenceProcess::Content().Actor()->StartContentWebNN(
+      std::move(aEndpoint), mChildID);
+  return IPC_OK();
+}
+
 mozilla::ipc::IPCResult ContentParent::RecvReleaseHWInferenceConnection() {
   if (mHWInferenceConnections == 0) {
     return IPC_FAIL(this,

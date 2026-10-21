@@ -195,6 +195,14 @@ void HWInferenceParent::StartContentSpeechRecognition(
 }
 #endif  // MOZ_WEBSPEECH
 
+void HWInferenceParent::StartContentWebNN(
+    Endpoint<webnn::PWebNNParent>&& aEndpoint, dom::ContentParentId aChildId) {
+  SendWhenReady([endpoint = std::move(aEndpoint),
+                 aChildId](HWInferenceParent& aSelf) mutable {
+    return aSelf.SendNewContentWebNN(std::move(endpoint), aChildId);
+  });
+}
+
 void HWInferenceParent::StartTextGeneration(
     Endpoint<PTextGenerationChild>&& aEndpoint,
     const ipc::FileDescriptor& aModel, const TextGenerationOptions& aOptions) {

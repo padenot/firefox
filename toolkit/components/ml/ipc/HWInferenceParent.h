@@ -57,6 +57,10 @@ class HWInferenceParent final : public PHWInferenceParent {
       dom::ContentParentId aChildId);
 #endif
 
+  // Same for a WebNN context. The model graph comes from the content process.
+  void StartContentWebNN(Endpoint<webnn::PWebNNParent>&& aEndpoint,
+                         dom::ContentParentId aChildId);
+
   // Same for a text generator; aModel is the model file the parent opened.
   void StartTextGeneration(Endpoint<PTextGenerationChild>&& aEndpoint,
                            const ipc::FileDescriptor& aModel,

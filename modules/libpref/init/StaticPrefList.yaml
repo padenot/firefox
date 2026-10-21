@@ -6346,6 +6346,12 @@
   value: "easyeda.com,*.easyeda.com"
   mirror: always
 
+# Is the WebNN API enabled?
+- name: dom.webnn.enabled
+  type: RelaxedAtomicBool
+  value: false
+  mirror: always
+
 # Is support for HTMLInputElement.webkitEntries enabled?
 - name: dom.webkitBlink.filesystem.enabled
   type: bool

@@ -1,0 +1,41 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set sw=2 ts=8 et tw=80 ft=cpp : */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+include WebNNTypes;
+
+[MoveOnly] using class mozilla::ipc::BigBuffer from "mozilla/ipc/BigBuffer.h";
+
+namespace mozilla {
+namespace webnn {
+
+// One actor per MLContext. Errors are returned as messages, an empty string
+// means success. Messages without a reply are processed in order, and report
+// failures by losing the context.
+[ParentProc=Utility, ChildProc=Content]
+async protocol PWebNN
+{
+parent:
+  async CreateContext(WebNNContextOptions options) returns (nsCString error);
+
+  async CreateTensor(uint32_t tensorId, WebNNOperandDesc descriptor,
+                     bool readable, bool writable) returns (nsCString error);
+  async WriteTensor(uint32_t tensorId, BigBuffer data);
+  async ReadTensor(uint32_t tensorId) returns (WebNNReadTensorResult result);
+  async DestroyTensor(uint32_t tensorId);
+
+  async Build(uint32_t graphId, WebNNGraphDesc graph, BigBuffer[] constants)
+      returns (nsCString error);
+  async DestroyGraph(uint32_t graphId);
+
+  async Dispatch(uint32_t graphId, WebNNNamedTensor[] inputs,
+                 WebNNNamedTensor[] outputs);
+
+child:
+  async ContextLost(nsCString message);
+};
+
+}  // namespace webnn
+}  // namespace mozilla

@@ -44,6 +44,9 @@ include protocol PRemoteMediaManager;
 #if !defined(ANDROID) && defined(MOZ_WEBSPEECH)
 include protocol PSpeechRecognition;
 #endif  // !ANDROID && MOZ_WEBSPEECH
+#ifndef ANDROID
+include protocol PWebNN;
+#endif
 include protocol PRemoteWorkerDebuggerManager;
 include protocol PRemoteWorkerService;
 include protocol PProfiler;
@@ -1224,6 +1227,7 @@ parent:
 #ifdef MOZ_WEBSPEECH
     async CreateSpeechRecognition(Endpoint<PSpeechRecognitionParent> endpoint);
 #endif
+    async CreateWebNN(Endpoint<PWebNNParent> endpoint);
 
     // One call per AcquireHWInferenceProcess. The process is shut down once
     // nothing holds it anymore.

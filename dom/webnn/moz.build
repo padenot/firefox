@@ -9,3 +9,39 @@ with Files("**"):
 
 if CONFIG["OS_ARCH"] == "Darwin":
     DIRS += ["engine"]
+
+EXPORTS.mozilla.dom += [
+    "ML.h",
+    "MLContext.h",
+    "MLGraph.h",
+    "MLGraphBuilder.h",
+    "MLOperand.h",
+    "MLTensor.h",
+]
+
+EXPORTS.mozilla.webnn += [
+    "ipc/WebNNChild.h",
+    "ipc/WebNNIPCUtils.h",
+    "ipc/WebNNParent.h",
+    "WebNNUtils.h",
+]
+
+UNIFIED_SOURCES += [
+    "ipc/WebNNChild.cpp",
+    "ipc/WebNNParent.cpp",
+    "ML.cpp",
+    "MLContext.cpp",
+    "MLGraph.cpp",
+    "MLGraphBuilder.cpp",
+    "MLOperand.cpp",
+    "MLTensor.cpp",
+]
+
+IPDL_SOURCES += [
+    "ipc/PWebNN.ipdl",
+    "ipc/WebNNTypes.ipdlh",
+]
+
+include("/ipc/chromium/chromium-config.mozbuild")
+
+FINAL_LIBRARY = "xul"

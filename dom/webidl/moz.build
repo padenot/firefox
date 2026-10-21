@@ -1116,6 +1116,7 @@ WEBIDL_FILES = [
     "WebGL2RenderingContext.webidl",
     "WebGLRenderingContext.webidl",
     "WebGPU.webidl",
+    "WebNN.webidl",
     "WebSocket.webidl",
     "WebTaskScheduling.webidl",
     "WebTransport.webidl",
