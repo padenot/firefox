@@ -26,6 +26,11 @@ for output, function in generated.items():
     GENERATED_FILES += [output]
     GENERATED_FILES[output].script = codegen + ":" + function
     GENERATED_FILES[output].inputs = webidl
+GENERATED_FILES += ["WebNNOpSupportLimits.cpp"]
+GENERATED_FILES["WebNNOpSupportLimits.cpp"].script = codegen + ":op_support_limits_cpp"
+GENERATED_FILES["WebNNOpSupportLimits.cpp"].inputs = webidl + [
+    "codegen/tensor_limits.json"
+]
 
 EXPORTS.mozilla.dom += [
     "!MLGraphBuilderOps.h",
@@ -71,6 +76,7 @@ UNIFIED_SOURCES += [
 
 SOURCES += [
     "!MLGraphBuilderOps.cpp",
+    "!WebNNOpSupportLimits.cpp",
 ]
 
 if CONFIG["OS_ARCH"] == "Darwin":

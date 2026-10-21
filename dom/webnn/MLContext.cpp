@@ -13,6 +13,7 @@
 #include "mozilla/ipc/BigBuffer.h"
 #include "mozilla/webnn/WebNNChild.h"
 #include "mozilla/webnn/WebNNUtils.h"
+#include "mozilla/webnn/WebNNValidation.h"
 
 namespace mozilla::dom {
 
@@ -429,43 +430,7 @@ already_AddRefed<webgpu::Buffer> MLContext::ExportToGPU(MLTensor& aTensor,
 }
 
 void MLContext::OpSupportLimits(MLOpSupportLimits& aRetVal) {
-  nsTArray<MLOperandDataType> allTypes = {
-      MLOperandDataType::Float32, MLOperandDataType::Float16,
-      MLOperandDataType::Int32,   MLOperandDataType::Uint32,
-      MLOperandDataType::Int64,   MLOperandDataType::Uint64,
-      MLOperandDataType::Int8,    MLOperandDataType::Uint8};
-  nsTArray<MLOperandDataType> floatTypes = {MLOperandDataType::Float32,
-                                            MLOperandDataType::Float16};
-
-  auto limits = [](const nsTArray<MLOperandDataType>& aTypes, uint32_t aMin,
-                   uint32_t aMax) {
-    MLTensorLimits limits;
-    limits.mDataTypes.Construct();
-    (void)limits.mDataTypes.Value().AppendElements(aTypes, fallible);
-    limits.mRankRange.Construct();
-    limits.mRankRange.Value().mMin.Construct(aMin);
-    limits.mRankRange.Value().mMax.Construct(aMax);
-    return limits;
-  };
-  auto binary = [&](const nsTArray<MLOperandDataType>& aTypes, uint32_t aMin) {
-    MLBinarySupportLimits binary;
-    binary.mA.Construct(limits(aTypes, aMin, 8));
-    binary.mB.Construct(limits(aTypes, aMin, 8));
-    binary.mOutput.Construct(limits(aTypes, aMin, 8));
-    return binary;
-  };
-
-  aRetVal.mPreferredInputLayout.Construct(MLInputOperandLayout::Nchw);
-  aRetVal.mMaxTensorByteLength.Construct(kMaxTensorByteLength);
-  aRetVal.mInput.Construct(limits(allTypes, 0, 8));
-  aRetVal.mConstant.Construct(limits(allTypes, 0, 8));
-  aRetVal.mOutput.Construct(limits(allTypes, 0, 8));
-  aRetVal.mAdd.Construct(binary(allTypes, 0));
-  aRetVal.mMatmul.Construct(binary(floatTypes, 2));
-  MLSingleInputSupportLimits relu;
-  relu.mInput.Construct(limits(floatTypes, 0, 8));
-  relu.mOutput.Construct(limits(floatTypes, 0, 8));
-  aRetVal.mRelu.Construct(std::move(relu));
+  webnn::FillOpSupportLimits(aRetVal);
 }
 
 }  // namespace mozilla::dom

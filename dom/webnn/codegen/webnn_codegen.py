@@ -21,6 +21,7 @@ Run `./mach python dom/webnn/codegen/webnn_codegen.py --check` to verify the
 checked-in IPDL file, and `--write` to regenerate it.
 """
 
+import json
 import os
 import re
 import sys
@@ -337,6 +338,18 @@ class Model:
                     sequences[m.type.inner.name] = m.type.inner
         self.unions = list(unions.values())
         self.enum_sequences = list(sequences.values())
+        # (member, dictionary, operands) of the per-operator MLOpSupportLimits
+        # members.
+        self.support_limits = [
+            (
+                m.identifier.name,
+                m.type.inner.identifier.name,
+                [o.identifier.name for o in m.type.inner.members],
+            )
+            for m in dicts["MLOpSupportLimits"].members
+            if m.type.isDictionary()
+            and m.type.inner.identifier.name != "MLTensorLimits"
+        ]
 
 
 def enum_variant(value):
@@ -627,6 +640,10 @@ def validation_header(output, webidl):
         out.append(validator_decl(op) + ";")
     out += [
         "",
+        "// Fills the operator support limits from the spec tensor limits tables,",
+        "// see dom/webnn/codegen/tensor_limits.py.",
+        "void FillOpSupportLimits(dom::MLOpSupportLimits& aLimits);",
+        "",
         "}  // namespace mozilla::webnn",
         "",
         "#endif  // DOM_WEBNN_WEBNNVALIDATION_H_",
@@ -649,6 +666,78 @@ def validator_stubs(model, names=None):
             "",
         ]
     return "\n".join(out)
+
+
+def op_support_limits_cpp(output, webidl, limits_json):
+    model = Model(webidl)
+    with open(limits_json, encoding="utf-8") as f:
+        limits = json.load(f)
+    data_type = next(e for e in model.enums if e.identifier.name == "MLOperandDataType")
+    all_types = list(data_type.values())
+
+    def tensor_limits(types, rank_range):
+        lo, hi = rank_range
+        return "Limits({%s}, %s, %s)" % (
+            ", ".join("MLOperandDataType::%s" % enum_variant(t) for t in types),
+            lo,
+            "kMaxRank" if hi == "N" else hi,
+        )
+
+    out = [
+        MPL,
+        "// " + HEADER_NOTE,
+        "",
+        '#include "mozilla/dom/MLContext.h"',
+        '#include "mozilla/webnn/WebNNValidation.h"',
+        '#include "validation/ValidationUtils.h"',
+        "",
+        "namespace mozilla::webnn {",
+        "",
+        "using namespace dom;",
+        "",
+        "static MLTensorLimits Limits(std::initializer_list<MLOperandDataType> aTypes,",
+        "                             uint32_t aMinRank, uint32_t aMaxRank) {",
+        "  MLTensorLimits limits;",
+        "  (void)limits.mDataTypes.Construct().AppendElements(",
+        "      aTypes.begin(), aTypes.size(), fallible);",
+        "  MLRankRange& range = limits.mRankRange.Construct();",
+        "  range.mMin.Construct(aMinRank);",
+        "  range.mMax.Construct(aMaxRank);",
+        "  return limits;",
+        "}",
+        "",
+        "void FillOpSupportLimits(MLOpSupportLimits& aLimits) {",
+        "  aLimits.mPreferredInputLayout.Construct(MLInputOperandLayout::Nchw);",
+        "  aLimits.mMaxTensorByteLength.Construct(MLContext::kMaxTensorByteLength);",
+    ]
+    for member in ("input", "constant", "output"):
+        out.append(
+            "  aLimits.m%s.Construct(%s);"
+            % (first_cap(member), tensor_limits(all_types, [0, "N"]))
+        )
+    for member, dictionary, operands in model.support_limits:
+        if member not in limits:
+            raise Exception("No tensor limits for %s" % member)
+        missing = set(operands) ^ set(limits[member])
+        if missing:
+            raise Exception(
+                "Operands of %s and its tensor limits differ: %s"
+                % (dictionary, ", ".join(sorted(missing)))
+            )
+        out += [
+            "  {",
+            "    %s& op = aLimits.m%s.Construct();" % (dictionary, first_cap(member)),
+        ]
+        for operand in operands:
+            l = limits[member][operand]
+            out.append(
+                "    op.m%s.Construct(%s);"
+                % (first_cap(operand), tensor_limits(l["dataTypes"], l["rankRange"]))
+            )
+        out.append("  }")
+    out += ["}", "", "}  // namespace mozilla::webnn", ""]
+    output.write("\n".join(out))
+    return {webidl, limits_json, __file__}
 
 
 # HWInference process #########################################################
