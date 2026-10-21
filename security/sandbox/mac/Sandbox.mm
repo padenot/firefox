@@ -304,6 +304,7 @@ bool StartMacSandbox(MacSandboxInfo const& aInfo, std::string& aErrorMessage) {
   // Used for the content process to access to parts of the cache dir.
   std::string userCacheDir;
   std::string bundleIDCacheDir;
+  std::string userTempDir;
 
   if (aInfo.type == MacSandboxType_Utility &&
       aInfo.utilityKind != ipc::SandboxingKind::HW_INFERENCE) {
@@ -530,6 +531,17 @@ bool StartMacSandbox(MacSandboxInfo const& aInfo, std::string& aErrorMessage) {
     bundleIDCacheDir.append("/" MOZ_CHILD_PROCESS_BUNDLEID);
     params.push_back("BUNDLE_ID_CACHE_DIR");
     params.push_back(bundleIDCacheDir.c_str());
+
+    // WebNN writes temporary CoreML models there, and CoreML compiles them
+    // there.
+    if (!confstr(_CS_DARWIN_USER_TEMP_DIR, confStrBuf, sizeof(confStrBuf)) ||
+        !GetRealPath(userTempDir, confStrBuf)) {
+      return false;
+    }
+    params.push_back("DARWIN_USER_TEMP_DIR");
+    params.push_back(userTempDir.c_str());
+    params.push_back("BUNDLE_ID");
+    params.push_back(MOZ_CHILD_PROCESS_BUNDLEID);
   } else {
     char* msg = nullptr;
     asprintf(&msg, "Unexpected sandbox type %u", aInfo.type);

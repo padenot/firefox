@@ -15,6 +15,8 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
   (define appPath (param "APP_PATH"))
   (define userCacheDir (param "DARWIN_USER_CACHE_DIR"))
   (define bundleIDCacheDir (param "BUNDLE_ID_CACHE_DIR"))
+  (define userTempDir (param "DARWIN_USER_TEMP_DIR"))
+  (define bundleID (param "BUNDLE_ID"))
   (define homePath (param "HOME_PATH"))
   (define crashPort (param "CRASH_PORT"))
   (define macosVersion (string->number (param "MAC_OS_VERSION")))
@@ -125,6 +127,13 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
   (define (home-subpath home-relative-subpath)
     (subpath (string-append homePath home-relative-subpath)))
 
+  ; CoreML's runtime caches compiled models in the per-user Library cache
+  ; directory for the bundle ID.
+  (allow file-read* file-write*
+    (require-all
+      (require-not (vnode-type SYMLINK))
+      (home-subpath (string-append "/Library/Caches/" bundleID))))
+
   (allow file-read*
     (literal "/")
     (literal "/private/tmp")
@@ -135,6 +144,19 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
     (require-all
       (require-not (vnode-type SYMLINK))
       (subpath bundleIDCacheDir)))
+
+  ; Temporary files for WebNN: the CoreML model packages it writes (must match
+  ; the directory WebNNParent uses), the working directories CoreML creates to
+  ; compile them, the compiled models CoreML moves next to them, named after
+  ; the packages, and the MPSGraph cache.
+  (allow file-read* file-write*
+    (require-all
+      (require-not (vnode-type SYMLINK))
+      (require-any
+        (subpath (string-append userTempDir "/org.mozilla.webnn"))
+        (subpath (string-append userTempDir "/TemporaryItems"))
+        (prefix (string-append userTempDir "/rustnn_coreml_"))
+        (subpath (string-append userTempDir "/com.apple.MetalPerformanceShadersGraph")))))
 
   ; Allow issuing sandbox extensions for the MTLCompilerService process
   ; to be able to read and write files in the bundle ID cache dir in the
@@ -156,7 +178,9 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
     (iokit-property "IOVARendererID")
     (iokit-property "MetalPluginName")
     (iokit-property "MetalPluginClassName")
-    (iokit-property "gpu-core-count"))
+    (iokit-property "gpu-core-count")
+    ; CoreML checks for a Neural Engine.
+    (iokit-property "ane-type"))
 
   ; Minimal IOKit connections needed for Metal compute
   (allow iokit-open
@@ -165,7 +189,9 @@ static const char SandboxPolicyHWInference[] = R"SANDBOX_LITERAL(
     (iokit-user-client-class "AGPMClient")
     (iokit-user-client-class "AppleGraphicsControlClient")
     (iokit-user-client-class "AppleMGPUPowerControlClient")
-    (iokit-user-client-class "AppleGraphicsPolicyClient"))
+    (iokit-user-client-class "AppleGraphicsPolicyClient")
+    ; IOSurface buffers and shared events used by CoreML.
+    (iokit-user-client-class "IOSurfaceRootUserClient"))
 
   (if (string=? isRosettaTranslated "TRUE")
     (allow file-map-executable (subpath "/private/var/db/oah")))
