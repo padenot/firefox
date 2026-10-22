@@ -626,7 +626,7 @@ dependencies = [
  "regex",
  "rustc-hash 2.1.1",
  "shlex",
- "syn 2.0.106",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1620,7 +1620,7 @@ version = "0.7.1"
 source = "git+https://github.com/servo/rust-cssparser?rev=9f3ceddf398f5ce4ab76fdad1b42ccb6c578a926#9f3ceddf398f5ce4ab76fdad1b42ccb6c578a926"
 dependencies = [
  "quote",
- "syn 2.0.106",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -7581,7 +7581,7 @@ dependencies = [
 [[package]]
 name = "rustnn"
 version = "0.6.0"
-source = "git+https://github.com/padenot/rustnn?rev=07119a32083b2bb3df70b964962e9a4c6e82a24a#07119a32083b2bb3df70b964962e9a4c6e82a24a"
+source = "git+https://github.com/padenot/rustnn?rev=07119a32083b2bb3df70b964962e9a4c6e82a24a#ae588ba16e8058bc08776787f2c19d47babd03bf"
 dependencies = [
  "base64 0.23.1",
  "block",
