@@ -17,7 +17,7 @@ enum class MLOperandDataType : uint8_t;
 
 class MLOperand final : public nsISupports, public nsWrapperCache {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MLOperand)
 
   enum class Kind { Input, Constant, Output };
