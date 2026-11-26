@@ -7,6 +7,8 @@ description: "A Firefox::Theme or Toolkit::Themes bug; investigating a CSS issue
 
 Without a build, a browser or `./mach` (e.g. in a review that supplies these skills alongside the patch), skip only the steps that need what is missing and keep going from the diff and the source, which show which rule wins and which layer or token a declaration reads. Where a finding rests on a number only a skipped step can produce (e.g. a contrast ratio, a resolved color, a size), flag it and ask the author for that measurement rather than inferring it.
 
+When reviewing a patch, start from [`references/review.md`](references/review.md), which lists the documents to check each kind of change against.
+
 Whenever you write or review CSS, read `docs/code-quality/coding-style/css_guidelines.md` and treat it as a checklist: check the diff against each of its rules that a subject skill below doesn't already cover, and cite the heading of the section each rule comes from.
 
 Also load every subject skill that matches the task before you go further, even when the report already names the rule or token or hints at a solution:

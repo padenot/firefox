@@ -80,12 +80,7 @@ when = { any_file = { include = [
   "browser/extensions/webcompat/**",
 ] } }
 load = [
-  { type = "file", path = "docs/code-quality/coding-style/css_guidelines.md" },
-  { type = "file", path = ".claude/skills/desktop-theme/SKILL.md" },
-  { type = "file", path = ".claude/skills/desktop-theme-colors/SKILL.md" },
-  { type = "file", path = ".claude/skills/desktop-theme-colors/references/system-color-pairs.md" },
-  { type = "file", path = ".claude/skills/desktop-theme-layout/SKILL.md" },
-  { type = "file", path = ".claude/skills/desktop-theme-tokens/SKILL.md" },
+  { type = "file", path = ".claude/skills/desktop-theme/references/review.md" },
 ]
 
 # Web-standard implementation: native code behind WebIDL interfaces. Triggered
